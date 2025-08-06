@@ -1,12 +1,11 @@
 # greer_value_yield_score.py
 
-import psycopg2
 import argparse
 import pandas as pd
 import os
 import logging
 from datetime import date
-from sqlalchemy import create_engine
+from db import get_engine, get_psycopg_connection
 
 # ----------------------------------------------------------
 # Logging Setup
@@ -21,28 +20,28 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # ----------------------------------------------------------
-# DB Connection
+# Create shared DB connections
 # ----------------------------------------------------------
-DB_CONN_STRING = "host=localhost dbname=yfinance_db user=greer_user port=5432"
+engine = get_engine()
+conn = get_psycopg_connection()
 
 # ----------------------------------------------------------
 # Load financials by ticker
 # ----------------------------------------------------------
 def get_financials(ticker):
-    with psycopg2.connect(DB_CONN_STRING) as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT EXTRACT(YEAR FROM report_date) AS fiscal_year,
-                       net_income,
-                       free_cash_flow,
-                       total_revenue,
-                       shares_outstanding,
-                       book_value_per_share
-                FROM financials
-                WHERE ticker = %s
-                ORDER BY fiscal_year
-            """, (ticker,))
-            rows = cur.fetchall()
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT EXTRACT(YEAR FROM report_date) AS fiscal_year,
+                   net_income,
+                   free_cash_flow,
+                   total_revenue,
+                   shares_outstanding,
+                   book_value_per_share
+            FROM financials
+            WHERE ticker = %s
+            ORDER BY fiscal_year
+        """, (ticker,))
+        rows = cur.fetchall()
 
     return [
         {
@@ -61,68 +60,65 @@ def get_financials(ticker):
 # Get the closing price for the last trading day of a fiscal year
 # ----------------------------------------------------------
 def get_price_on_year_end(ticker, year):
-    with psycopg2.connect(DB_CONN_STRING) as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT close FROM prices
-                WHERE ticker = %s AND date <= %s
-                ORDER BY date DESC LIMIT 1;
-            """, (ticker, f"{year}-12-31"))
-            row = cur.fetchone()
-            return row[0] if row else None
-
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT close FROM prices
+            WHERE ticker = %s AND date <= %s
+            ORDER BY date DESC LIMIT 1;
+        """, (ticker, f"{year}-12-31"))
+        row = cur.fetchone()
+        return row[0] if row else None
 
 # ----------------------------------------------------------
 # Insert result into greer_yields_daily
 # ----------------------------------------------------------
 def insert_yield_row(ticker, row):
-    with psycopg2.connect(DB_CONN_STRING) as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO greer_yields_daily (
-                    ticker,
-                    date,
-                    eps_yield, fcf_yield, revenue_yield, book_yield,
-                    avg_eps_yield, avg_fcf_yield, avg_revenue_yield, avg_book_yield,
-                    tvpct, tvavg, tvavg_trend, score
-                )
-                VALUES (
-                    %s,
-                    %s,
-                    %s, %s, %s, %s,
-                    %s, %s, %s, %s,
-                    %s, %s, %s, %s
-                )
-                ON CONFLICT (ticker, date) DO UPDATE
-                  SET eps_yield        = EXCLUDED.eps_yield,
-                      fcf_yield        = EXCLUDED.fcf_yield,
-                      revenue_yield    = EXCLUDED.revenue_yield,
-                      book_yield       = EXCLUDED.book_yield,
-                      avg_eps_yield    = EXCLUDED.avg_eps_yield,
-                      avg_fcf_yield    = EXCLUDED.avg_fcf_yield,
-                      avg_revenue_yield= EXCLUDED.avg_revenue_yield,
-                      avg_book_yield   = EXCLUDED.avg_book_yield,
-                      tvpct            = EXCLUDED.tvpct,
-                      tvavg            = EXCLUDED.tvavg,
-                      tvavg_trend      = EXCLUDED.tvavg_trend,
-                      score            = EXCLUDED.score;
-            """, (
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO greer_yields_daily (
                 ticker,
-                f"{row['year']}-12-31",      # use fiscal‐year end as the date
-                row['eps_yield'],
-                row['fcf_yield'],
-                row['rev_yield'],
-                row['book_yield'],
-                row['eps_avg'],
-                row['fcf_avg'],
-                row['rev_avg'],
-                row['book_avg'],
-                row['tvpct'],
-                row['tvavg'],
-                row['tvavg_trend'],
-                row['score']
-            ))
-
+                date,
+                eps_yield, fcf_yield, revenue_yield, book_yield,
+                avg_eps_yield, avg_fcf_yield, avg_revenue_yield, avg_book_yield,
+                tvpct, tvavg, tvavg_trend, score
+            )
+            VALUES (
+                %s,
+                %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s
+            )
+            ON CONFLICT (ticker, date) DO UPDATE
+              SET eps_yield        = EXCLUDED.eps_yield,
+                  fcf_yield        = EXCLUDED.fcf_yield,
+                  revenue_yield    = EXCLUDED.revenue_yield,
+                  book_yield       = EXCLUDED.book_yield,
+                  avg_eps_yield    = EXCLUDED.avg_eps_yield,
+                  avg_fcf_yield    = EXCLUDED.avg_fcf_yield,
+                  avg_revenue_yield= EXCLUDED.avg_revenue_yield,
+                  avg_book_yield   = EXCLUDED.avg_book_yield,
+                  tvpct            = EXCLUDED.tvpct,
+                  tvavg            = EXCLUDED.tvavg,
+                  tvavg_trend      = EXCLUDED.tvavg_trend,
+                  score            = EXCLUDED.score;
+        """, (
+            ticker,
+            f"{row['year']}-12-31",
+            row['eps_yield'],
+            row['fcf_yield'],
+            row['rev_yield'],
+            row['book_yield'],
+            row['eps_avg'],
+            row['fcf_avg'],
+            row['rev_avg'],
+            row['book_avg'],
+            row['tvpct'],
+            row['tvavg'],
+            row['tvavg_trend'],
+            row['score']
+        ))
+    conn.commit()
 
 # ----------------------------------------------------------
 # Calculate historical yields and store them
@@ -217,7 +213,7 @@ def calculate_daily_yields(ticker):
     import decimal
     from decimal import Decimal
 
-    with psycopg2.connect(DB_CONN_STRING) as conn:
+    with get_psycopg_connection() as conn:
         with conn.cursor() as cur:
             # Load all close prices for the ticker
             cur.execute("""
@@ -325,7 +321,7 @@ def calculate_daily_yields(ticker):
 # Realtime snapshot using latest data
 # ----------------------------------------------------------
 def calculate_latest_yield(ticker, hist):
-    with psycopg2.connect(DB_CONN_STRING) as conn:
+    with get_psycopg_connection() as conn:
         with conn.cursor() as cur:
             # 1️⃣ Fetch the earliest price for this ticker
             cur.execute("""
@@ -422,7 +418,7 @@ def load_tickers(file_path=None):
         return df["ticker"].dropna().str.upper().unique().tolist()
     else:
         print("💃️  Loading tickers from companies table...")
-        engine = create_engine("postgresql://greer_user@localhost:5432/yfinance_db")
+        engine = get_engine()
         with engine.begin() as conn:
             return pd.read_sql("SELECT ticker FROM companies ORDER BY ticker", conn)["ticker"].tolist()
 

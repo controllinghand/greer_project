@@ -5,11 +5,14 @@ import time
 import argparse
 import numpy as np
 import pandas as pd
-import psycopg2
 import logging
 
 from datetime import datetime
-from sqlalchemy import create_engine
+
+# ----------------------------------------------------------
+# Shared DB utility
+# ----------------------------------------------------------
+from db import get_engine, get_psycopg_connection
 
 # ----------------------------------------------------------
 # Logging Setup
@@ -24,20 +27,10 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # ----------------------------------------------------------
-# Connect to PostgreSQL using SQLAlchemy engine
+# Create shared DB connections
 # ----------------------------------------------------------
-engine = create_engine("postgresql+psycopg2://greer_user@localhost/yfinance_db")
-
-# ----------------------------------------------------------
-# Connect to PostgreSQL using psycopg2
-# ----------------------------------------------------------
-conn = psycopg2.connect(
-    dbname="yfinance_db",
-    user="greer_user",
-    password="",  # Add password if set
-    host="localhost",
-    port=5432
-)
+engine = get_engine()
+conn = get_psycopg_connection()
 
 # ----------------------------------------------------------
 # Function: Calculate Greer Value % based on metric trend
@@ -96,21 +89,9 @@ def compute_greer_value_score(ticker: str, data: pd.DataFrame) -> dict:
     return {ticker: results}
 
 # ----------------------------------------------------------
-# Function: Load a list of tickers from a given file
-# ----------------------------------------------------------
-def load_tickers_from_file(filename):
-    tickers = []
-    with open(filename, "r") as f:
-        for line in f:
-            ticker = line.strip().upper()
-            if ticker:
-                tickers.append(ticker)
-    return tickers
-
-# ----------------------------------------------------------
 # Function: Load historical financial data for a ticker
 # ----------------------------------------------------------
-def load_data_from_db(conn, ticker):
+def load_data_from_db(engine, ticker):
     query = """
         SELECT report_date, 
                book_value_per_share, 
@@ -196,53 +177,53 @@ def load_tickers(file_path=None):
 # ----------------------------------------------------------
 # Main Execution
 # ----------------------------------------------------------
-parser = argparse.ArgumentParser(description="Greer Value Analyzer from DB")
-parser.add_argument("--file", type=str, help="Optional path to CSV file containing tickers (column: 'ticker')")
-args = parser.parse_args()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Greer Value Analyzer from DB")
+    parser.add_argument("--file", type=str, help="Optional path to CSV file containing tickers (column: 'ticker')")
+    args = parser.parse_args()
 
-os.makedirs("data", exist_ok=True)
-summary_rows = []
-tickers = load_tickers(args.file)
-print(f"\n✅ Loaded {len(tickers)} tickers\n")
+    os.makedirs("data", exist_ok=True)
+    summary_rows = []
+    tickers = load_tickers(args.file)
+    print(f"\n✅ Loaded {len(tickers)} tickers\n")
 
-for ticker in tickers:
-    try:
-        print(f"📊 Processing {ticker}...")
-        df_full = load_data_from_db(conn, ticker)
-        if df_full.empty:
-            print(f"⚠️ No financial data for {ticker} in DB.")
-            continue
+    for ticker in tickers:
+        try:
+            print(f"📊 Processing {ticker}...")
+            df_full = load_data_from_db(engine, ticker)
+            if df_full.empty:
+                print(f"⚠️ No financial data for {ticker} in DB.")
+                continue
 
-        df_full.to_csv(f"data/{ticker}_data.csv", index=False)
+            df_full.to_csv(f"data/{ticker}_data.csv", index=False)
 
-        for report_date in df_full["dates"].sort_values().unique():
-            df_subset = df_full[df_full["dates"] <= report_date]
-            result = compute_greer_value_score(ticker, df_subset)
-            r = result[ticker]
+            for report_date in df_full["dates"].sort_values().unique():
+                df_subset = df_full[df_full["dates"] <= report_date]
+                result = compute_greer_value_score(ticker, df_subset)
+                r = result[ticker]
 
-            row = {
-                "Ticker": ticker,
-                "Greer Score": round(r["GreerValue"]["score"], 2),
-                "Above 50%": r["GreerValue"]["above_50_count"],
-                "Book%": round(r["BOOK_VALUE_PER_SHARE"]["pct"], 2) if not np.isnan(r["BOOK_VALUE_PER_SHARE"]["pct"]) else None,
-                "FCF%": round(r["FREE_CASH_FLOW"]["pct"], 2) if not np.isnan(r["FREE_CASH_FLOW"]["pct"]) else None,
-                "Margin%": round(r["NET_MARGIN"]["pct"], 2) if not np.isnan(r["NET_MARGIN"]["pct"]) else None,
-                "Revenue%": round(r["TOTAL_REVENUE"]["pct"], 2) if not np.isnan(r["TOTAL_REVENUE"]["pct"]) else None,
-                "Income%": round(r["NET_INCOME"]["pct"], 2) if not np.isnan(r["NET_INCOME"]["pct"]) else None,
-                "Shares%": round(r["DILUTED_SHARES_OUTSTANDING"]["pct"], 2) if not np.isnan(r["DILUTED_SHARES_OUTSTANDING"]["pct"]) else None,
-            }
+                row = {
+                    "Ticker": ticker,
+                    "Greer Score": round(r["GreerValue"]["score"], 2),
+                    "Above 50%": r["GreerValue"]["above_50_count"],
+                    "Book%": round(r["BOOK_VALUE_PER_SHARE"]["pct"], 2) if not np.isnan(r["BOOK_VALUE_PER_SHARE"]["pct"]) else None,
+                    "FCF%": round(r["FREE_CASH_FLOW"]["pct"], 2) if not np.isnan(r["FREE_CASH_FLOW"]["pct"]) else None,
+                    "Margin%": round(r["NET_MARGIN"]["pct"], 2) if not np.isnan(r["NET_MARGIN"]["pct"]) else None,
+                    "Revenue%": round(r["TOTAL_REVENUE"]["pct"], 2) if not np.isnan(r["TOTAL_REVENUE"]["pct"]) else None,
+                    "Income%": round(r["NET_INCOME"]["pct"], 2) if not np.isnan(r["NET_INCOME"]["pct"]) else None,
+                    "Shares%": round(r["DILUTED_SHARES_OUTSTANDING"]["pct"], 2) if not np.isnan(r["DILUTED_SHARES_OUTSTANDING"]["pct"]) else None,
+                }
 
-            summary_rows.append(row)
-            insert_greer_score(conn, convert_numpy_types(row), report_date)
-            print(f"✅ Inserted Greer score for {ticker} (as of {report_date})")
+                summary_rows.append(row)
+                insert_greer_score(conn, convert_numpy_types(row), report_date)
+                print(f"✅ Inserted Greer score for {ticker} (as of {report_date})")
 
-    except Exception as e:
-        logger.error(f"❌ Error processing {ticker}: {e}")
+        except Exception as e:
+            logger.error(f"❌ Error processing {ticker}: {e}")
 
-# Save summary CSV
-summary_df = pd.DataFrame(summary_rows)
-summary_df.to_csv("greer_summary.csv", index=False)
-print("\n✅ Saved summary to greer_summary.csv")
-print("\n📊 Greer Value Summary:")
-print(summary_df)
-print("🎯 Unique tickers processed:", summary_df["Ticker"].nunique())
+    summary_df = pd.DataFrame(summary_rows)
+    summary_df.to_csv("greer_summary.csv", index=False)
+    print("\n✅ Saved summary to greer_summary.csv")
+    print("\n📊 Greer Value Summary:")
+    print(summary_df)
+    print("🎯 Unique tickers processed:", summary_df['Ticker'].nunique())

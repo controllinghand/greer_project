@@ -1,13 +1,16 @@
 # price_loader.py
 
 import yfinance as yf
-import psycopg2
 import argparse
 import pandas as pd
 from datetime import datetime, timedelta
 import os
 import logging
-from sqlalchemy import create_engine
+
+# ----------------------------------------------------------
+# Import shared DB connection functions
+# ----------------------------------------------------------
+from db import get_engine, get_psycopg_connection
 
 # ----------------------------------------------------------
 # Logging Setup
@@ -22,16 +25,11 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # ----------------------------------------------------------
-# Configuration: Database connection string
-# ----------------------------------------------------------
-DB_CONN_STRING = "host=localhost dbname=yfinance_db user=greer_user port=5432"
-
-# ----------------------------------------------------------
 # Get the latest stored date for a ticker
 # ----------------------------------------------------------
 def get_latest_date(ticker):
     try:
-        with psycopg2.connect(DB_CONN_STRING) as conn:
+        with get_psycopg_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT MAX(date) FROM prices WHERE ticker = %s;", (ticker,))
                 result = cur.fetchone()
@@ -45,7 +43,7 @@ def get_latest_date(ticker):
 # ----------------------------------------------------------
 def insert_price(ticker, date, close, high, low):
     try:
-        with psycopg2.connect(DB_CONN_STRING) as conn:
+        with get_psycopg_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO prices (ticker, date, close, high_price, low_price)
@@ -66,7 +64,7 @@ def fetch_and_store_prices(ticker, start_date="2010-01-01", force_reload=False):
     try:
         if force_reload:
             print(f"♻️ Forcing full reload of {ticker} from {start_date}")
-            with psycopg2.connect(DB_CONN_STRING) as conn:
+            with get_psycopg_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute("DELETE FROM prices WHERE ticker = %s;", (ticker,))
         else:
@@ -101,18 +99,6 @@ def fetch_and_store_prices(ticker, start_date="2010-01-01", force_reload=False):
         logger.error(f"Error fetching prices for {ticker}: {e}")
 
 # ----------------------------------------------------------
-# Load tickers from file
-# ----------------------------------------------------------
-def load_tickers_from_file(file_path):
-    tickers = []
-    with open(file_path, "r") as f:
-        for line in f:
-            ticker = line.strip().upper()
-            if ticker:
-                tickers.append(ticker)
-    return tickers
-
-# ----------------------------------------------------------
 # Load tickers from file, CLI list, or fallback to DB
 # ----------------------------------------------------------
 def load_tickers(args):
@@ -125,7 +111,7 @@ def load_tickers(args):
         return [t.upper() for t in args.tickers]
     else:
         print("🗃️  Loading tickers from companies table...")
-        engine = create_engine("postgresql://greer_user@localhost:5432/yfinance_db")
+        engine = get_engine()
         with engine.begin() as conn:
             return pd.read_sql("SELECT ticker FROM companies ORDER BY ticker", conn)["ticker"].tolist()
 

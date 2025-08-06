@@ -1,12 +1,14 @@
 # greer_fair_value_gap.py
+
 import pandas as pd
 import numpy as np
 import argparse
 import sqlalchemy
-from sqlalchemy import create_engine
-import psycopg2
-import os
 import logging
+import os
+
+# Use shared DB access module
+from db import get_engine, get_psycopg_connection
 
 # ----------------------------------------------------------
 # Logging Setup
@@ -22,10 +24,9 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # ----------------------------------------------------------
-# Configuration
+# Create shared DB engine
 # ----------------------------------------------------------
-DB_CONN_STRING = "postgresql://greer_user@localhost:5432/yfinance_db"
-engine = create_engine(DB_CONN_STRING)
+engine = get_engine()
 
 # ----------------------------------------------------------
 # Load price data from the database
@@ -120,27 +121,25 @@ def evaluate_mitigation(df, fvg_data):
 # Insert FVGs into the database
 # ----------------------------------------------------------
 def insert_fvgs_to_db(ticker, fvg_data):
-    conn = psycopg2.connect("dbname=yfinance_db user=greer_user")
-    cur = conn.cursor()
-    for fvg in fvg_data:
-        direction = 'bullish' if fvg['is_bullish'] else 'bearish'
-        gap_min = float(min(fvg['low'], fvg['high']))
-        gap_max = float(max(fvg['low'], fvg['high']))
-        cur.execute("""
-            INSERT INTO fair_value_gaps (ticker, date, direction, gap_min, gap_max, mitigated)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT DO NOTHING;
-        """, (
-            ticker,
-            fvg['date'],
-            direction,
-            gap_min,
-            gap_max,
-            fvg['mitigated']
-        ))
-    conn.commit()
-    cur.close()
-    conn.close()
+    with get_psycopg_connection() as conn:
+        with conn.cursor() as cur:
+            for fvg in fvg_data:
+                direction = 'bullish' if fvg['is_bullish'] else 'bearish'
+                gap_min = float(min(fvg['low'], fvg['high']))
+                gap_max = float(max(fvg['low'], fvg['high']))
+                cur.execute("""
+                    INSERT INTO fair_value_gaps (ticker, date, direction, gap_min, gap_max, mitigated)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING;
+                """, (
+                    ticker,
+                    fvg['date'],
+                    direction,
+                    gap_min,
+                    gap_max,
+                    fvg['mitigated']
+                ))
+        conn.commit()
 
 # ----------------------------------------------------------
 # Process a single ticker

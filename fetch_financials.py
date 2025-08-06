@@ -8,9 +8,12 @@ import pandas as pd
 import yfinance as yf
 
 from datetime import datetime
-from sqlalchemy import create_engine
-import psycopg2
 import logging
+
+# ----------------------------------------------------------
+# Import shared DB connections
+# ----------------------------------------------------------
+from db import get_engine, get_psycopg_connection
 
 # ----------------------------------------------------------
 # Logging Setup
@@ -25,20 +28,10 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # ----------------------------------------------------------
-# Connect to PostgreSQL using SQLAlchemy engine
+# Initialize DB Connections
 # ----------------------------------------------------------
-engine = create_engine("postgresql+psycopg2://greer_user@localhost/yfinance_db")
-
-# ----------------------------------------------------------
-# Connect to PostgreSQL database
-# ----------------------------------------------------------
-conn = psycopg2.connect(
-    dbname="yfinance_db",
-    user="greer_user",
-    password="",
-    host="localhost",
-    port=5432
-)
+engine = get_engine()
+conn = get_psycopg_connection()
 
 # ----------------------------------------------------------
 # Function: Extract a financial metric from dataframe by tag

@@ -1,9 +1,10 @@
+# Home.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from sqlalchemy import create_engine
 from datetime import date
+from db import get_engine  # ✅ Centralized DB connection
 
 # ----------------------------------------------------------
 # Page Configuration and Global CSS
@@ -23,28 +24,33 @@ st.markdown("""
         height: 2.5rem;
         text-align: center;
     }
-    /* Hide overlay buttons & fix badge size */
-    div.stButton > button {
+    .badge-container {
         position: relative;
-        top: -92px;
-        width: 100%;
         height: 92px;
-        opacity: 0;
-        border: none;
-        background: transparent;
-        cursor: pointer;
-        padding: 0 !important;
-        margin: 0 !important;
+        width: 100%;
+        overflow: visible;
+        padding: 0;
+        margin: 0;
     }
 </style>
+<style>
+    button[kind="secondary"] {
+        color: #1976d2 !important;
+        background: none !important;
+        border: none !important;
+        padding: 0 !important;
+        font-size: 14px;
+        text-decoration: underline;
+        cursor: pointer;
+    }
+</style>
+
 """, unsafe_allow_html=True)
 
+
 # ----------------------------------------------------------
-# Database Connection
+# Database Connection (Render-Compatible)
 # ----------------------------------------------------------
-@st.cache_resource
-def get_engine():
-    return create_engine("postgresql://greer_user:@localhost:5432/yfinance_db")
 
 @st.cache_data
 def fetch_first_trade_date(ticker: str):
@@ -70,7 +76,6 @@ def classify_greer(score, above_50):
         return "Weak", "#F44336", "white"
     return "—", "#E0E0E0", "black"
 
-
 def classify_yield(yield_score):
     if yield_score is None:
         return "—", "#E0E0E0", "black"
@@ -82,7 +87,6 @@ def classify_yield(yield_score):
         return "Fairly Valued", "#2196F3", "white"
     return "Overvalued", "#F44336", "white"
 
-
 def render_badge(label, html_value, background, label_color="black"):
     st.markdown(
         f"""
@@ -93,7 +97,6 @@ def render_badge(label, html_value, background, label_color="black"):
         """,
         unsafe_allow_html=True
     )
-
 
 def get_latest_snapshot(ticker, engine):
     return pd.read_sql(
@@ -162,7 +165,6 @@ def render_gv_details(ticker, engine):
     ax.set_xticklabels(labels)
     ax.set_title(f"{ticker.upper()} – Greer Component Radar", y=1.08)
     st.pyplot(fig)
-
 
 def render_yield_details(ticker, engine):
     snap = pd.read_sql(
@@ -236,7 +238,6 @@ def render_yield_details(ticker, engine):
             """
         )
 
-# ----------------------------------------------------------
 def render_buyzone_details(ticker, engine):
     df = pd.read_sql(
         '''
@@ -282,7 +283,6 @@ def render_buyzone_details(ticker, engine):
             "Gray blocks are neutral days. The price line above provides context."
         )
 
-# ----------------------------------------------------------
 def render_fvg_details(ticker, engine):
     gaps = pd.read_sql(
         '''
@@ -344,23 +344,32 @@ def render_fvg_details(ticker, engine):
     )
 
 # ----------------------------------------------------------
-# Main UI
+# Main UI (Greer Value Search)
 # ----------------------------------------------------------
 st.markdown('<div class="greer-header">Greer Value Search</div>', unsafe_allow_html=True)
-ticker = st.text_input("Search", placeholder="Enter a Ticker Symbol (e.g., AAPL)", key="ticker_input", label_visibility="collapsed")
+ticker = st.text_input(
+    "Search",
+    placeholder="Enter a Ticker Symbol (e.g., AAPL)",
+    key="ticker_input",
+    label_visibility="collapsed"
+)
 
+# Start rendering if a ticker is entered
 if ticker:
     ticker = ticker.upper().strip()
     engine = get_engine()
     first_trade = fetch_first_trade_date(ticker)
     snap = get_latest_snapshot(ticker, engine)
+
     if snap.empty:
         st.error(f"Ticker '{ticker}' not found.")
     else:
         row = snap.iloc[0]
         col_gv, col_yield, col_bz, col_fvg = st.columns(4)
 
+        # -----------------------------
         # Greer Value badge
+        # -----------------------------
         gv_score = row.get("greer_value_score")
         grade, gv_bg, gv_txt = classify_greer(gv_score, row.get("above_50_count"))
         gv_html = "—" if gv_score is None else (
@@ -368,11 +377,15 @@ if ticker:
             f"<span style='font-size:12px;font-weight:600;line-height:1.1;color:{gv_txt};'>{grade}</span>"
         )
         with col_gv:
+            st.markdown("<div class='badge-container'>", unsafe_allow_html=True)
             render_badge("Greer Value", gv_html, gv_bg, label_color=gv_txt)
-            if st.button(" ", key="badge_gv"):
+            if st.button("🔍 Show Details", key="gv_details"):
                 st.session_state["view"] = "GV"
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        # Yield badge with IPO logic
+        # -----------------------------
+        # Yield badge
+        # -----------------------------
         ys_score = row.get("greer_yield_score")
         ys_score = int(ys_score) if pd.notnull(ys_score) else None
         y_grade, y_bg, y_txt = classify_yield(ys_score)
@@ -381,19 +394,22 @@ if ticker:
             f"<span style='font-size:12px;font-weight:600;line-height:1.1;color:{y_txt};'>{y_grade}</span>"
         )
         with col_yield:
+            st.markdown("<div class='badge-container'>", unsafe_allow_html=True)
             render_badge("Yield Score", y_html, y_bg, label_color=y_txt)
-            if st.button(" ", key="badge_yield"):
+            if st.button("🔍 Show Details", key="gy_details"):
                 st.session_state["view"] = "GY"
+            st.markdown("</div>", unsafe_allow_html=True)
 
-            # Handle missing history vs IPO
             if ys_score is None:
-                cutoff = date.today().replace(month=12, day=31, year=date.today().year-1)
+                cutoff = date.today().replace(month=12, day=31, year=date.today().year - 1)
                 if first_trade and first_trade > cutoff:
                     st.info(f"📈 First traded on {first_trade} — too new for historical yields.")
                 else:
                     st.warning("⛔ No historical yield data available for this ticker.")
 
+        # -----------------------------
         # BuyZone badge
+        # -----------------------------
         in_bz = bool(row.get("buyzone_flag", False))
         bz_bg = "#4CAF50" if in_bz else "#E0E0E0"
         bz_txt = "white" if in_bz else "black"
@@ -408,32 +424,46 @@ if ticker:
             f"<span style='font-size:12px;font-weight:600;line-height:1.1;color:{bz_txt};'>{sub}</span>"
         )
         with col_bz:
+            st.markdown("<div class='badge-container'>", unsafe_allow_html=True)
             render_badge("BuyZone", bz_html, bz_bg, label_color=bz_txt)
-            if st.button(" ", key="badge_bz"):
+            if st.button("🔍 Show Details", key="bz_details"):
                 st.session_state["view"] = "BZ"
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        # Fair Value Gap badge
+        # -----------------------------
+        # FVG badge
+        # -----------------------------
         fvg_dir = row.get("fvg_last_direction")
         fvg_date = pd.to_datetime(row.get("fvg_last_date")).strftime('%Y-%m-%d') if row.get('fvg_last_date') else "—"
-        fvg_bg = ("#4CAF50" if fvg_dir == "bullish" else "#F44336" if fvg_dir == "bearish" else "#90CAF9")
+        fvg_bg = "#4CAF50" if fvg_dir == "bullish" else "#F44336" if fvg_dir == "bearish" else "#90CAF9"
         fvg_txt = "white"
         fvg_html = (
             f"<span style='font-size:20px;font-weight:700;line-height:1.1;color:{fvg_txt};'>{(fvg_dir or 'No Gap').capitalize()}</span><br>"
             f"<span style='font-size:12px;font-weight:600;line-height:1.1;color:{fvg_txt};'>last {fvg_date}</span>"
         )
         with col_fvg:
+            st.markdown("<div class='badge-container'>", unsafe_allow_html=True)
             render_badge("Fair Value Gap", fvg_html, fvg_bg, label_color=fvg_txt)
-            if st.button(" ", key="badge_fvg"):
+            if st.button("🔍 Show Details", key="fvg_details"):
                 st.session_state["view"] = "FVG"
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        # Separator and detail view
-        st.markdown("---")
-        view = st.session_state.get("view", "GV")
-        if view == "GV":
-            render_gv_details(ticker, engine)
-        elif view == "GY":
-            render_yield_details(ticker, engine)
-        elif view == "BZ":
-            render_buyzone_details(ticker, engine)
-        elif view == "FVG":
-            render_fvg_details(ticker, engine)
+        # -----------------------------
+        # View logic from query param or session
+        # -----------------------------
+        query_view = st.query_params.get("view")
+        if query_view:
+            st.session_state["view"] = query_view
+
+        view = st.session_state.get("view")
+        if view:
+            st.markdown("---")
+            if view == "GV":
+                render_gv_details(ticker, engine)
+            elif view == "GY":
+                render_yield_details(ticker, engine)
+            elif view == "BZ":
+                render_buyzone_details(ticker, engine)
+            elif view == "FVG":
+                render_fvg_details(ticker, engine)
+

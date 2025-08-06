@@ -4,9 +4,10 @@ import argparse
 import pandas as pd
 import numpy as np
 from datetime import date
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 import os
 import logging
+from db import get_engine  # ✅ Centralized DB connection
 
 # ----------------------------------------------------------
 # Logging Setup
@@ -36,7 +37,7 @@ TODAY = date.today().isoformat()
 # ----------------------------------------------------------
 # DB connection
 # ----------------------------------------------------------
-engine = create_engine("postgresql://greer_user:@localhost:5432/yfinance_db")
+engine = get_engine()
 
 try:
     # ----------------------------------------------------------
@@ -94,8 +95,7 @@ try:
         FROM first_hit fh
         JOIN latest_price lp USING (ticker)
         ORDER BY pct_return DESC;
-    """
-    )
+    """)
 
     # ----------------------------------------------------------
     # Run and fetch
@@ -135,8 +135,7 @@ try:
             :days_held, :run_date
         )
         ON CONFLICT (ticker, run_date) DO NOTHING;
-    """
-    )
+    """)
 
     with engine.begin() as conn:
         for _, row in df.iterrows():

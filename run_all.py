@@ -5,7 +5,10 @@ Master orchestration script that triggers all build and analysis steps.
 import subprocess
 import logging
 import os
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+
+# Import shared DB connection
+from db import get_engine
 
 # Import Greer opportunity periods module
 from greer_opportunity_periods import (
@@ -61,7 +64,7 @@ for cmd in commands:
 print("\n🔄 Refreshing latest_company_snapshot …")
 logger.info("Refreshing materialized view: latest_company_snapshot")
 
-engine = create_engine("postgresql://greer_user:@localhost:5432/yfinance_db")
+engine = get_engine()
 try:
     with engine.begin() as conn:
         conn.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY latest_company_snapshot;"))
@@ -78,7 +81,6 @@ except Exception as e:
 print("\n📜 Rebuilding Greer opportunity periods …")
 logger.info("Rebuilding Greer opportunity periods")
 try:
-    # Refresh materialized view within the module if needed
     opp_refresh_mv()
     opp_rebuild_snapshot()
     opp_rebuild_periods()

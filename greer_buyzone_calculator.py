@@ -2,11 +2,12 @@
 
 import pandas as pd
 import numpy as np
-import psycopg2
-from sqlalchemy import create_engine
 import argparse
 import os
 import logging
+
+# Use shared DB access module
+from db import get_engine, get_psycopg_connection
 
 # ----------------------------------------------------------
 # Logging Setup
@@ -21,10 +22,9 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # ----------------------------------------------------------
-# Database Config
+# Shared DB Engine
 # ----------------------------------------------------------
-SQLALCHEMY_ENGINE = create_engine("postgresql://greer_user:@localhost:5432/yfinance_db")
-PSYCOPG2_CONN_STRING = "host=localhost dbname=yfinance_db user=greer_user port=5432"
+engine = get_engine()
 
 # ----------------------------------------------------------
 # Load price data
@@ -36,7 +36,7 @@ def load_price_data(ticker: str):
         WHERE ticker = '{ticker}'
         ORDER BY date ASC
     """
-    df = pd.read_sql(query, SQLALCHEMY_ENGINE)
+    df = pd.read_sql(query, engine)
     df['high'] = pd.to_numeric(df['high'], errors='coerce')
     df['low'] = pd.to_numeric(df['low'], errors='coerce')
     df['close'] = pd.to_numeric(df['close'], errors='coerce')
@@ -100,48 +100,43 @@ def calculate_buyzone(df: pd.DataFrame, aroon_length: int = 233):
 # ----------------------------------------------------------
 def save_to_db(ticker: str, df: pd.DataFrame):
     try:
-        conn = psycopg2.connect(PSYCOPG2_CONN_STRING)
-        cursor = conn.cursor()
-
-        for _, row in df.iterrows():
-            cursor.execute("""
-                INSERT INTO greer_buyzone_daily (
-                    ticker, date, close_price, high, low,
-                    aroon_upper, aroon_lower, midpoint,
-                    buyzone_start, buyzone_end, in_buyzone, in_sellzone
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (ticker, date) DO UPDATE SET
-                    close_price = EXCLUDED.close_price,
-                    high = EXCLUDED.high,
-                    low = EXCLUDED.low,
-                    aroon_upper = EXCLUDED.aroon_upper,
-                    aroon_lower = EXCLUDED.aroon_lower,
-                    midpoint = EXCLUDED.midpoint,
-                    buyzone_start = EXCLUDED.buyzone_start,
-                    buyzone_end = EXCLUDED.buyzone_end,
-                    in_buyzone = EXCLUDED.in_buyzone,
-                    in_sellzone = EXCLUDED.in_sellzone;
-            """, (
-                ticker,
-                row['date'],
-                row['close_price'],
-                row['high'],
-                row['low'],
-                row['aroon_upper'],
-                row['aroon_lower'],
-                row['midpoint'],
-                row['buyzone_start'],
-                row['buyzone_end'],
-                row['in_buyzone'],
-                row['in_sellzone']
-            ))
-
-        conn.commit()
+        with get_psycopg_connection() as conn:
+            with conn.cursor() as cursor:
+                for _, row in df.iterrows():
+                    cursor.execute("""
+                        INSERT INTO greer_buyzone_daily (
+                            ticker, date, close_price, high, low,
+                            aroon_upper, aroon_lower, midpoint,
+                            buyzone_start, buyzone_end, in_buyzone, in_sellzone
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (ticker, date) DO UPDATE SET
+                            close_price = EXCLUDED.close_price,
+                            high = EXCLUDED.high,
+                            low = EXCLUDED.low,
+                            aroon_upper = EXCLUDED.aroon_upper,
+                            aroon_lower = EXCLUDED.aroon_lower,
+                            midpoint = EXCLUDED.midpoint,
+                            buyzone_start = EXCLUDED.buyzone_start,
+                            buyzone_end = EXCLUDED.buyzone_end,
+                            in_buyzone = EXCLUDED.in_buyzone,
+                            in_sellzone = EXCLUDED.in_sellzone;
+                    """, (
+                        ticker,
+                        row['date'],
+                        row['close_price'],
+                        row['high'],
+                        row['low'],
+                        row['aroon_upper'],
+                        row['aroon_lower'],
+                        row['midpoint'],
+                        row['buyzone_start'],
+                        row['buyzone_end'],
+                        row['in_buyzone'],
+                        row['in_sellzone']
+                    ))
+            conn.commit()
     except Exception as e:
         logger.error(f"Error saving buyzone for {ticker}: {e}")
-    finally:
-        cursor.close()
-        conn.close()
 
 # ----------------------------------------------------------
 # Process a single ticker
@@ -168,9 +163,7 @@ def load_tickers_from_file(file_path):
     with open(file_path, "r") as f:
         return [line.strip().upper() for line in f if line.strip()]
 
-
 def load_tickers_from_db():
-    engine = create_engine("postgresql://greer_user@localhost:5432/yfinance_db")
     df = pd.read_sql("SELECT ticker FROM companies ORDER BY ticker", engine)
     return df["ticker"].dropna().str.upper().tolist()
 

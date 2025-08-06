@@ -23,6 +23,8 @@ A Python/SQL ETL and backtest suite for running Sean’s “Greer” scoring sys
 
 ## Data Base creation
 psql postgres://greer_user@localhost:5432/yfinance_db -f db/init_db.sql
+or
+psql -U greer_user -d yfinance_db -f init_db.sql
 
 ## Any Database changes make sure issue a new dump
 pg_dump \
