@@ -1,0 +1,564 @@
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 14.18 (Homebrew)
+-- Dumped by pg_dump version 14.18 (Homebrew)
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- Name: backtest_results; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.backtest_results (
+    ticker text NOT NULL,
+    entry_date date NOT NULL,
+    entry_close double precision NOT NULL,
+    last_date date NOT NULL,
+    last_close double precision NOT NULL,
+    pct_return double precision NOT NULL,
+    days_held integer NOT NULL,
+    run_date date NOT NULL
+);
+
+
+--
+-- Name: companies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.companies (
+    ticker text NOT NULL,
+    name text,
+    sector text,
+    industry text,
+    added_at timestamp without time zone DEFAULT now()
+);
+
+
+--
+-- Name: company_snapshot; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.company_snapshot (
+    snapshot_date timestamp without time zone NOT NULL,
+    ticker text NOT NULL,
+    greer_value_score numeric,
+    greer_yield_score integer,
+    buyzone_flag boolean,
+    fvg_last_direction text
+);
+
+
+--
+-- Name: fair_value_gaps; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fair_value_gaps (
+    id integer NOT NULL,
+    ticker text NOT NULL,
+    date date NOT NULL,
+    direction text NOT NULL,
+    gap_min numeric NOT NULL,
+    gap_max numeric NOT NULL,
+    mitigated boolean DEFAULT false NOT NULL,
+    CONSTRAINT fair_value_gaps_direction_check CHECK ((direction = ANY (ARRAY['bullish'::text, 'bearish'::text])))
+);
+
+
+--
+-- Name: fair_value_gaps_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.fair_value_gaps_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: fair_value_gaps_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.fair_value_gaps_id_seq OWNED BY public.fair_value_gaps.id;
+
+
+--
+-- Name: financials; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.financials (
+    id integer NOT NULL,
+    ticker text NOT NULL,
+    report_date date NOT NULL,
+    book_value_per_share double precision,
+    free_cash_flow double precision,
+    net_margin double precision,
+    total_revenue double precision,
+    net_income double precision,
+    shares_outstanding double precision
+);
+
+
+--
+-- Name: financials_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.financials_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: financials_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.financials_id_seq OWNED BY public.financials.id;
+
+
+--
+-- Name: greer_buyzone_daily; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.greer_buyzone_daily (
+    id integer NOT NULL,
+    ticker text NOT NULL,
+    date date NOT NULL,
+    high double precision,
+    low double precision,
+    aroon_upper double precision,
+    aroon_lower double precision,
+    midpoint double precision,
+    buyzone_start boolean,
+    buyzone_end boolean,
+    in_buyzone boolean,
+    in_sellzone boolean,
+    close_price numeric
+);
+
+
+--
+-- Name: greer_buyzone_daily_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.greer_buyzone_daily_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: greer_buyzone_daily_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.greer_buyzone_daily_id_seq OWNED BY public.greer_buyzone_daily.id;
+
+
+--
+-- Name: greer_opportunity_periods; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.greer_opportunity_periods (
+    ticker text NOT NULL,
+    entry_date date NOT NULL,
+    exit_date date NOT NULL
+);
+
+
+--
+-- Name: greer_scores; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.greer_scores (
+    id integer NOT NULL,
+    ticker text NOT NULL,
+    report_date date NOT NULL,
+    greer_score numeric,
+    above_50_count integer,
+    book_pct numeric,
+    fcf_pct numeric,
+    margin_pct numeric,
+    revenue_pct numeric,
+    income_pct numeric,
+    shares_pct numeric,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: greer_scores_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.greer_scores_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: greer_scores_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.greer_scores_id_seq OWNED BY public.greer_scores.id;
+
+
+--
+-- Name: greer_yield_daily; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.greer_yield_daily (
+    ticker text NOT NULL,
+    date date NOT NULL,
+    fiscal_year integer,
+    eps real,
+    fcf real,
+    revenue real,
+    book_value real,
+    close_price real,
+    eps_yield real,
+    fcf_yield real,
+    revenue_yield real,
+    book_yield real,
+    avg_eps_yield real,
+    avg_fcf_yield real,
+    avg_revenue_yield real,
+    avg_book_yield real,
+    tvpct real,
+    tvavg real,
+    tvavg_trend boolean,
+    score integer
+);
+
+
+--
+-- Name: greer_yields; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.greer_yields (
+    ticker text NOT NULL,
+    fiscal_year integer NOT NULL,
+    eps numeric,
+    fcf numeric,
+    revenue numeric,
+    shares_outstanding numeric,
+    book_value numeric,
+    close_price numeric,
+    eps_yield numeric,
+    fcf_yield numeric,
+    revenue_yield numeric,
+    book_yield numeric,
+    avg_eps_yield numeric,
+    avg_fcf_yield numeric,
+    avg_revenue_yield numeric,
+    avg_book_yield numeric,
+    tvpct numeric,
+    tvavg numeric,
+    tvavg_trend boolean,
+    score integer
+);
+
+
+--
+-- Name: greer_yields_daily; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.greer_yields_daily (
+    ticker text NOT NULL,
+    date date NOT NULL,
+    eps_yield double precision,
+    fcf_yield double precision,
+    revenue_yield double precision,
+    book_yield double precision,
+    avg_eps_yield double precision,
+    avg_fcf_yield double precision,
+    avg_revenue_yield double precision,
+    avg_book_yield double precision,
+    tvpct double precision,
+    tvavg double precision,
+    tvavg_trend boolean,
+    score integer
+);
+
+
+--
+-- Name: prices; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.prices (
+    ticker text NOT NULL,
+    date date NOT NULL,
+    close numeric NOT NULL,
+    high_price numeric,
+    low_price numeric
+);
+
+
+--
+-- Name: latest_company_snapshot; Type: MATERIALIZED VIEW; Schema: public; Owner: -
+--
+
+CREATE MATERIALIZED VIEW public.latest_company_snapshot AS
+ WITH universe AS (
+         SELECT DISTINCT greer_scores.ticker
+           FROM public.greer_scores
+        UNION
+         SELECT DISTINCT greer_yields_daily.ticker
+           FROM public.greer_yields_daily
+        UNION
+         SELECT DISTINCT greer_buyzone_daily.ticker
+           FROM public.greer_buyzone_daily
+        UNION
+         SELECT DISTINCT fair_value_gaps.ticker
+           FROM public.fair_value_gaps
+        )
+ SELECT u.ticker,
+    ( SELECT gs.greer_score
+           FROM public.greer_scores gs
+          WHERE (gs.ticker = u.ticker)
+          ORDER BY gs.report_date DESC
+         LIMIT 1) AS greer_value_score,
+    ( SELECT gs.above_50_count
+           FROM public.greer_scores gs
+          WHERE (gs.ticker = u.ticker)
+          ORDER BY gs.report_date DESC
+         LIMIT 1) AS above_50_count,
+    ( SELECT gyd.score
+           FROM public.greer_yields_daily gyd
+          WHERE (gyd.ticker = u.ticker)
+          ORDER BY gyd.date DESC
+         LIMIT 1) AS greer_yield_score,
+    ( SELECT gbd.in_buyzone
+           FROM public.greer_buyzone_daily gbd
+          WHERE (gbd.ticker = u.ticker)
+          ORDER BY gbd.date DESC
+         LIMIT 1) AS buyzone_flag,
+    ( SELECT gbd.date
+           FROM public.greer_buyzone_daily gbd
+          WHERE ((gbd.ticker = u.ticker) AND gbd.buyzone_start)
+          ORDER BY gbd.date DESC
+         LIMIT 1) AS bz_start_date,
+    ( SELECT gbd.date
+           FROM public.greer_buyzone_daily gbd
+          WHERE ((gbd.ticker = u.ticker) AND gbd.buyzone_end)
+          ORDER BY gbd.date DESC
+         LIMIT 1) AS bz_end_date,
+    ( SELECT fvg.date
+           FROM public.fair_value_gaps fvg
+          WHERE ((fvg.ticker = u.ticker) AND (fvg.mitigated = false))
+          ORDER BY fvg.date DESC
+         LIMIT 1) AS fvg_last_date,
+    ( SELECT fvg.direction
+           FROM public.fair_value_gaps fvg
+          WHERE ((fvg.ticker = u.ticker) AND (fvg.mitigated = false))
+          ORDER BY fvg.date DESC
+         LIMIT 1) AS fvg_last_direction,
+    ( SELECT min(p.date) AS min
+           FROM public.prices p
+          WHERE (p.ticker = u.ticker)) AS first_trade_date,
+    (( SELECT min(p.date) AS min
+           FROM public.prices p
+          WHERE (p.ticker = u.ticker)) > ((date_trunc('year'::text, (CURRENT_DATE)::timestamp with time zone))::date - '1 day'::interval)) AS is_new_company
+   FROM universe u
+  ORDER BY u.ticker
+  WITH NO DATA;
+
+
+--
+-- Name: fair_value_gaps id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fair_value_gaps ALTER COLUMN id SET DEFAULT nextval('public.fair_value_gaps_id_seq'::regclass);
+
+
+--
+-- Name: financials id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.financials ALTER COLUMN id SET DEFAULT nextval('public.financials_id_seq'::regclass);
+
+
+--
+-- Name: greer_buyzone_daily id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.greer_buyzone_daily ALTER COLUMN id SET DEFAULT nextval('public.greer_buyzone_daily_id_seq'::regclass);
+
+
+--
+-- Name: greer_scores id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.greer_scores ALTER COLUMN id SET DEFAULT nextval('public.greer_scores_id_seq'::regclass);
+
+
+--
+-- Name: backtest_results backtest_results_unique_ticker_run_date; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_results
+    ADD CONSTRAINT backtest_results_unique_ticker_run_date UNIQUE (ticker, run_date);
+
+
+--
+-- Name: companies companies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.companies
+    ADD CONSTRAINT companies_pkey PRIMARY KEY (ticker);
+
+
+--
+-- Name: company_snapshot company_snapshot_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.company_snapshot
+    ADD CONSTRAINT company_snapshot_pkey PRIMARY KEY (ticker, snapshot_date);
+
+
+--
+-- Name: fair_value_gaps fair_value_gaps_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fair_value_gaps
+    ADD CONSTRAINT fair_value_gaps_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: financials financials_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.financials
+    ADD CONSTRAINT financials_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: financials financials_ticker_report_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.financials
+    ADD CONSTRAINT financials_ticker_report_date_key UNIQUE (ticker, report_date);
+
+
+--
+-- Name: greer_buyzone_daily greer_buyzone_daily_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.greer_buyzone_daily
+    ADD CONSTRAINT greer_buyzone_daily_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: greer_opportunity_periods greer_opportunity_periods_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.greer_opportunity_periods
+    ADD CONSTRAINT greer_opportunity_periods_pkey PRIMARY KEY (ticker, entry_date);
+
+
+--
+-- Name: greer_scores greer_scores_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.greer_scores
+    ADD CONSTRAINT greer_scores_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: greer_scores greer_scores_ticker_report_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.greer_scores
+    ADD CONSTRAINT greer_scores_ticker_report_date_key UNIQUE (ticker, report_date);
+
+
+--
+-- Name: greer_yield_daily greer_yield_daily_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.greer_yield_daily
+    ADD CONSTRAINT greer_yield_daily_pkey PRIMARY KEY (ticker, date);
+
+
+--
+-- Name: greer_yields_daily greer_yields_daily_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.greer_yields_daily
+    ADD CONSTRAINT greer_yields_daily_pkey PRIMARY KEY (ticker, date);
+
+
+--
+-- Name: greer_yields greer_yields_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.greer_yields
+    ADD CONSTRAINT greer_yields_pkey PRIMARY KEY (ticker, fiscal_year);
+
+
+--
+-- Name: prices prices_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prices
+    ADD CONSTRAINT prices_pkey PRIMARY KEY (ticker, date);
+
+
+--
+-- Name: greer_buyzone_daily unique_ticker_date; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.greer_buyzone_daily
+    ADD CONSTRAINT unique_ticker_date UNIQUE (ticker, date);
+
+
+--
+-- Name: fair_value_gap_unique_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX fair_value_gap_unique_idx ON public.fair_value_gaps USING btree (ticker, date, direction, gap_min, gap_max);
+
+
+--
+-- Name: idx_unique_fvg; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_unique_fvg ON public.fair_value_gaps USING btree (ticker, date, direction, gap_min, gap_max);
+
+
+--
+-- Name: latest_company_snapshot_ticker_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX latest_company_snapshot_ticker_idx ON public.latest_company_snapshot USING btree (ticker);
+
+
+--
+-- PostgreSQL database dump complete
+--
+
