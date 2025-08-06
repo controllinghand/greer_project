@@ -21,3 +21,13 @@ A Python/SQL ETL and backtest suite for running Sean’s “Greer” scoring sys
    git clone git@github.com:<you>/greer_project.git
    cd greer_project
 
+## Data Base creation
+psql postgres://greer_user@localhost:5432/yfinance_db -f db/init_db.sql
+
+## Any Database changes make sure issue a new dump
+pg_dump \
+  --dbname=postgresql://greer_user@localhost:5432/yfinance_db \
+  --schema-only \
+  --no-owner \
+  --no-privileges \
+  > db/init_db.sql
