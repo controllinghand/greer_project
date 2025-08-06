@@ -1,5 +1,9 @@
+#Ignore the following below
 # Virtual environment
 venv/
+
+# Environents
+.env
 
 # Python bytecode
 __pycache__/
@@ -20,4 +24,10 @@ logs/
 # IDEs
 .vscode/
 .idea/
+
+# data
+data/
+
+# csv files
+*.csv
 
