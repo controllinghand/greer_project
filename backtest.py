@@ -7,7 +7,7 @@ from datetime import date
 from sqlalchemy import text
 import os
 import logging
-from db import get_engine  # ✅ Centralized DB connection
+from db import get_engine
 
 # ----------------------------------------------------------
 # Logging Setup
@@ -16,13 +16,13 @@ log_dir = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(log_dir, exist_ok=True)
 logging.basicConfig(
     filename=os.path.join(log_dir, "backtest.log"),
-    level=logging.ERROR,
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger()
 
 # ----------------------------------------------------------
-# CLI args
+# CLI Arguments
 # ----------------------------------------------------------
 parser = argparse.ArgumentParser(description="Back-test Greer Opportunity strategy")
 parser.add_argument("--since", help="Earliest entry date (YYYY-MM-DD)")
@@ -31,17 +31,16 @@ args = parser.parse_args()
 
 SINCE = date.fromisoformat(args.since) if args.since else date(1900, 1, 1)
 UNTIL = date.fromisoformat(args.until) if args.until else date.today()
-SINCE_STR, UNTIL_STR = SINCE.isoformat(), UNTIL.isoformat()
 TODAY = date.today().isoformat()
 
 # ----------------------------------------------------------
-# DB connection
+# DB Connection
 # ----------------------------------------------------------
 engine = get_engine()
 
 try:
     # ----------------------------------------------------------
-    # Core SQL
+    # Main Query
     # ----------------------------------------------------------
     SQL = text("""
         WITH daily AS (
@@ -98,38 +97,40 @@ try:
     """)
 
     # ----------------------------------------------------------
-    # Run and fetch
+    # Execute and Fetch
     # ----------------------------------------------------------
     with engine.begin() as conn:
-        df = pd.read_sql(SQL, conn, params={"since": SINCE_STR, "until": UNTIL_STR})
+        df = pd.read_sql(SQL, conn, params={"since": SINCE.isoformat(), "until": UNTIL.isoformat()})
 
     if df.empty:
-        print("No qualifying trades found.")
-        exit()
+        print("⚠️ No qualifying trades found.")
+        logger.info("No qualifying trades found.")
+        exit(0)
 
     # ----------------------------------------------------------
-    # Print output
+    # Print Results
     # ----------------------------------------------------------
     pd.set_option("display.max_rows", None)
     print(df)
 
-    print("\nSummary metrics")
-    print("================")
-    print(f"Count      : {len(df)}")
-    print(f"Win rate   : {(df['pct_return'] > 0).mean():.2%}")
-    print(f"Mean %     : {df['pct_return'].mean():.2f}")
-    print(f"Median %   : {df['pct_return'].median():.2f}")
-    print(f"Std dev %  : {df['pct_return'].std():.2f}")
+    print("\n📊 Summary metrics")
+    print("=========================")
+    print(f"Count       : {len(df)}")
+    print(f"Win rate    : {(df['pct_return'] > 0).mean():.2%}")
+    print(f"Mean %      : {df['pct_return'].mean():.2f}")
+    print(f"Median %    : {df['pct_return'].median():.2f}")
+    print(f"Std dev %   : {df['pct_return'].std():.2f}")
 
     # ----------------------------------------------------------
-    # Insert into database (with conflict handling)
+    # Insert Into DB (Ignore Duplicates)
     # ----------------------------------------------------------
     INSERT_SQL = text("""
         INSERT INTO backtest_results (
             ticker, entry_date, entry_close,
             last_date, last_close, pct_return,
             days_held, run_date
-        ) VALUES (
+        )
+        VALUES (
             :ticker, :entry_date, :entry_close,
             :last_date, :last_close, :pct_return,
             :days_held, :run_date
@@ -150,9 +151,9 @@ try:
                 "run_date": TODAY
             })
 
-    print(f"\n✅ {len(df)} backtest results processed and inserted (duplicates skipped).\n")
+    print(f"\n✅ {len(df)} backtest results inserted into DB (duplicates skipped).\n")
 
 except Exception as e:
-    logger.error(f"Error in backtest execution: {e}")
+    logger.error(f"❌ Backtest failed: {e}")
     print(f"❌ Backtest failed: {e}")
     exit(1)

@@ -1,21 +1,11 @@
 # run_all.py
 """
-Master orchestration script that triggers all build and analysis steps.
+Master orchestration script that triggers all ETL, snapshot, and analysis steps.
 """
+
 import subprocess
 import logging
 import os
-from sqlalchemy import text
-
-# Import shared DB connection
-from db import get_engine
-
-# Import Greer opportunity periods module
-from greer_opportunity_periods import (
-    refresh_mv as opp_refresh_mv,
-    rebuild_snapshot as opp_rebuild_snapshot,
-    rebuild_periods as opp_rebuild_periods
-)
 
 # ----------------------------------------------------------
 # Setup Logging
@@ -32,9 +22,9 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # ----------------------------------------------------------
-# Commands to run sequentially (default: load tickers from DB)
+# Core ETL Commands (Python-based)
 # ----------------------------------------------------------
-commands = [
+etl_commands = [
     ["python", "fetch_financials.py"],
     ["python", "price_loader.py"],
     ["python", "greer_value_score.py"],
@@ -44,9 +34,9 @@ commands = [
 ]
 
 # ----------------------------------------------------------
-# Run each ETL command
+# Run ETL Scripts
 # ----------------------------------------------------------
-for cmd in commands:
+for cmd in etl_commands:
     cmd_str = ' '.join(cmd)
     print(f"\n🚀 Running: {cmd_str}")
     logger.info(f"Running: {cmd_str}")
@@ -59,51 +49,40 @@ for cmd in commands:
         exit(result.returncode)
 
 # ----------------------------------------------------------
-# Refresh snapshot view
+# Run Snapshot Refresh Script
 # ----------------------------------------------------------
-print("\n🔄 Refreshing latest_company_snapshot …")
-logger.info("Refreshing materialized view: latest_company_snapshot")
-
-engine = get_engine()
-try:
-    with engine.begin() as conn:
-        conn.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY latest_company_snapshot;"))
-    print("✅ latest_company_snapshot refreshed")
-    logger.info("latest_company_snapshot refreshed")
-except Exception as e:
-    error_msg = f"⚠️ Could not refresh snapshot view: {e}"
-    print(error_msg)
-    logger.error(error_msg)
+print("\n🔄 Refreshing materialized view: latest_company_snapshot …")
+logger.info("Refreshing latest_company_snapshot")
+snapshot_result = subprocess.run(["python", "refresh_snapshot.py"])
+if snapshot_result.returncode != 0:
+    print("❌ Failed to refresh snapshot view")
+    logger.error("Failed to refresh snapshot view")
+    exit(snapshot_result.returncode)
+print("✅ Snapshot view refreshed")
+logger.info("Snapshot view refresh successful")
 
 # ----------------------------------------------------------
-# Rebuild Greer Opportunity Periods
+# Run Opportunity Periods Script
 # ----------------------------------------------------------
 print("\n📜 Rebuilding Greer opportunity periods …")
-logger.info("Rebuilding Greer opportunity periods")
-try:
-    opp_refresh_mv()
-    opp_rebuild_snapshot()
-    opp_rebuild_periods()
-    print("✅ greer_opportunity_periods complete")
-    logger.info("greer_opportunity_periods complete")
-except Exception as e:
-    error_msg = f"❌ Error in greer_opportunity_periods: {e}"
-    print(error_msg)
-    logger.error(error_msg)
-    exit(1)
+logger.info("Running run_opportunities.py")
+opp_result = subprocess.run(["python", "run_opportunities.py"])
+if opp_result.returncode != 0:
+    print("❌ Failed to rebuild opportunity periods")
+    logger.error("Failed to rebuild opportunity periods")
+    exit(opp_result.returncode)
+print("✅ Opportunity periods rebuilt")
+logger.info("Opportunity periods rebuild successful")
 
 # ----------------------------------------------------------
-# Run backtest
+# Run Backtest Script
 # ----------------------------------------------------------
 print("\n📈 Running backtest.py …")
 logger.info("Running backtest.py")
-
-result = subprocess.run(["python", "backtest.py"])
-if result.returncode != 0:
-    error_msg = "❌ Error while running backtest.py — aborting"
-    print(error_msg)
-    logger.error(error_msg)
-    exit(result.returncode)
-
-print("✅ Backtest complete")
+backtest_result = subprocess.run(["python", "backtest.py"])
+if backtest_result.returncode != 0:
+    print("❌ Failed to run backtest")
+    logger.error("Failed to run backtest")
+    exit(backtest_result.returncode)
+print("✅ Backtest completed")
 logger.info("Backtest completed successfully")

@@ -2,6 +2,9 @@
 # Virtual environment
 venv/
 
+# GOOD Files just for backup
+GOOD/
+
 # Environents
 .env
 

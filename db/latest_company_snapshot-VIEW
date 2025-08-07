@@ -1,0 +1,83 @@
+yfinance_db=> \d+ latest_company_snapshot
+                                 Materialized view "public.latest_company_snapshot"
+       Column       |  Type   | Collation | Nullable | Default | Storage  | Compression | Stats target | Description
+--------------------+---------+-----------+----------+---------+----------+-------------+--------------+-------------
+ ticker             | text    |           |          |         | extended |             |              |
+ greer_value_score  | numeric |           |          |         | main     |             |              |
+ above_50_count     | integer |           |          |         | plain    |             |              |
+ greer_yield_score  | integer |           |          |         | plain    |             |              |
+ buyzone_flag       | boolean |           |          |         | plain    |             |              |
+ bz_start_date      | date    |           |          |         | plain    |             |              |
+ bz_end_date        | date    |           |          |         | plain    |             |              |
+ fvg_last_date      | date    |           |          |         | plain    |             |              |
+ fvg_last_direction | text    |           |          |         | extended |             |              |
+ first_trade_date   | date    |           |          |         | plain    |             |              |
+ is_new_company     | boolean |           |          |         | plain    |             |              |
+Indexes:
+    "latest_company_snapshot_ticker_idx" UNIQUE, btree (ticker)
+View definition:
+ WITH universe AS (
+         SELECT DISTINCT greer_scores.ticker
+           FROM greer_scores
+        UNION
+         SELECT DISTINCT greer_yields_daily.ticker
+           FROM greer_yields_daily
+        UNION
+         SELECT DISTINCT greer_buyzone_daily.ticker
+           FROM greer_buyzone_daily
+        UNION
+         SELECT DISTINCT fair_value_gaps.ticker
+           FROM fair_value_gaps
+        )
+ SELECT u.ticker,
+    ( SELECT gs.greer_score
+           FROM greer_scores gs
+          WHERE gs.ticker = u.ticker
+          ORDER BY gs.report_date DESC
+         LIMIT 1) AS greer_value_score,
+    ( SELECT gs.above_50_count
+           FROM greer_scores gs
+          WHERE gs.ticker = u.ticker
+          ORDER BY gs.report_date DESC
+         LIMIT 1) AS above_50_count,
+    ( SELECT gyd.score
+           FROM greer_yields_daily gyd
+          WHERE gyd.ticker = u.ticker
+          ORDER BY gyd.date DESC
+         LIMIT 1) AS greer_yield_score,
+    ( SELECT gbd.in_buyzone
+           FROM greer_buyzone_daily gbd
+          WHERE gbd.ticker = u.ticker
+          ORDER BY gbd.date DESC
+         LIMIT 1) AS buyzone_flag,
+    ( SELECT gbd.date
+           FROM greer_buyzone_daily gbd
+          WHERE gbd.ticker = u.ticker AND gbd.buyzone_start
+          ORDER BY gbd.date DESC
+         LIMIT 1) AS bz_start_date,
+    ( SELECT gbd.date
+           FROM greer_buyzone_daily gbd
+          WHERE gbd.ticker = u.ticker AND gbd.buyzone_end
+          ORDER BY gbd.date DESC
+         LIMIT 1) AS bz_end_date,
+    ( SELECT fvg.date
+           FROM fair_value_gaps fvg
+          WHERE fvg.ticker = u.ticker AND fvg.mitigated = false
+          ORDER BY fvg.date DESC
+         LIMIT 1) AS fvg_last_date,
+    ( SELECT fvg.direction
+           FROM fair_value_gaps fvg
+          WHERE fvg.ticker = u.ticker AND fvg.mitigated = false
+          ORDER BY fvg.date DESC
+         LIMIT 1) AS fvg_last_direction,
+    ( SELECT min(p.date) AS min
+           FROM prices p
+          WHERE p.ticker = u.ticker) AS first_trade_date,
+    (( SELECT min(p.date) AS min
+           FROM prices p
+          WHERE p.ticker = u.ticker)) > (date_trunc('year'::text, CURRENT_DATE::timestamp with time zone)::date - '1 day'::interval) AS is_new_company
+   FROM universe u
+  ORDER BY u.ticker;
+Access method: heap
+
+yfinance_db=>
