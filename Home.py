@@ -1,3 +1,18 @@
+# ----------------------------------------------------------
+# Quick DB connection test (DEBUG ONLY)
+# ----------------------------------------------------------
+from db import get_engine
+import pandas as pd
+import streamlit as st
+
+try:
+    engine = get_engine()
+    df_test = pd.read_sql("SELECT ticker FROM companies LIMIT 5;", engine)
+    st.success("✅ DB Connection Successful")
+    st.write("Sample tickers from DB:", df_test["ticker"].tolist())
+except Exception as e:
+    st.error(f"❌ DB Connection Failed: {e}")
+
 # Home.py
 import streamlit as st
 import pandas as pd
