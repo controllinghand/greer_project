@@ -6,6 +6,7 @@ import pandas as pd
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy import text
+from datetime import datetime, timedelta
 import logging
 
 # Import shared DB connections
@@ -24,36 +25,64 @@ logger = logging.getLogger()
 # Initialize DB Connection
 engine = get_engine()
 
-# Valid US exchanges
-VALID_EXCHANGES = {'NYQ', 'NMS', 'NGM', 'NCM'}  # NYSE, NASDAQ (all markets)
+# Valid US exchanges and invalid tickers
+VALID_EXCHANGES = {'NYQ', 'NMS', 'NGM', 'NCM'}  # NYSE, NASDAQ
+INVALID_TICKERS = {'AMRZ', 'B', 'LTM', 'NBIS', 'SAML', 'TBB'}
+
+# Function: Check if ticker is stale (no price updates for 7 days)
+def is_ticker_stale(ticker):
+    query = text("""
+        SELECT MAX(date) AS last_price_date
+        FROM prices
+        WHERE ticker = :ticker
+    """)
+    with engine.connect() as conn:
+        result = conn.execute(query, {'ticker': ticker}).fetchone()
+        last_price_date = result[0] if result else None
+        if not last_price_date:
+            return True, None  # No prices, consider stale
+        is_stale = (datetime.now().date() - last_price_date).days >= 7
+        return is_stale, last_price_date
+
+# Function: Remove foreign ticker from all tables
+def remove_foreign_ticker(ticker: str):
+    tables = ['companies', 'prices', 'financials', 'greer_buyzone_daily', 'fair_value_gaps', 'greer_opportunity_periods']
+    for table in tables:
+        query = text(f"DELETE FROM {table} WHERE ticker = :ticker")
+        with engine.connect() as conn:
+            conn.execute(query, {'ticker': ticker})
+            conn.commit()
+    print(f"Removed foreign ticker {ticker} from all tables.")
+    logger.info(f"Removed foreign ticker {ticker} from all tables.")
 
 # Function: Fetch company info for a ticker using yfinance
 def fetch_company_info(ticker: str, retries: int = 3, delay: int = 2):
+    # Check if ticker is stale
+    is_stale, last_price_date = is_ticker_stale(ticker)
+    if is_stale:
+        return {
+            'ticker': ticker,
+            'name': '',
+            'sector': '',
+            'industry': '',
+            'exchange': '',
+            'delisted': True,
+            'delisted_date': last_price_date or datetime.now().date()
+        }
+
     for attempt in range(retries):
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
             if not info or 'longName' not in info:
-                history = stock.history(period="1d", start="2025-01-01")
-                if history.empty:
-                    raise ValueError("No data available, likely delisted")
-                last_date = history.index[-1].date()
-                return {
-                    'ticker': ticker,
-                    'name': '',
-                    'sector': '',
-                    'industry': '',
-                    'exchange': '',
-                    'delisted': True,
-                    'delisted_date': last_date
-                }
+                raise ValueError("No info available")
 
             name = info.get('longName', '')
             sector = info.get('sector', '')
             industry = info.get('industry', '')
             exchange = info.get('exchange', '')
 
-            if exchange in VALID_EXCHANGES or not (name or sector or industry):
+            if exchange in VALID_EXCHANGES:
                 return {
                     'ticker': ticker,
                     'name': name,
@@ -63,11 +92,25 @@ def fetch_company_info(ticker: str, retries: int = 3, delay: int = 2):
                     'delisted': False,
                     'delisted_date': None
                 }
+            # Remove foreign exchange tickers
+            remove_foreign_ticker(ticker)
             raise ValueError(f"Non-US exchange: {exchange}")
         except Exception as e:
             logger.error(f"Error fetching info for {ticker} (Attempt {attempt + 1}): {e}")
             if attempt < retries - 1:
                 time.sleep(delay)
+    # If all retries fail, mark as delisted if stale
+    is_stale, last_price_date = is_ticker_stale(ticker)
+    if is_stale:
+        return {
+            'ticker': ticker,
+            'name': '',
+            'sector': '',
+            'industry': '',
+            'exchange': '',
+            'delisted': True,
+            'delisted_date': last_price_date or datetime.now().date()
+        }
     logger.error(f"Failed to fetch info for {ticker}")
     return None
 
@@ -78,7 +121,7 @@ def load_tickers(file_path=None):
         df = pd.read_csv(file_path)
         tickers = df["ticker"].dropna().str.upper().unique().tolist()
     else:
-        print("🗃️ Loading tickers from companies table where name/sector/industry/exchange are empty or NULL...")
+        print("🗃️ Loading tickers from companies table...")
         query = text("""
             SELECT ticker
             FROM companies
@@ -86,11 +129,13 @@ def load_tickers(file_path=None):
                OR sector IS NULL OR sector = ''
                OR industry IS NULL OR industry = ''
                OR exchange IS NULL OR exchange = ''
+               OR delisted IS NULL OR delisted = FALSE
             ORDER BY ticker
         """)
         with engine.connect() as conn:
             df = pd.read_sql(query, conn)
         tickers = df["ticker"].tolist()
+    tickers = [t for t in tickers if t not in INVALID_TICKERS]
     return tickers
 
 # Function: Process tickers in parallel

@@ -25,6 +25,7 @@ logger = logging.getLogger()
 # Core ETL Commands (Python-based)
 # ----------------------------------------------------------
 etl_commands = [
+    ["python", "fetch_company_info.py"],
     ["python", "fetch_financials.py"],
     ["python", "price_loader.py"],
     ["python", "greer_value_score.py"],

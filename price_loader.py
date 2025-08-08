@@ -8,26 +8,20 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy import text
 
-# ----------------------------------------------------------
 # Import shared DB connection functions
-# ----------------------------------------------------------
 from db import get_engine, get_psycopg_connection
 
-# ----------------------------------------------------------
 # Logging Setup
-# ----------------------------------------------------------
 log_dir = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(log_dir, exist_ok=True)
 logging.basicConfig(
     filename=os.path.join(log_dir, "price_loader.log"),
-    level=logging.INFO,  # Changed to INFO for progress logging
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger()
 
-# ----------------------------------------------------------
 # Get latest dates for all tickers in one query
-# ----------------------------------------------------------
 def get_latest_dates():
     engine = get_engine()
     query = text("SELECT ticker, MAX(date) AS latest_date FROM prices GROUP BY ticker")
@@ -35,14 +29,23 @@ def get_latest_dates():
         df = pd.read_sql(query, conn)
     return dict(zip(df['ticker'], df['latest_date']))
 
-# ----------------------------------------------------------
 # Fetch and collect price data for a ticker (for parallel execution)
-# ----------------------------------------------------------
 def fetch_prices_for_ticker(ticker, start_date="2010-01-01", force_reload=False, latest_dates=None):
+    # Check delisting status
+    engine = get_engine()
+    query = text("SELECT delisted, delisted_date FROM companies WHERE ticker = :ticker")
+    with engine.connect() as conn:
+        result = conn.execute(query, {'ticker': ticker}).fetchone()
+        if result and result[0]:  # delisted = TRUE
+            delisted_date = result[1] or datetime.now().date()
+            logger.info(f"⚠️ Skipping {ticker}: delisted on {delisted_date}")
+            print(f"⚠️ Skipping {ticker}: delisted on {delisted_date}")
+            return ticker, None, None
+
     try:
         if force_reload:
             logger.info(f"♻️ Forcing full reload of {ticker} from {start_date}")
-            return ticker, yf.download(ticker, start=start_date, auto_adjust=False), None  # Will delete later in batch
+            return ticker, yf.download(ticker, start=start_date, auto_adjust=False), None
 
         latest_date = latest_dates.get(ticker)
         if latest_date:
@@ -57,14 +60,16 @@ def fetch_prices_for_ticker(ticker, start_date="2010-01-01", force_reload=False,
             logger.warning(f"⚠️ No data found for {ticker}")
             return ticker, None, None
 
+        # Filter out post-delisting data (if delisted_date exists)
+        if result and result[1]:
+            data = data[data.index.date <= result[1]]
+
         return ticker, data, force_reload
     except Exception as e:
         logger.error(f"Error fetching prices for {ticker}: {e}")
         return ticker, None, None
 
-# ----------------------------------------------------------
 # Bulk insert prices with ON CONFLICT
-# ----------------------------------------------------------
 def bulk_insert_prices(prices_list):
     if not prices_list:
         return
@@ -82,9 +87,7 @@ def bulk_insert_prices(prices_list):
         conn.execute(query, prices_list)
         conn.commit()
 
-# ----------------------------------------------------------
 # Load tickers from file, CLI list, or fallback to DB
-# ----------------------------------------------------------
 def load_tickers(args):
     if args.file:
         print(f"📄 Loading tickers from file: {args.file}")
@@ -94,14 +97,13 @@ def load_tickers(args):
         print(f"📥 Loading tickers from command line: {args.tickers}")
         return [t.upper() for t in args.tickers]
     else:
-        print("🗃️  Loading tickers from companies table...")
+        print("🗃️ Loading tickers from companies table...")
         engine = get_engine()
+        query = text("SELECT ticker FROM companies WHERE delisted = FALSE OR delisted IS NULL ORDER BY ticker")
         with engine.connect() as conn:
-            return pd.read_sql("SELECT ticker FROM companies ORDER BY ticker", conn)["ticker"].tolist()
+            return pd.read_sql(query, conn)["ticker"].tolist()
 
-# ----------------------------------------------------------
 # Main execution block
-# ----------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fetch and store historical prices.")
     parser.add_argument("--tickers", nargs="+", help="List of tickers (e.g. AAPL MSFT GOOGL)")
@@ -128,7 +130,7 @@ if __name__ == "__main__":
         for future in as_completed(future_to_ticker):
             ticker = future_to_ticker[future]
             try:
-                _, data, force_reload = future.result()
+                ticker, data, force_reload = future.result()
                 if data is None:
                     continue
 
