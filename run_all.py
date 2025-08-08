@@ -75,6 +75,32 @@ print("✅ Opportunity periods rebuilt")
 logger.info("Opportunity periods rebuild successful")
 
 # ----------------------------------------------------------
+# Run Update Greer Opportunities Script
+# ----------------------------------------------------------
+print("\n📜 Updating Greer opportunity periods …")
+logger.info("Running update_greer_opportunities.py")
+update_opp_result = subprocess.run(["python", "update_greer_opportunities.py"])
+if update_opp_result.returncode != 0:
+    print("❌ Failed to update opportunity periods")
+    logger.error("Failed to update opportunity periods")
+    exit(update_opp_result.returncode)
+print("✅ Opportunity periods updated")
+logger.info("Opportunity periods update successful")
+
+# ----------------------------------------------------------
+# Run Create Greer Opportunities Snapshot Script
+# ----------------------------------------------------------
+print("\n🔄 Creating/Refreshing Greer opportunities snapshot …")
+logger.info("Running create_greer_opportunities_snapshot.py")
+create_snapshot_result = subprocess.run(["python", "create_greer_opportunities_snapshot.py"])
+if create_snapshot_result.returncode != 0:
+    print("❌ Failed to create/refresh opportunities snapshot")
+    logger.error("Failed to create/refresh opportunities snapshot")
+    exit(create_snapshot_result.returncode)
+print("✅ Opportunities snapshot created/refreshed")
+logger.info("Opportunities snapshot create/refresh successful")
+
+# ----------------------------------------------------------
 # Run Backtest Script
 # ----------------------------------------------------------
 print("\n📈 Running backtest.py …")

@@ -1,11 +1,12 @@
 # price_loader.py
-
 import yfinance as yf
 import argparse
 import pandas as pd
 from datetime import datetime, timedelta
 import os
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from sqlalchemy import text
 
 # ----------------------------------------------------------
 # Import shared DB connection functions
@@ -19,84 +20,67 @@ log_dir = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(log_dir, exist_ok=True)
 logging.basicConfig(
     filename=os.path.join(log_dir, "price_loader.log"),
-    level=logging.ERROR,
+    level=logging.INFO,  # Changed to INFO for progress logging
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger()
 
 # ----------------------------------------------------------
-# Get the latest stored date for a ticker
+# Get latest dates for all tickers in one query
 # ----------------------------------------------------------
-def get_latest_date(ticker):
-    try:
-        with get_psycopg_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT MAX(date) FROM prices WHERE ticker = %s;", (ticker,))
-                result = cur.fetchone()
-                return result[0]  # None if no data exists
-    except Exception as e:
-        logger.error(f"Error getting latest date for {ticker}: {e}")
-        return None
+def get_latest_dates():
+    engine = get_engine()
+    query = text("SELECT ticker, MAX(date) AS latest_date FROM prices GROUP BY ticker")
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn)
+    return dict(zip(df['ticker'], df['latest_date']))
 
 # ----------------------------------------------------------
-# Insert a price row (close, high, low) into the database
+# Fetch and collect price data for a ticker (for parallel execution)
 # ----------------------------------------------------------
-def insert_price(ticker, date, close, high, low):
-    try:
-        with get_psycopg_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO prices (ticker, date, close, high_price, low_price)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (ticker, date) DO UPDATE
-                    SET close = EXCLUDED.close,
-                        high_price = EXCLUDED.high_price,
-                        low_price = EXCLUDED.low_price;
-                """, (ticker, date, close, high, low))
-        print(f"Inserting: {ticker} | {date} | C: {close} | H: {high} | L: {low}")
-    except Exception as e:
-        logger.error(f"Error inserting price for {ticker} on {date}: {e}")
-
-# ----------------------------------------------------------
-# Fetch and store historical price data
-# ----------------------------------------------------------
-def fetch_and_store_prices(ticker, start_date="2010-01-01", force_reload=False):
+def fetch_prices_for_ticker(ticker, start_date="2010-01-01", force_reload=False, latest_dates=None):
     try:
         if force_reload:
-            print(f"♻️ Forcing full reload of {ticker} from {start_date}")
-            with get_psycopg_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("DELETE FROM prices WHERE ticker = %s;", (ticker,))
+            logger.info(f"♻️ Forcing full reload of {ticker} from {start_date}")
+            return ticker, yf.download(ticker, start=start_date, auto_adjust=False), None  # Will delete later in batch
+
+        latest_date = latest_dates.get(ticker)
+        if latest_date:
+            start_date = (latest_date + timedelta(days=1)).isoformat()
+            logger.info(f"📅 Resuming {ticker} from {start_date}")
         else:
-            latest_date = get_latest_date(ticker)
-            if latest_date:
-                start_date = (latest_date + timedelta(days=1)).isoformat()
-                print(f"📅 Resuming {ticker} from {start_date}")
-            else:
-                print(f"📥 Fetching {ticker} from scratch since {start_date}")
+            logger.info(f"📥 Fetching {ticker} from scratch since {start_date}")
 
         data = yf.download(ticker, start=start_date, auto_adjust=False)
 
         if data.empty:
-            print(f"⚠️ No data found for {ticker}")
-            return
+            logger.warning(f"⚠️ No data found for {ticker}")
+            return ticker, None, None
 
-        for date, row in data.iterrows():
-            date_str = date.date() if isinstance(date, datetime) else date
-            try:
-                close_price = float(row['Close'].item() if hasattr(row['Close'], "item") else row['Close'])
-                high_price = float(row['High'].item() if hasattr(row['High'], "item") else row['High'])
-                low_price = float(row['Low'].item() if hasattr(row['Low'], "item") else row['Low'])
-
-                insert_price(ticker, date_str, close_price, high_price, low_price)
-            except Exception as e:
-                print(f"⚠️ Skipping insert for {ticker} on {date_str} due to error: {e}")
-                logger.error(f"Skipping insert for {ticker} on {date_str}: {e}")
-
-        print(f"✅ Done storing {ticker} closing prices.")
-
+        return ticker, data, force_reload
     except Exception as e:
         logger.error(f"Error fetching prices for {ticker}: {e}")
+        return ticker, None, None
+
+# ----------------------------------------------------------
+# Bulk insert prices with ON CONFLICT
+# ----------------------------------------------------------
+def bulk_insert_prices(prices_list):
+    if not prices_list:
+        return
+
+    engine = get_engine()
+    query = text("""
+        INSERT INTO prices (ticker, date, close, high_price, low_price)
+        VALUES (:ticker, :date, :close, :high, :low)
+        ON CONFLICT (ticker, date) DO UPDATE
+        SET close = EXCLUDED.close,
+            high_price = EXCLUDED.high_price,
+            low_price = EXCLUDED.low_price;
+    """)
+    with engine.connect() as conn:
+        conn.execute(query, prices_list)
+        conn.commit()
 
 # ----------------------------------------------------------
 # Load tickers from file, CLI list, or fallback to DB
@@ -112,7 +96,7 @@ def load_tickers(args):
     else:
         print("🗃️  Loading tickers from companies table...")
         engine = get_engine()
-        with engine.begin() as conn:
+        with engine.connect() as conn:
             return pd.read_sql("SELECT ticker FROM companies ORDER BY ticker", conn)["ticker"].tolist()
 
 # ----------------------------------------------------------
@@ -124,15 +108,65 @@ if __name__ == "__main__":
     parser.add_argument("--file", type=str, help="Path to file with tickers (one per line)")
     parser.add_argument("--start", type=str, default="2010-01-01", help="Start date in YYYY-MM-DD format")
     parser.add_argument("--reload", action="store_true", help="Force full reload from start date")
+    parser.add_argument("--max_workers", type=int, default=10, help="Max concurrent workers for parallel processing")
     args = parser.parse_args()
 
     tickers = load_tickers(args)
     print(f"✅ Loaded {len(tickers)} tickers")
 
-    for ticker in tickers:
-        print(f"\n📊 Processing {ticker}...")
-        fetch_and_store_prices(
-            ticker=ticker,
-            start_date=args.start,
-            force_reload=args.reload
-        )
+    # Get latest dates in one query
+    latest_dates = get_latest_dates()
+
+    # Parallel fetch
+    prices_to_insert = []
+    reload_tickers = []
+    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+        future_to_ticker = {
+            executor.submit(fetch_prices_for_ticker, ticker, args.start, args.reload, latest_dates): ticker
+            for ticker in tickers
+        }
+        for future in as_completed(future_to_ticker):
+            ticker = future_to_ticker[future]
+            try:
+                _, data, force_reload = future.result()
+                if data is None:
+                    continue
+
+                if force_reload:
+                    reload_tickers.append(ticker)
+
+                for date, row in data.iterrows():
+                    date_str = date.date()
+                    try:
+                        close_price = float(row['Close'])
+                        high_price = float(row['High'])
+                        low_price = float(row['Low'])
+                        prices_to_insert.append({
+                            'ticker': ticker,
+                            'date': date_str,
+                            'close': close_price,
+                            'high': high_price,
+                            'low': low_price
+                        })
+                    except Exception as e:
+                        logger.error(f"Skipping insert for {ticker} on {date_str}: {e}")
+
+            except Exception as e:
+                logger.error(f"Error processing {ticker}: {e}")
+
+    # Batch delete for reload tickers
+    if reload_tickers:
+        engine = get_engine()
+        delete_query = text("DELETE FROM prices WHERE ticker = :ticker")
+        with engine.connect() as conn:
+            for ticker in reload_tickers:
+                conn.execute(delete_query, {'ticker': ticker})
+            conn.commit()
+        print(f"♻️ Deleted old prices for {len(reload_tickers)} reloaded tickers")
+
+    # Bulk insert all collected prices
+    if prices_to_insert:
+        bulk_insert_prices(prices_to_insert)
+        print(f"✅ Inserted/updated {len(prices_to_insert)} price rows")
+
+    print("✅ All tickers processed")
