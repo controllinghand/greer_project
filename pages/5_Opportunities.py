@@ -8,33 +8,40 @@ from db import get_engine  # ✅ Centralized DB connection
 """
 Greer Value Opportunities Page
 ---------------------------------
-**Source:** `latest_company_snapshot` materialized view  
+**Source:** `latest_company_snapshot` materialized view & `fair_value_gaps` table  
 **Criteria:**
 1. Greer Value Score ≥ 50  
 2. Yield Score ≥ 3  
 3. Currently *in* the Buy‑Zone (`buyzone_flag` = TRUE)  
 4. Latest Fair‑Value‑Gap direction = **bullish**  
 
-Now also surfaces each ticker’s most recent opportunity entry date (from `greer_opportunity_periods`).
+Surfaces each ticker’s most recent un‑mitigated bullish gap date.
 """
 
 st.set_page_config(page_title="Greer Value Opportunities", layout="wide")
 
 # ----------------------------------------------------------
-# Load filtered tickers + entry date
+# Load filtered tickers + last un-mitigated bullish gap date
 # ----------------------------------------------------------
 @st.cache_data(ttl=3600)
 def load_filtered_companies():
     engine = get_engine()
     query = text(
         """
-        WITH current_ops AS (
-            SELECT
-              ticker,
-              MAX(entry_date) AS last_entry_date
-            FROM public.greer_opportunity_periods
-            WHERE exit_date >= (CURRENT_DATE - INTERVAL '1 day')
-            GROUP BY ticker
+        WITH live_bull_gaps AS (
+          SELECT
+            ticker,
+            date AS entry_date
+          FROM public.fair_value_gaps
+          WHERE direction = 'bullish'
+            AND mitigated = false
+        ),
+        last_entry AS (
+          SELECT
+            ticker,
+            MAX(entry_date) AS last_entry_date
+          FROM live_bull_gaps
+          GROUP BY ticker
         )
         SELECT
           l.ticker,
@@ -42,15 +49,15 @@ def load_filtered_companies():
           l.greer_yield_score  AS yield_score,
           l.buyzone_flag,
           l.fvg_last_direction,
-          o.last_entry_date
-        FROM latest_company_snapshot AS l
-        JOIN current_ops AS o
-          ON l.ticker = o.ticker
-        WHERE l.greer_value_score  >= 50
+          le.last_entry_date
+        FROM last_entry le
+        JOIN latest_company_snapshot l
+          ON l.ticker = le.ticker
+        WHERE l.greer_value_score >= 50
           AND l.greer_yield_score >= 3
-          AND l.buyzone_flag IS TRUE
+          AND l.buyzone_flag = TRUE
           AND l.fvg_last_direction = 'bullish'
-        ORDER BY l.greer_value_score DESC;
+        ORDER BY le.last_entry_date DESC;
         """
     )
     return pd.read_sql(query, engine)
@@ -77,7 +84,6 @@ def main():
     df['last_entry_date'] = pd.to_datetime(df['last_entry_date']).dt.date
 
     st.subheader(f"📈 {len(df)} matching companies")
-
     if df.empty:
         st.info("No companies currently meet all conditions.")
         return
