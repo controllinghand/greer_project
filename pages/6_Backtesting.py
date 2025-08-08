@@ -1,13 +1,14 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine
+from db import get_engine  # ✅ Centralized DB connection
 
 # ----------------------------------------------------------
 # Database connection
 # ----------------------------------------------------------
 @st.cache_resource
 def get_connection():
-    engine = create_engine("postgresql://greer_user:@localhost:5432/yfinance_db")
+    engine = get_engine()
     return engine
 
 # ----------------------------------------------------------
