@@ -3,7 +3,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from datetime import date
+from datetime import date, datetime
+from sqlalchemy import text
 from db import get_engine  # ✅ Centralized DB connection
 
 # ----------------------------------------------------------
@@ -44,16 +45,13 @@ st.markdown("""
         cursor: pointer;
     }
 </style>
-
 """, unsafe_allow_html=True)
-
 
 # ----------------------------------------------------------
 # Database Connection (Render-Compatible)
 # ----------------------------------------------------------
-
-@st.cache_data
-def fetch_first_trade_date(ticker: str):
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def fetch_first_trade_date(ticker: str, _cache_buster=None):
     engine = get_engine()
     df = pd.read_sql(
         "SELECT MIN(date) AS first_date FROM prices WHERE ticker = %(t)s;",
@@ -63,6 +61,15 @@ def fetch_first_trade_date(ticker: str):
     if df.empty or pd.isna(df.first_date.iloc[0]):
         return None
     return pd.to_datetime(df.first_date.iloc[0]).date()
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_latest_snapshot(ticker: str, _cache_buster=None):
+    engine = get_engine()
+    return pd.read_sql(
+        "SELECT * FROM latest_company_snapshot WHERE ticker = %(t)s LIMIT 1;",
+        engine,
+        params={"t": ticker}
+    )
 
 # ----------------------------------------------------------
 # Helper Functions: Classifiers and Badge Renderer
@@ -98,13 +105,6 @@ def render_badge(label, html_value, background, label_color="black"):
         unsafe_allow_html=True
     )
 
-def get_latest_snapshot(ticker, engine):
-    return pd.read_sql(
-        "SELECT * FROM latest_company_snapshot WHERE ticker = %(t)s LIMIT 1;",
-        engine,
-        params={"t": ticker}
-    )
-
 # ----------------------------------------------------------
 # Detail Renderers
 # ----------------------------------------------------------
@@ -112,10 +112,10 @@ def render_gv_details(ticker, engine):
     df = pd.read_sql(
         """
         SELECT *
-        FROM   greer_scores
-        WHERE  ticker = %(t)s
-        ORDER  BY report_date DESC
-        LIMIT  1;
+        FROM greer_scores
+        WHERE ticker = %(t)s
+        ORDER BY report_date DESC
+        LIMIT 1;
         """,
         engine,
         params={"t": ticker}
@@ -125,7 +125,7 @@ def render_gv_details(ticker, engine):
         return
 
     greer_score = df["greer_score"].iloc[0]
-    above_50    = df["above_50_count"].iloc[0]
+    above_50 = df["above_50_count"].iloc[0]
     grade, grade_color, txt_color = classify_greer(greer_score, above_50)
 
     st.markdown(
@@ -170,10 +170,10 @@ def render_yield_details(ticker, engine):
     snap = pd.read_sql(
         """
         SELECT *
-        FROM   greer_yields_daily
-        WHERE  ticker = %(t)s
-        ORDER  BY date DESC
-        LIMIT  1;
+        FROM greer_yields_daily
+        WHERE ticker = %(t)s
+        ORDER BY date DESC
+        LIMIT 1;
         """,
         engine,
         params={"t": ticker}
@@ -211,9 +211,9 @@ def render_yield_details(ticker, engine):
     hist = pd.read_sql(
         """
         SELECT date, tvpct, tvavg
-        FROM   greer_yields_daily
-        WHERE  ticker = %(t)s
-        ORDER  BY date;
+        FROM greer_yields_daily
+        WHERE ticker = %(t)s
+        ORDER BY date;
         """,
         engine,
         params={"t": ticker}
@@ -240,13 +240,13 @@ def render_yield_details(ticker, engine):
 
 def render_buyzone_details(ticker, engine):
     df = pd.read_sql(
-        '''
+        """
         SELECT date, close_price, in_buyzone
-        FROM   greer_buyzone_daily
-        WHERE  ticker = %(t)s
-          AND  date >= CURRENT_DATE - INTERVAL '180 days'
-        ORDER  BY date;
-        ''',
+        FROM greer_buyzone_daily
+        WHERE ticker = %(t)s
+          AND date >= CURRENT_DATE - INTERVAL '180 days'
+        ORDER BY date;
+        """,
         engine,
         params={'t': ticker},
         parse_dates=['date'],
@@ -265,7 +265,7 @@ def render_buyzone_details(ticker, engine):
     ax_price.set_ylabel("Close")
     ax_price.set_title(f"{ticker.upper()} – BuyZone Map (180 trading days)")
 
-    ax_ribbon.fill_between(df["date"], 0, 1, where=mask,  color="#4CAF50", alpha=0.7)
+    ax_ribbon.fill_between(df["date"], 0, 1, where=mask, color="#4CAF50", alpha=0.7)
     ax_ribbon.fill_between(df["date"], 0, 1, where=~mask, color="#E0E0E0", alpha=0.7)
     ax_ribbon.set_yticks([])
     ax_ribbon.set_ylim(0, 1)
@@ -285,21 +285,29 @@ def render_buyzone_details(ticker, engine):
 
 def render_fvg_details(ticker, engine):
     gaps = pd.read_sql(
-        '''
+        """
         SELECT date, direction, gap_min, gap_max, mitigated
-        FROM   fair_value_gaps
-        WHERE  ticker = %(t)s
-          AND  date >= CURRENT_DATE - INTERVAL '180 days'
-        ORDER  BY date;
-        ''', engine, params={'t': ticker}, parse_dates=['date'])
+        FROM fair_value_gaps
+        WHERE ticker = %(t)s
+          AND date >= CURRENT_DATE - INTERVAL '180 days'
+        ORDER BY date;
+        """,
+        engine,
+        params={'t': ticker},
+        parse_dates=['date']
+    )
     price = pd.read_sql(
-        '''
+        """
         SELECT date, close_price
-        FROM   greer_buyzone_daily        
-        WHERE  ticker = %(t)s
-          AND  date >= CURRENT_DATE - INTERVAL '180 days'
-        ORDER  BY date;
-        ''', engine, params={'t': ticker}, parse_dates=['date'])
+        FROM greer_buyzone_daily        
+        WHERE ticker = %(t)s
+          AND date >= CURRENT_DATE - INTERVAL '180 days'
+        ORDER BY date;
+        """,
+        engine,
+        params={'t': ticker},
+        parse_dates=['date']
+    )
 
     if gaps.empty:
         st.info("No Fair-Value Gap events in the last 180 days.")
@@ -307,11 +315,18 @@ def render_fvg_details(ticker, engine):
 
     open_bull = gaps[(gaps["direction"] == "bullish") & (~gaps["mitigated"])]
     open_bear = gaps[(gaps["direction"] == "bearish") & (~gaps["mitigated"])]
-    avg_days = int(
-        gaps.assign(days=(pd.Timestamp('now')-gaps.date).dt.days)
-             .loc[lambda d: d.mitigated==False, 'days']
-             .mean() or 0
-    )
+    unmitigated_gaps = gaps[gaps['mitigated'] == False]
+    if unmitigated_gaps.empty:
+        avg_days = 0
+    else:
+        avg_days = int(
+            unmitigated_gaps
+            .assign(days=(pd.Timestamp('now') - unmitigated_gaps['date']).dt.days)
+            ['days']
+            .mean()
+            or 0
+        )
+
     st.markdown(
         f"**Open bullish gaps:** {len(open_bull)} &nbsp;|&nbsp; "
         f"**Open bearish gaps:** {len(open_bear)} &nbsp;|&nbsp; "
@@ -326,9 +341,9 @@ def render_fvg_details(ticker, engine):
     ax_price.set_title(f"{ticker.upper()} – Fair-Value Gaps (180 days)")
 
     date_index = price['date']
-    bull_open  = date_index.isin(open_bull['date'])
-    bear_open  = date_index.isin(open_bear['date'])
-    mitigated  = date_index.isin(gaps.query("mitigated").date)
+    bull_open = date_index.isin(open_bull['date'])
+    bear_open = date_index.isin(open_bear['date'])
+    mitigated = date_index.isin(gaps[gaps["mitigated"]]['date'])
 
     ax_ribbon.fill_between(date_index, 0, 1, where=bull_open, color="#4CAF50", alpha=.7)
     ax_ribbon.fill_between(date_index, 0, 1, where=bear_open, color="#F44336", alpha=.7)
@@ -349,7 +364,7 @@ def render_fvg_details(ticker, engine):
 st.markdown('<div class="greer-header">Greer Value Search</div>', unsafe_allow_html=True)
 ticker = st.text_input(
     "Search",
-    placeholder="Enter a Ticker Symbol (e.g., AAPL)",
+    placeholder="Enter ticker (e.g., AAPL)",
     key="ticker_input",
     label_visibility="collapsed"
 )
@@ -367,9 +382,7 @@ if ticker:
         row = snap.iloc[0]
         col_gv, col_yield, col_bz, col_fvg = st.columns(4)
 
-        # -----------------------------
         # Greer Value badge
-        # -----------------------------
         gv_score = row.get("greer_value_score")
         grade, gv_bg, gv_txt = classify_greer(gv_score, row.get("above_50_count"))
         gv_html = "—" if gv_score is None else (
@@ -383,9 +396,7 @@ if ticker:
                 st.session_state["view"] = "GV"
             st.markdown("</div>", unsafe_allow_html=True)
 
-        # -----------------------------
         # Yield badge
-        # -----------------------------
         ys_score = row.get("greer_yield_score")
         ys_score = int(ys_score) if pd.notnull(ys_score) else None
         y_grade, y_bg, y_txt = classify_yield(ys_score)
@@ -407,9 +418,7 @@ if ticker:
                 else:
                     st.warning("⛔ No historical yield data available for this ticker.")
 
-        # -----------------------------
         # BuyZone badge
-        # -----------------------------
         in_bz = bool(row.get("buyzone_flag", False))
         bz_bg = "#4CAF50" if in_bz else "#E0E0E0"
         bz_txt = "white" if in_bz else "black"
@@ -430,9 +439,7 @@ if ticker:
                 st.session_state["view"] = "BZ"
             st.markdown("</div>", unsafe_allow_html=True)
 
-        # -----------------------------
         # FVG badge
-        # -----------------------------
         fvg_dir = row.get("fvg_last_direction")
         fvg_date = pd.to_datetime(row.get("fvg_last_date")).strftime('%Y-%m-%d') if row.get('fvg_last_date') else "—"
         fvg_bg = "#4CAF50" if fvg_dir == "bullish" else "#F44336" if fvg_dir == "bearish" else "#90CAF9"
@@ -448,9 +455,7 @@ if ticker:
                 st.session_state["view"] = "FVG"
             st.markdown("</div>", unsafe_allow_html=True)
 
-        # -----------------------------
         # View logic from query param or session
-        # -----------------------------
         query_view = st.query_params.get("view")
         if query_view:
             st.session_state["view"] = query_view
@@ -466,4 +471,3 @@ if ticker:
                 render_buyzone_details(ticker, engine)
             elif view == "FVG":
                 render_fvg_details(ticker, engine)
-
