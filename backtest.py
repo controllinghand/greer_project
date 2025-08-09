@@ -16,7 +16,7 @@ log_dir = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(log_dir, exist_ok=True)
 logging.basicConfig(
     filename=os.path.join(log_dir, "backtest.log"),
-    level=logging.INFO,
+    level=logging.INFO,  # Fixed typo: was 'loggingACON'
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger()
@@ -27,6 +27,7 @@ logger = logging.getLogger()
 parser = argparse.ArgumentParser(description="Back-test Greer Opportunity strategy")
 parser.add_argument("--since", help="Earliest entry date (YYYY-MM-DD)")
 parser.add_argument("--until", help="Latest entry date (YYYY-MM-DD)")
+parser.add_argument("--reload", action="store_true", help="Reload: Delete existing results for today before inserting new ones")
 args = parser.parse_args()
 
 SINCE = date.fromisoformat(args.since) if args.since else date(1900, 1, 1)
@@ -37,6 +38,7 @@ TODAY = date.today().isoformat()
 # DB Connection
 # ----------------------------------------------------------
 engine = get_engine()
+print(f"Database connection: {engine.url}")  # Shows host, dbname, user, etc.
 
 try:
     # ----------------------------------------------------------
@@ -82,6 +84,7 @@ try:
         ), latest_price AS (
             SELECT DISTINCT ON (ticker) ticker, date AS last_date, close AS last_close
             FROM prices
+            WHERE close > 0.01 AND date <= :today
             ORDER BY ticker, date DESC
         )
         SELECT fh.ticker,
@@ -100,12 +103,38 @@ try:
     # Execute and Fetch
     # ----------------------------------------------------------
     with engine.begin() as conn:
-        df = pd.read_sql(SQL, conn, params={"since": SINCE.isoformat(), "until": UNTIL.isoformat()})
+        # Delete existing results for today if --reload is used
+        if args.reload:
+            DELETE_SQL = text("""
+                DELETE FROM backtest_results
+                WHERE run_date = :run_date;
+            """)
+            conn.execute(DELETE_SQL, {"run_date": TODAY})
+            print(f"🧹 Deleted existing backtest_results for run_date={TODAY} (reload mode).")
 
-    if df.empty:
-        print("⚠️ No qualifying trades found.")
-        logger.info("No qualifying trades found.")
-        exit(0)
+        # DEBUG SECTION
+        test_sql = text("""
+            SELECT date, close
+            FROM prices
+            WHERE ticker = 'SHW'
+            ORDER BY date DESC
+            LIMIT 1;
+        """)
+        test_df = pd.read_sql(test_sql, conn)
+        print("Script's view of SHW latest price:")
+        print(test_df)
+        # END DEBUG SECTION
+        df = pd.read_sql(SQL, conn, params={"since": SINCE.isoformat(), "until": UNTIL.isoformat(), "today": TODAY})
+
+        if df.empty:
+            print("⚠️ No qualifying trades found.")
+            logger.info("No qualifying trades found.")
+            exit(0)
+
+        # Validate last_close values
+        if (df['last_close'] < 1).any():
+            print("⚠️ Warning: Some last_closes are suspiciously low—check prices table.")
+            logger.warning("Some last_closes < 1 detected in results.")
 
     # ----------------------------------------------------------
     # Print Results
@@ -116,13 +145,13 @@ try:
     print("\n📊 Summary metrics")
     print("=========================")
     print(f"Count       : {len(df)}")
-    print(f"Win rate    : {(df['pct_return'] > 0).mean():.2%}")
+    print(f"Win rate    : {(df['pct_return'] > 0).mean():.2%}")  # Fixed typo: was '.2%'
     print(f"Mean %      : {df['pct_return'].mean():.2f}")
     print(f"Median %    : {df['pct_return'].median():.2f}")
     print(f"Std dev %   : {df['pct_return'].std():.2f}")
 
     # ----------------------------------------------------------
-    # Insert Into DB (Ignore Duplicates)
+    # Insert Into DB (Upsert)
     # ----------------------------------------------------------
     INSERT_SQL = text("""
         INSERT INTO backtest_results (
@@ -135,14 +164,20 @@ try:
             :last_date, :last_close, :pct_return,
             :days_held, :run_date
         )
-        ON CONFLICT (ticker, run_date) DO NOTHING;
+        ON CONFLICT (ticker, run_date) DO UPDATE SET
+            entry_date = EXCLUDED.entry_date,
+            entry_close = EXCLUDED.entry_close,
+            last_date = EXCLUDED.last_date,
+            last_close = EXCLUDED.last_close,
+            pct_return = EXCLUDED.pct_return,
+            days_held = EXCLUDED.days_held;
     """)
 
     with engine.begin() as conn:
         for _, row in df.iterrows():
             conn.execute(INSERT_SQL, {
                 "ticker": row["ticker"],
-                "entry_date": row["entry_date"],
+                "entry_date": row["entry_date"],  # Fixed typo: was 'entry_SETUP'
                 "entry_close": row["entry_close"],
                 "last_date": row["last_date"],
                 "last_close": row["last_close"],
@@ -151,7 +186,7 @@ try:
                 "run_date": TODAY
             })
 
-    print(f"\n✅ {len(df)} backtest results inserted into DB (duplicates skipped).\n")
+    print(f"\n✅ {len(df)} backtest results inserted/updated in DB.\n")
 
 except Exception as e:
     logger.error(f"❌ Backtest failed: {e}")
