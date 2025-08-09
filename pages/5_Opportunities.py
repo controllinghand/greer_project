@@ -53,10 +53,13 @@ def load_filtered_companies():
         FROM last_entry le
         JOIN latest_company_snapshot l
           ON l.ticker = le.ticker
+        JOIN companies c  -- Join to companies for delisted check
+          ON l.ticker = c.ticker
         WHERE l.greer_value_score >= 50
           AND l.greer_yield_score >= 3
           AND l.buyzone_flag = TRUE
           AND l.fvg_last_direction = 'bullish'
+          AND c.delisted = FALSE  -- Exclude delisted
         ORDER BY le.last_entry_date DESC;
         """
     )
