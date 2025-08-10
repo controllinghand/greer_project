@@ -1,5 +1,4 @@
 # backtest.py
-
 import argparse
 import pandas as pd
 import numpy as np
@@ -112,18 +111,6 @@ try:
             conn.execute(DELETE_SQL, {"run_date": TODAY})
             print(f"🧹 Deleted existing backtest_results for run_date={TODAY} (reload mode).")
 
-        # DEBUG SECTION
-        test_sql = text("""
-            SELECT date, close
-            FROM prices
-            WHERE ticker = 'SHW'
-            ORDER BY date DESC
-            LIMIT 1;
-        """)
-        test_df = pd.read_sql(test_sql, conn)
-        print("Script's view of SHW latest price:")
-        print(test_df)
-        # END DEBUG SECTION
         df = pd.read_sql(SQL, conn, params={"since": SINCE.isoformat(), "until": UNTIL.isoformat(), "today": TODAY})
 
         if df.empty:
