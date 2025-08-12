@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from datetime import date, datetime
+from datetime import date
 from sqlalchemy import text
 from db import get_engine  # ✅ Centralized DB connection
 
@@ -25,16 +25,52 @@ st.markdown("""
         height: 2.5rem;
         text-align: center;
     }
-    .badge-container {
-        position: relative;
-        height: 92px;
-        width: 100%;
-        overflow: visible;
-        padding: 0;
-        margin: 0;
+
+    /* Shared card look */
+    .company-card, .metric-card {
+        border: 1px solid #e0e0e0;
+        border-radius: 12px;
+        background: #fafafa;
+        padding: 12px 16px;
+        box-shadow: 0 1px 2px rgba(0,0,0,.04);
     }
-</style>
-<style>
+    .company-title {
+        font-size: 20px;
+        font-weight: 700;
+        margin-bottom: 4px;
+    }
+    .company-meta {
+        font-size: 14px;
+        margin: 2px 0;
+    }
+
+    /* Metric card content */
+    .metric-card {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-height: 120px; /* keeps all cards same height */
+        justify-content: center;
+        text-align: center;
+    }
+    .metric-label {
+        font-size: 13px;
+        font-weight: 600;
+        opacity: .9;
+    }
+    .metric-main {
+        font-size: 20px;
+        font-weight: 800;
+        line-height: 1.1;
+        margin-top: 2px;
+    }
+    .metric-sub {
+        font-size: 12px;
+        font-weight: 600;
+        opacity: .95;
+        margin-top: 2px;
+    }
+
     button[kind="secondary"] {
         color: #1976d2 !important;
         background: none !important;
@@ -48,9 +84,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------------------------------------------------
-# Database Connection (Render-Compatible)
+# Database Queries (cached)
 # ----------------------------------------------------------
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+@st.cache_data(ttl=300)
 def fetch_first_trade_date(ticker: str, _cache_buster=None):
     engine = get_engine()
     df = pd.read_sql(
@@ -62,7 +98,7 @@ def fetch_first_trade_date(ticker: str, _cache_buster=None):
         return None
     return pd.to_datetime(df.first_date.iloc[0]).date()
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+@st.cache_data(ttl=300)
 def get_latest_snapshot(ticker: str, _cache_buster=None):
     engine = get_engine()
     return pd.read_sql(
@@ -71,13 +107,28 @@ def get_latest_snapshot(ticker: str, _cache_buster=None):
         params={"t": ticker}
     )
 
+@st.cache_data(ttl=600)
+def get_company_info(ticker: str):
+    engine = get_engine()
+    df = pd.read_sql(
+        """
+        SELECT ticker, name, sector, industry, exchange, delisted, delisted_date
+        FROM companies
+        WHERE ticker = %(t)s
+        LIMIT 1;
+        """,
+        engine,
+        params={"t": ticker}
+    )
+    return df
+
 # ----------------------------------------------------------
-# Helper Functions: Classifiers and Badge Renderer
+# Helper Functions: Classifiers and Card Renderers
 # ----------------------------------------------------------
 def classify_greer(score, above_50):
-    if pd.notnull(above_50) and above_50 == 6:
+    if pd.notnull(above_50) and int(above_50) == 6:
         return "Exceptional", "#D4AF37", "black"
-    if pd.notnull(score) and score >= 50:
+    if pd.notnull(score) and float(score) >= 50:
         return "Strong", "#4CAF50", "white"
     if pd.notnull(score):
         return "Weak", "#F44336", "white"
@@ -94,12 +145,41 @@ def classify_yield(yield_score):
         return "Fairly Valued", "#2196F3", "white"
     return "Overvalued", "#F44336", "white"
 
-def render_badge(label, html_value, background, label_color="black"):
+def render_company_card(ticker: str):
+    info = get_company_info(ticker)
+    if info.empty:
+        return
+    r = info.iloc[0]
+    name = r["name"] if pd.notnull(r["name"]) else "—"
+    sector = r["sector"] if pd.notnull(r["sector"]) else "—"
+    industry = r["industry"] if pd.notnull(r["industry"]) else "—"
+    exchange = r["exchange"] if pd.notnull(r["exchange"]) else "—"
+    delisted = bool(r["delisted"]) if pd.notnull(r["delisted"]) else False
+    delisted_line = ""
+    if delisted and pd.notnull(r["delisted_date"]):
+        dd = pd.to_datetime(r["delisted_date"]).date()
+        delisted_line = f"<div class='company-meta'><b>Delisted:</b> {dd}</div>"
+
     st.markdown(
         f"""
-        <div style='text-align:center;width:100%;height:92px;border-radius:8px;background:{background};display:flex;flex-direction:column;justify-content:center;'>
-            <span style='font-size:14px;font-weight:600;color:{label_color};'>{label}</span>
-            {html_value}
+        <div class="company-card">
+            <div class="company-title">{ticker} — {name}</div>
+            <div class="company-meta"><b>Exchange:</b> {exchange}</div>
+            <div class="company-meta"><b>Sector:</b> {sector}</div>
+            <div class="company-meta"><b>Industry:</b> {industry}</div>
+            {delisted_line}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+def render_metric_card(label: str, main_html: str, sub_html: str, bg: str, fg: str):
+    st.markdown(
+        f"""
+        <div class="metric-card" style="background:{bg}; color:{fg};">
+            <div class="metric-label">{label}</div>
+            <div class="metric-main">{main_html}</div>
+            <div class="metric-sub">{sub_html}</div>
         </div>
         """,
         unsafe_allow_html=True
@@ -299,7 +379,7 @@ def render_fvg_details(ticker, engine):
     price = pd.read_sql(
         """
         SELECT date, close_price
-        FROM greer_buyzone_daily        
+        FROM greer_buyzone_daily
         WHERE ticker = %(t)s
           AND date >= CURRENT_DATE - INTERVAL '180 days'
         ORDER BY date;
@@ -373,44 +453,45 @@ ticker = st.text_input(
 if ticker:
     ticker = ticker.upper().strip()
     engine = get_engine()
+
     first_trade = fetch_first_trade_date(ticker)
-    snap = get_latest_snapshot(ticker, engine)
+    snap = get_latest_snapshot(ticker)
 
     if snap.empty:
-        st.error(f"Ticker '{ticker}' not found.")
+        cols = st.columns([2, 1, 1, 1, 1])
+        with cols[0]:
+            render_company_card(ticker)
+        st.error(f"Ticker '{ticker}' not found in latest snapshot.")
     else:
         row = snap.iloc[0]
-        col_gv, col_yield, col_bz, col_fvg = st.columns(4)
 
-        # Greer Value badge
+        # --- Five columns: Company card + 4 metric cards ---
+        col_company, col_gv, col_yield, col_bz, col_fvg = st.columns([2, 1, 1, 1, 1])
+
+        # Company info
+        with col_company:
+            render_company_card(ticker)
+
+        # Greer Value card
         gv_score = row.get("greer_value_score")
         grade, gv_bg, gv_txt = classify_greer(gv_score, row.get("above_50_count"))
-        gv_html = "—" if gv_score is None else (
-            f"<span style='font-size:20px;font-weight:700;line-height:1.1;color:{gv_txt};'>{gv_score:.2f}%</span><br>"
-            f"<span style='font-size:12px;font-weight:600;line-height:1.1;color:{gv_txt};'>{grade}</span>"
-        )
+        gv_main = "—" if gv_score is None else f"{gv_score:.2f}%"
+        gv_sub = grade if gv_score is not None else "—"
         with col_gv:
-            st.markdown("<div class='badge-container'>", unsafe_allow_html=True)
-            render_badge("Greer Value", gv_html, gv_bg, label_color=gv_txt)
+            render_metric_card("Greer Value", gv_main, gv_sub, gv_bg, gv_txt)
             if st.button("🔍 Show Details", key="gv_details"):
                 st.session_state["view"] = "GV"
-            st.markdown("</div>", unsafe_allow_html=True)
 
-        # Yield badge
+        # Yield card
         ys_score = row.get("greer_yield_score")
         ys_score = int(ys_score) if pd.notnull(ys_score) else None
         y_grade, y_bg, y_txt = classify_yield(ys_score)
-        y_html = "—" if ys_score is None else (
-            f"<span style='font-size:20px;font-weight:700;line-height:1.1;color:{y_txt};'>{ys_score}/4</span><br>"
-            f"<span style='font-size:12px;font-weight:600;line-height:1.1;color:{y_txt};'>{y_grade}</span>"
-        )
+        y_main = "—" if ys_score is None else f"{ys_score}/4"
+        y_sub = y_grade if ys_score is not None else "—"
         with col_yield:
-            st.markdown("<div class='badge-container'>", unsafe_allow_html=True)
-            render_badge("Yield Score", y_html, y_bg, label_color=y_txt)
+            render_metric_card("Yield Score", y_main, y_sub, y_bg, y_txt)
             if st.button("🔍 Show Details", key="gy_details"):
                 st.session_state["view"] = "GY"
-            st.markdown("</div>", unsafe_allow_html=True)
-
             if ys_score is None:
                 cutoff = date.today().replace(month=12, day=31, year=date.today().year - 1)
                 if first_trade and first_trade > cutoff:
@@ -418,42 +499,32 @@ if ticker:
                 else:
                     st.warning("⛔ No historical yield data available for this ticker.")
 
-        # BuyZone badge
+        # BuyZone card
         in_bz = bool(row.get("buyzone_flag", False))
         bz_bg = "#4CAF50" if in_bz else "#E0E0E0"
         bz_txt = "white" if in_bz else "black"
         if in_bz:
-            sub = f"since {pd.to_datetime(row.get('bz_start_date')).strftime('%Y-%m-%d')}" if row.get('bz_start_date') else ""
-            main_line = "Triggered"
+            bz_main = "Triggered"
+            bz_sub = f"since {pd.to_datetime(row.get('bz_start_date')).strftime('%Y-%m-%d')}" if row.get('bz_start_date') else ""
         else:
-            sub = f"left {pd.to_datetime(row.get('bz_end_date')).strftime('%Y-%m-%d')}" if row.get('bz_end_date') else ""
-            main_line = "No Signal"
-        bz_html = (
-            f"<span style='font-size:20px;font-weight:700;line-height:1.1;color:{bz_txt};'>{main_line}</span><br>"
-            f"<span style='font-size:12px;font-weight:600;line-height:1.1;color:{bz_txt};'>{sub}</span>"
-        )
+            bz_main = "No Signal"
+            bz_sub = f"left {pd.to_datetime(row.get('bz_end_date')).strftime('%Y-%m-%d')}" if row.get('bz_end_date') else ""
         with col_bz:
-            st.markdown("<div class='badge-container'>", unsafe_allow_html=True)
-            render_badge("BuyZone", bz_html, bz_bg, label_color=bz_txt)
+            render_metric_card("BuyZone", bz_main, bz_sub, bz_bg, bz_txt)
             if st.button("🔍 Show Details", key="bz_details"):
                 st.session_state["view"] = "BZ"
-            st.markdown("</div>", unsafe_allow_html=True)
 
-        # FVG badge
+        # FVG card
         fvg_dir = row.get("fvg_last_direction")
         fvg_date = pd.to_datetime(row.get("fvg_last_date")).strftime('%Y-%m-%d') if row.get('fvg_last_date') else "—"
         fvg_bg = "#4CAF50" if fvg_dir == "bullish" else "#F44336" if fvg_dir == "bearish" else "#90CAF9"
         fvg_txt = "white"
-        fvg_html = (
-            f"<span style='font-size:20px;font-weight:700;line-height:1.1;color:{fvg_txt};'>{(fvg_dir or 'No Gap').capitalize()}</span><br>"
-            f"<span style='font-size:12px;font-weight:600;line-height:1.1;color:{fvg_txt};'>last {fvg_date}</span>"
-        )
+        fvg_main = (fvg_dir or "No Gap").capitalize()
+        fvg_sub = f"last {fvg_date}"
         with col_fvg:
-            st.markdown("<div class='badge-container'>", unsafe_allow_html=True)
-            render_badge("Fair Value Gap", fvg_html, fvg_bg, label_color=fvg_txt)
+            render_metric_card("Fair Value Gap", fvg_main, fvg_sub, fvg_bg, fvg_txt)
             if st.button("🔍 Show Details", key="fvg_details"):
                 st.session_state["view"] = "FVG"
-            st.markdown("</div>", unsafe_allow_html=True)
 
         # View logic from query param or session
         query_view = st.query_params.get("view")
