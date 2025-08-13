@@ -11,21 +11,47 @@ from datetime import datetime
 from pytz import timezone
 import logging
 
-# Import shared DB connections
+# ----------------------------------------------------------
+# DB helpers
+# ----------------------------------------------------------
 from db import get_engine
 
+# ----------------------------------------------------------
 # Logging Setup
+# ----------------------------------------------------------
 log_dir = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(log_dir, exist_ok=True)
 logging.basicConfig(
     filename=os.path.join(log_dir, "fetch_financials.log"),
-    level=logging.INFO,  # Changed to INFO to log progress
+    level=logging.INFO,  # INFO for progress
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger()
 
-# Initialize DB Connection
+# ----------------------------------------------------------
+# Initialize DB Connection (global engine)
+# ----------------------------------------------------------
 engine = get_engine()
+
+# ----------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------
+def parse_tickers_arg(raw: str | None) -> list[str]:
+    """
+    Parse a --tickers string into a list. Accepts comma and/or whitespace.
+    Example: "AAPL, MSFT TSLA" -> ["AAPL","MSFT","TSLA"]
+    """
+    if not raw:
+        return []
+    # Replace commas with spaces, split, strip, upper, dedup while preserving order
+    parts = [p.strip().upper() for p in raw.replace(",", " ").split() if p.strip()]
+    seen = set()
+    out = []
+    for p in parts:
+        if p and p not in seen:
+            out.append(p)
+            seen.add(p)
+    return out
 
 # Function: Extract a financial metric from dataframe by tag
 def get_financial_value(df, possible_labels, year):
@@ -94,19 +120,45 @@ def fetch_financial_data(ticker: str, retries: int = 3, delay: int = 2) -> pd.Da
             logger.error(f"Error fetching data for {ticker} (Attempt {attempt + 1}): {e}")
             if attempt < retries - 1:
                 time.sleep(delay)
+
     logger.error(f"Failed to fetch data for {ticker}")
     return pd.DataFrame()
 
-# Function: Load tickers from file or companies table
-def load_tickers(file_path=None):
+# Function: Load tickers from file or companies table, with explicit override list
+def load_tickers(file_path: str | None, explicit_tickers: list[str] | None) -> list[str]:
+    """
+    Priority:
+      1) explicit_tickers (from --tickers)
+      2) file_path (CSV with 'ticker' column)
+      3) companies table (default)
+    """
+    if explicit_tickers:
+        print(f"🎯 Using explicit tickers: {', '.join(explicit_tickers)}")
+        logger.info(f"Using explicit tickers: {explicit_tickers}")
+        return explicit_tickers
+
     if file_path:
         print(f"📄 Loading tickers from file: {file_path}")
-        df = pd.read_csv(file_path)
-        tickers = df["ticker"].dropna().str.upper().unique().tolist()
-    else:
-        print("🗃️ Loading tickers from companies table...")
-        with engine.connect() as conn:
-            tickers = pd.read_sql("SELECT ticker FROM companies ORDER BY ticker", conn)["ticker"].tolist()
+        try:
+            df = pd.read_csv(file_path)
+        except Exception as e:
+            raise RuntimeError(f"Could not read file {file_path}: {e}")
+        tickers = (
+            df["ticker"]
+            .dropna()
+            .astype(str)
+            .str.upper()
+            .str.strip()
+            .unique()
+            .tolist()
+        )
+        logger.info(f"Loaded {len(tickers)} tickers from file")
+        return tickers
+
+    print("🗃️ Loading tickers from companies table…")
+    with engine.connect() as conn:
+        tickers = pd.read_sql("SELECT ticker FROM companies ORDER BY ticker", conn)["ticker"].tolist()
+    logger.info(f"Loaded {len(tickers)} tickers from companies table")
     return tickers
 
 # Function: Fetch existing dates from financials table for all tickers
@@ -163,7 +215,9 @@ def process_tickers(tickers, max_workers=10):
                     :net_margin, :total_revenue, :net_income, :shares_outstanding)
             ON CONFLICT (ticker, report_date) DO NOTHING
         """)
-        with engine.connect() as conn:
+
+        # Use a transaction block
+        with engine.begin() as conn:
             conn.execute(
                 query,
                 [
@@ -180,21 +234,37 @@ def process_tickers(tickers, max_workers=10):
                     for _, row in all_new_rows.iterrows()
                 ]
             )
-            conn.commit()
         print(f"✅ Inserted {len(all_new_rows)} new rows into financials.")
         logger.info(f"Inserted {len(all_new_rows)} new rows into financials")
 
-    print(f"Total processing time: {time.time() - start_time:.2f} seconds")
-    logger.info(f"Total processing time: {time.time() - start_time:.2f} seconds")
+    elapsed = time.time() - start_time
+    print(f"Total processing time: {elapsed:.2f} seconds")
+    logger.info(f"Total processing time: {elapsed:.2f} seconds")
 
-# Main Execution
+# ----------------------------------------------------------
+# Main
+# ----------------------------------------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fetch financials from yFinance and store in PostgreSQL")
-    parser.add_argument("--file", type=str, help="Optional path to CSV file of tickers")
+    parser = argparse.ArgumentParser(description="Fetch financials from yfinance and store in PostgreSQL")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--file", type=str, help="Optional path to CSV file of tickers (expects 'ticker' column)")
+    group.add_argument(
+        "--tickers",
+        type=str,
+        help="Optional comma/space separated list of tickers (e.g., \"AAPL,MSFT TSLA\")"
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=10,
+        help="Max parallel workers (default: 10)"
+    )
     args = parser.parse_args()
 
-    tickers = load_tickers(args.file)
+    explicit_tickers = parse_tickers_arg(args.tickers)
+    tickers = load_tickers(args.file, explicit_tickers)
+
     print(f"✅ Loaded {len(tickers)} tickers")
     logger.info(f"Loaded {len(tickers)} tickers")
 
-    process_tickers(tickers, max_workers=10)
+    process_tickers(tickers, max_workers=args.workers)

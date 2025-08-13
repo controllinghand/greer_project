@@ -196,18 +196,35 @@ def load_tickers_from_db():
 # CLI Entry Point
 # ----------------------------------------------------------
 if __name__ == "__main__":
+    def parse_tickers_arg(raw: str | None) -> list[str]:
+        """
+        Accept comma and/or whitespace separated tickers.
+        Example: "AAPL, MSFT TSLA" -> ["AAPL","MSFT","TSLA"]
+        """
+        if not raw:
+            return []
+        parts = [p.strip().upper() for p in raw.replace(",", " ").split() if p.strip()]
+        seen, out = set(), []
+        for p in parts:
+            if p not in seen:
+                out.append(p)
+                seen.add(p)
+        return out
+
     parser = argparse.ArgumentParser(description="Greer Fair Value Gap Calculator")
-    parser.add_argument("--file", type=str, help="CSV file with tickers")
-    parser.add_argument("--ticker", type=str, help="Single ticker to process")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--file", type=str, help="CSV file with tickers")
+    group.add_argument("--tickers", type=str, help='Comma/space separated tickers, e.g. "AAPL,MSFT TSLA"')
     parser.add_argument("--threshold", type=float, default=0.0, help="Minimum gap threshold (0.01 = 1%)")
     parser.add_argument("--auto", action="store_true", help="Use auto volatility threshold")
     parser.add_argument("--full", action="store_true", help="Force full history rerun")
     args = parser.parse_args()
 
-    if args.file:
+    explicit = parse_tickers_arg(args.tickers)
+    if explicit:
+        tickers = explicit
+    elif args.file:
         tickers = load_tickers_from_file(args.file)
-    elif args.ticker:
-        tickers = [args.ticker.upper()]
     else:
         print("🗃️  Loading tickers from companies table...")
         tickers = load_tickers_from_db()

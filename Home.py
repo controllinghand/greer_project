@@ -454,6 +454,7 @@ if ticker:
     ticker = ticker.upper().strip()
     engine = get_engine()
 
+
     first_trade = fetch_first_trade_date(ticker)
     snap = get_latest_snapshot(ticker)
 
@@ -461,7 +462,30 @@ if ticker:
         cols = st.columns([2, 1, 1, 1, 1])
         with cols[0]:
             render_company_card(ticker)
+
         st.error(f"Ticker '{ticker}' not found in latest snapshot.")
+
+        # Offer to add the company (links to pages/add_company.py and pre-fills the ticker)
+        # Prefer st.page_link (Streamlit 1.33+) — it works even if page file is renamed or ordered.
+        # Pass ticker via query param so the Add page pre-fills it
+        st.session_state["pending_add_ticker"] = ticker
+        st.query_params["ticker"] = ticker
+        st.page_link("pages/add_company.py", label="Would you like to add this company? Click here.", icon="➕", use_container_width=True)
+
+        # Also expose a button that switches directly (for older Streamlit versions that support switch_page)
+        #col_a, col_b = st.columns([1, 3])
+        #with col_a:
+        #    if st.button("Add this company", key="add_company_btn", use_container_width=True):
+        #        # Store for cross-page prefill
+        #        st.session_state["pending_add_ticker"] = ticker
+        #        # Pass ticker via query param so the Add page pre-fills it
+        #        st.query_params["ticker"] = ticker
+        #        try:
+        #            st.switch_page("pages/add_company.py")
+        #        except Exception:
+        #            # Fallback: show a link if switch_page isn't available
+        #            st.info("Open the **Add Company** page from the left sidebar. Ticker pre-filled.")
+    
     else:
         row = snap.iloc[0]
 

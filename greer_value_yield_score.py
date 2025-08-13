@@ -407,33 +407,84 @@ def calculate_latest_yield(ticker, hist):
     print(f"Book Yield:    {book_y:.2f}% vs Avg {book_avg:.2f}%")
     print(f"Total Yield:   {tvpct:.2f}% vs TVAVG {tvavg:.2f}% → Score: {score}/4")
 
+# ----------------------------------------------------------
+# Parse --tickers argument into a clean list
+# ----------------------------------------------------------
+def parse_tickers_arg(raw: str | None) -> list[str]:
+    """
+    Accepts comma and/or whitespace separated tickers.
+    Example: "AAPL, MSFT TSLA" -> ["AAPL","MSFT","TSLA"]
+    """
+    if not raw:
+        return []
+    parts = [p.strip().upper() for p in raw.replace(",", " ").split() if p.strip()]
+    seen, out = set(), []
+    for p in parts:
+        if p not in seen:
+            out.append(p)
+            seen.add(p)
+    return out
 
 # ----------------------------------------------------------
-# Load tickers from file or DB
+# Load tickers from --tickers, file, or DB (in that order)
 # ----------------------------------------------------------
-def load_tickers(file_path=None):
+def load_tickers(file_path: str | None = None, explicit_tickers: list[str] | None = None) -> list[str]:
+    # 1) explicit --tickers wins
+    if explicit_tickers:
+        print(f"🎯 Using explicit tickers: {', '.join(explicit_tickers)}")
+        return explicit_tickers
+
+    # 2) CSV file (expects 'ticker' column)
     if file_path:
         print(f"📄 Loading tickers from file: {file_path}")
         df = pd.read_csv(file_path)
-        return df["ticker"].dropna().str.upper().unique().tolist()
-    else:
-        print("💃️  Loading tickers from companies table...")
-        engine = get_engine()
-        with engine.begin() as conn:
-            return pd.read_sql("SELECT ticker FROM companies ORDER BY ticker", conn)["ticker"].tolist()
+        return (
+            df["ticker"]
+            .dropna()
+            .astype(str)
+            .str.upper()
+            .str.strip()
+            .unique()
+            .tolist()
+        )
+
+    # 3) Default: companies table
+    print("🗃️ Loading tickers from companies table...")
+    engine = get_engine()
+    with engine.connect() as conn:
+        return pd.read_sql("SELECT ticker FROM companies ORDER BY ticker", conn)["ticker"].tolist()
+
 
 # ----------------------------------------------------------
-# Entry
+# Main
 # ----------------------------------------------------------
 if __name__ == "__main__":
+    import argparse
+
+    def _parse_tickers_arg(raw: str | None) -> list[str]:
+        """Accept comma and/or whitespace separated tickers."""
+        if not raw:
+            return []
+        parts = [p.strip().upper() for p in raw.replace(",", " ").split() if p.strip()]
+        seen, out = set(), []
+        for p in parts:
+            if p not in seen:
+                out.append(p)
+                seen.add(p)
+        return out
+
     parser = argparse.ArgumentParser(description="Calculate and score Greer Value Yields")
-    parser.add_argument("--file", type=str, help="Path to ticker file")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--file", type=str, help="Path to ticker file")
+    group.add_argument("--tickers", type=str, help='Comma/space separated tickers, e.g. "AAPL,MSFT TSLA"')
     args = parser.parse_args()
 
-    tickers = load_tickers(args.file)
+    # If --tickers is provided, use that; otherwise fall back to your existing loader
+    explicit = _parse_tickers_arg(args.tickers)
+    tickers = explicit if explicit else load_tickers(args.file)
 
     if not tickers:
-        print("⚠️ No tickers loaded — check your file or DB.")
+        print("⚠️ No tickers loaded — check your --tickers, file, or DB.")
     else:
         print(f"✅ Loaded {len(tickers)} tickers\n")
 
@@ -442,3 +493,4 @@ if __name__ == "__main__":
             hist = calculate_yields(ticker)
             calculate_daily_yields(ticker)      # ← re-added
             calculate_latest_yield(ticker, hist)
+

@@ -53,10 +53,10 @@ def calculate_greer_value(data: pd.DataFrame, metric: str, weighting: str = "Exp
         return np.nan
 
     def simple_avg(arr): return np.mean(arr) * 100.0
-    def linear_weighted_avg(arr): 
+    def linear_weighted_avg(arr):
         weights = np.arange(1, len(arr) + 1)
         return np.sum(np.array(arr) * weights) / np.sum(weights) * 100.0
-    def exp_weighted_avg(arr, alpha): 
+    def exp_weighted_avg(arr, alpha):
         weights = np.array([alpha ** (len(arr) - 1 - i) for i in range(len(arr))])
         return np.sum(np.array(arr) * weights) / np.sum(weights) * 100.0
 
@@ -68,7 +68,7 @@ def calculate_greer_value(data: pd.DataFrame, metric: str, weighting: str = "Exp
 # Function: Compute Greer Value Score from multiple metrics
 # ----------------------------------------------------------
 def compute_greer_value_score(ticker: str, data: pd.DataFrame) -> dict:
-    metrics = ["BOOK_VALUE_PER_SHARE", "FREE_CASH_FLOW", "NET_MARGIN", 
+    metrics = ["BOOK_VALUE_PER_SHARE", "FREE_CASH_FLOW", "NET_MARGIN",
                "TOTAL_REVENUE", "NET_INCOME", "DILUTED_SHARES_OUTSTANDING"]
     results = {}
     valid_metrics = 0
@@ -93,12 +93,12 @@ def compute_greer_value_score(ticker: str, data: pd.DataFrame) -> dict:
 # ----------------------------------------------------------
 def load_data_from_db(engine, ticker):
     query = """
-        SELECT report_date, 
-               book_value_per_share, 
-               free_cash_flow, 
-               net_margin, 
-               total_revenue, 
-               net_income, 
+        SELECT report_date,
+               book_value_per_share,
+               free_cash_flow,
+               net_margin,
+               total_revenue,
+               net_income,
                shares_outstanding
         FROM financials
         WHERE ticker = %s
@@ -162,6 +162,7 @@ def convert_numpy_types(row_dict):
 
 # ----------------------------------------------------------
 # Function: Load tickers from file or companies table
+# (unchanged; we override from CLI before calling if --tickers is used)
 # ----------------------------------------------------------
 def load_tickers(file_path=None):
     if file_path:
@@ -175,16 +176,37 @@ def load_tickers(file_path=None):
     return tickers
 
 # ----------------------------------------------------------
+# NEW: parse --tickers helper
+# ----------------------------------------------------------
+def _parse_tickers_arg(raw: str | None) -> list[str]:
+    """Accept comma and/or whitespace separated tickers."""
+    if not raw:
+        return []
+    parts = [p.strip().upper() for p in raw.replace(",", " ").split() if p.strip()]
+    seen, out = set(), []
+    for p in parts:
+        if p not in seen:
+            out.append(p)
+            seen.add(p)
+    return out
+
+# ----------------------------------------------------------
 # Main Execution
 # ----------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Greer Value Analyzer from DB")
-    parser.add_argument("--file", type=str, help="Optional path to CSV file containing tickers (column: 'ticker')")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--file", type=str, help="Optional path to CSV file containing tickers (column: 'ticker')")
+    group.add_argument("--tickers", type=str, help='Optional comma/space separated tickers, e.g. "AAPL,MSFT TSLA"')
     args = parser.parse_args()
 
     os.makedirs("data", exist_ok=True)
     summary_rows = []
-    tickers = load_tickers(args.file)
+
+    # Prefer --tickers if supplied; otherwise fall back to your existing loader
+    explicit = _parse_tickers_arg(args.tickers)
+    tickers = explicit if explicit else load_tickers(args.file)
+
     print(f"\n✅ Loaded {len(tickers)} tickers\n")
 
     for ticker in tickers:
