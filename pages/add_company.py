@@ -16,6 +16,51 @@ st.set_page_config(page_title="Add Company", layout="centered")
 st.title("➕ Add Company")
 
 # ----------------------------------------------------------
+# Admin gate (updates & pipeline for existing rows require admin)
+# ----------------------------------------------------------
+def _get_admin_code() -> str | None:
+    """
+    Read admin code from Streamlit secrets if present; otherwise from env var.
+    Never raises StreamlitSecretNotFoundError.
+    """
+    try:
+        code = st.secrets.get("admin_code")  # safe even if secrets missing
+        if code:
+            return str(code)
+    except Exception:
+        pass
+    return os.environ.get("GREER_ADMIN_CODE")
+
+ADMIN_CODE = _get_admin_code()
+ADMIN_CONFIGURED = bool(ADMIN_CODE)
+
+if "is_admin" not in st.session_state:
+    st.session_state["is_admin"] = False
+
+with st.sidebar:
+    st.subheader("Admin")
+    if ADMIN_CONFIGURED:
+        if not st.session_state["is_admin"]:
+            code = st.text_input("Enter admin code to enable updates & pipeline for existing tickers", type="password")
+            if code:
+                if code == ADMIN_CODE:
+                    st.session_state["is_admin"] = True
+                    st.success("Admin enabled for this session.")
+                else:
+                    st.error("Invalid admin code.")
+        else:
+            st.success("Admin mode is ON.")
+            if st.button("Log out admin"):
+                st.session_state["is_admin"] = False
+    else:
+        st.info(
+            "Admin code not configured. Updates to existing companies and pipeline for existing tickers "
+            "are disabled.\nSet `.streamlit/secrets.toml` admin_code or env var GREER_ADMIN_CODE."
+        )
+
+IS_ADMIN = bool(st.session_state["is_admin"])
+
+# ----------------------------------------------------------
 # Seed the ticker once from query param / session, then use a stateful input
 # ----------------------------------------------------------
 incoming = None
@@ -36,7 +81,18 @@ ticker = (st.session_state.get("add_ticker") or "").upper().strip()
 # ----------------------------------------------------------
 # DB helpers
 # ----------------------------------------------------------
+def company_exists(symbol: str) -> bool:
+    if not symbol:
+        return False
+    engine = get_engine()
+    sql = text("SELECT 1 FROM companies WHERE ticker = :t LIMIT 1;")
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"t": symbol}).fetchone()
+    return bool(row)
+
 def has_financials(symbol: str) -> bool:
+    if not symbol:
+        return False
     engine = get_engine()
     sql = text("SELECT 1 FROM financials WHERE ticker = :t LIMIT 1;")
     with engine.connect() as conn:
@@ -44,6 +100,8 @@ def has_financials(symbol: str) -> bool:
     return bool(row)
 
 def has_prices(symbol: str) -> bool:
+    if not symbol:
+        return False
     engine = get_engine()
     sql = text("SELECT 1 FROM prices WHERE ticker = :t LIMIT 1;")
     with engine.connect() as conn:
@@ -98,26 +156,41 @@ def validate_on_yfinance(symbol: str) -> dict | None:
     except Exception:
         return None
 
-
-def upsert_company(row: dict) -> None:
+def upsert_company(row: dict, allow_update: bool) -> str:
     """
     Insert or update the companies row.
+    - If allow_update=True -> full UPSERT (insert or update).
+    - If allow_update=False -> INSERT ... DO NOTHING (no overwrites).
+    Returns a short message about what happened.
     """
     engine = get_engine()
-    sql = text("""
-        INSERT INTO companies (ticker, name, sector, industry, exchange, delisted, delisted_date, added_at)
-        VALUES (:ticker, :name, :sector, :industry, :exchange, FALSE, NULL, NOW())
-        ON CONFLICT (ticker) DO UPDATE SET
-          name = EXCLUDED.name,
-          sector = EXCLUDED.sector,
-          industry = EXCLUDED.industry,
-          exchange = EXCLUDED.exchange,
-          delisted = FALSE,
-          delisted_date = NULL
-    """)
-    with engine.begin() as conn:
-        conn.execute(sql, row)
+    exists = company_exists(row["ticker"])
 
+    if allow_update:
+        sql = text("""
+            INSERT INTO companies (ticker, name, sector, industry, exchange, delisted, delisted_date, added_at)
+            VALUES (:ticker, :name, :sector, :industry, :exchange, FALSE, NULL, NOW())
+            ON CONFLICT (ticker) DO UPDATE SET
+              name = EXCLUDED.name,
+              sector = EXCLUDED.sector,
+              industry = EXCLUDED.industry,
+              exchange = EXCLUDED.exchange,
+              delisted = FALSE,
+              delisted_date = NULL
+        """)
+        with engine.begin() as conn:
+            conn.execute(sql, row)
+        return "inserted" if not exists else "updated"
+    else:
+        # Non-admin: allow creating NEW rows but never overwrite existing ones
+        sql = text("""
+            INSERT INTO companies (ticker, name, sector, industry, exchange, delisted, delisted_date, added_at)
+            VALUES (:ticker, :name, :sector, :industry, :exchange, FALSE, NULL, NOW())
+            ON CONFLICT (ticker) DO NOTHING
+        """)
+        with engine.begin() as conn:
+            conn.execute(sql, row)
+        return "inserted" if not exists else "skipped (exists; update requires admin)"
 
 def _call_step(name: str, cmd: list[str]) -> tuple[str, int]:
     try:
@@ -125,7 +198,6 @@ def _call_step(name: str, cmd: list[str]) -> tuple[str, int]:
     except FileNotFoundError:
         rc = 127  # script not found
     return (name, rc)
-
 
 def run_one_ticker_pipeline(symbol: str) -> list[tuple[str, int]]:
     """
@@ -187,7 +259,6 @@ def run_one_ticker_pipeline(symbol: str) -> list[tuple[str, int]]:
 
     return results
 
-
 def render_company_preview(info: dict) -> None:
     st.subheader("Company Preview")
     df = pd.DataFrame([info]).T
@@ -198,6 +269,16 @@ def render_company_preview(info: dict) -> None:
 # UI Flow
 # ----------------------------------------------------------
 info: dict | None = None
+
+exists_now = company_exists(ticker) if ticker else False
+
+# Show a notice if user tries to update an existing company without admin
+if ticker and exists_now and not IS_ADMIN:
+    st.warning(
+        "This ticker already exists. You can add new tickers, but **updating existing company details "
+        "or running the data pipeline for existing tickers requires admin**."
+    )
+
 if ticker:
     with st.spinner("Checking yfinance…"):
         info = validate_on_yfinance(ticker)
@@ -207,16 +288,29 @@ if ticker:
     else:
         render_company_preview(info)
 
+# Determine if pipeline is allowed for the current typed ticker
+pipeline_allowed = bool(ticker) and (IS_ADMIN or not exists_now)
+
 run_now = st.checkbox(
     "Also run the full one-ticker import (prices, financials if available, yields, buyzone, FVG, refresh MVs)",
-    value=True
+    value=pipeline_allowed,
+    disabled=not pipeline_allowed,
+    help="Pipeline can be run by admins anytime, or by anyone for brand-new tickers."
 )
 
-if st.button("Add / Update Company", type="primary", use_container_width=True):
+btn_label = (
+    "Add / Update Company" if IS_ADMIN or not exists_now
+    else "Add Company (no update)"
+)
+if st.button(btn_label, type="primary", use_container_width=True):
     submit_ticker = (st.session_state.get("add_ticker") or "").upper().strip()
     if not submit_ticker:
         st.error("Please enter a ticker.")
         st.stop()
+
+    # Re-evaluate existence & permission on submit
+    exists_submit = company_exists(submit_ticker)
+    pipeline_allowed_submit = IS_ADMIN or not exists_submit
 
     # Validate again on submit to be safe
     with st.spinner("Validating ticker…"):
@@ -227,8 +321,20 @@ if st.button("Add / Update Company", type="primary", use_container_width=True):
         st.stop()
 
     try:
-        upsert_company(info)
-        st.success(f"✅ Added/updated `{submit_ticker}` in `companies`.")
+        allow_update = IS_ADMIN or not exists_submit
+        result = upsert_company(info, allow_update=allow_update)
+
+        if result == "updated":
+            st.success(f"✅ Updated `{submit_ticker}` in `companies` (admin).")
+        elif result == "inserted":
+            st.success(f"✅ Inserted `{submit_ticker}` into `companies`.")
+        else:
+            st.info(f"ℹ️ `{submit_ticker}` already exists — company record left unchanged (admin required to update).")
+
+        # Enforce pipeline rule even if someone managed to toggle the box
+        if run_now and not pipeline_allowed_submit:
+            st.error("⛔ Running the data pipeline is restricted to admins or brand-new tickers.")
+            run_now = False
 
         if run_now:
             st.info("🚀 Running one-ticker pipeline…")
@@ -267,7 +373,7 @@ if st.button("Add / Update Company", type="primary", use_container_width=True):
                     pass
                 st.success("🎉 Import finished. The Home page should now reflect what’s available for this ticker.")
 
-        # Clear transient seed after success (optional to keep input)
+        # Clear transient seed after success (optional)
         st.session_state.pop("pending_add_ticker", None)
 
         st.page_link("Home.py", label="⬅️ Back to Home", use_container_width=True)

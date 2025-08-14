@@ -1,4 +1,7 @@
 #Ignore the following below
+# don't Commit your secrets 
+.streamlit/secrets.toml
+
 # Virtual environment
 venv/
 
