@@ -7,8 +7,6 @@ import pandas as pd
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy import text
-from datetime import datetime
-from pytz import timezone
 import logging
 
 # ----------------------------------------------------------
@@ -17,16 +15,20 @@ import logging
 from db import get_engine
 
 # ----------------------------------------------------------
-# Logging Setup
+# Logging Setup (file only; no console handler)
 # ----------------------------------------------------------
 log_dir = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(log_dir, exist_ok=True)
-logging.basicConfig(
-    filename=os.path.join(log_dir, "fetch_financials.log"),
-    level=logging.INFO,  # INFO for progress
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger()
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.handlers[:] = []  # avoid duplicate handlers in reloads
+
+fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+file_handler = logging.FileHandler(os.path.join(log_dir, "fetch_financials.log"))
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(fmt)
+logger.addHandler(file_handler)
 
 # ----------------------------------------------------------
 # Initialize DB Connection (global engine)
@@ -43,7 +45,6 @@ def parse_tickers_arg(raw: str | None) -> list[str]:
     """
     if not raw:
         return []
-    # Replace commas with spaces, split, strip, upper, dedup while preserving order
     parts = [p.strip().upper() for p in raw.replace(",", " ").split() if p.strip()]
     seen = set()
     out = []
@@ -53,75 +54,218 @@ def parse_tickers_arg(raw: str | None) -> list[str]:
             seen.add(p)
     return out
 
-# Function: Extract a financial metric from dataframe by tag
-def get_financial_value(df, possible_labels, year):
-    df.index = df.index.str.strip().str.lower()
-    for label in possible_labels:
-        label_clean = label.strip().lower()
-        if label_clean in df.index:
-            return df.loc[label_clean].get(year, np.nan)
+def _normalize_index(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    df.index = df.index.astype(str).str.strip().str.lower()
+    return df
+
+# Broader label aliases (with REIT-friendly variants)
+LABELS = {
+    "total_assets": [
+        "total assets",
+    ],
+    "total_liabilities": [
+        "total liabilities", "total liabilities net minority interest", "liabilities"
+    ],
+    "shares_out": [
+        # Balance sheet (preferred)
+        "ordinary shares number", "common stock shares outstanding",
+        # Fallbacks from income stmt (diluted average)
+        "weighted average diluted shares outstanding",
+        "diluted average shares",
+        "diluted weighted average shares",
+        "weighted average shares outstanding diluted",
+    ],
+    "operating_cash_flow": [
+        "operating cash flow",
+        "total cash from operating activities",
+        "net cash provided by operating activities",
+        "net cash from operating activities",
+    ],
+    "capex": [
+        "capital expenditure", "capital expenditures",
+        "purchase of property plant and equipment",
+    ],
+    "revenue": [
+        "total revenue", "revenue", "operating revenue",
+        "total operating revenue",  # sometimes shows up on REITs
+        "total income",             # last-resort, can overinclude, used only if nothing else
+    ],
+    "net_income": [
+        "net income",
+        "net income common stockholders",
+        "net income available to common shareholders",
+        "net income applicable to common shares",
+        "net income attributable to common shareholders",
+        "net income to common shareholders",
+    ],
+}
+
+def _fuzzy_get(df: pd.DataFrame | None, labels: list[str], col) -> float:
+    """
+    Robust lookup:
+      1) exact match on normalized labels
+      2) fuzzy: all words of any label appear in an index row
+    """
+    if df is None or df.empty:
+        return np.nan
+    idx = df.index  # already normalized to lower
+    # Exact first
+    for lab in labels:
+        key = lab.strip().lower()
+        if key in idx:
+            try:
+                return df.loc[key].get(col, np.nan)
+            except Exception:
+                return np.nan
+    # Fuzzy fallback
+    for lab in labels:
+        words = [w for w in lab.lower().split() if w]
+        for row_lab in idx:
+            if all(w in row_lab for w in words):
+                try:
+                    val = df.loc[row_lab].get(col, np.nan)
+                except Exception:
+                    val = np.nan
+                if not (isinstance(val, float) and np.isnan(val)):
+                    return val
     return np.nan
 
-# Function: Fetch financial data for a ticker using yfinance
+def _fetch_statements(stock: yf.Ticker, freq: str):
+    """
+    Returns normalized (income, balance_sheet, cashflow) for a given freq: "yearly", "quarterly", or "trailing".
+    Applies fallbacks to legacy properties if needed.
+    """
+    income = stock.get_income_stmt(freq=freq)
+    balance_sheet = stock.get_balance_sheet(freq=freq)
+    cashflow = stock.get_cashflow(freq=freq)
+
+    if income is None or income.empty:
+        income = getattr(stock, "income_stmt", pd.DataFrame())
+    if balance_sheet is None or balance_sheet.empty:
+        balance_sheet = getattr(stock, "balance_sheet", pd.DataFrame())
+    if cashflow is None or cashflow.empty:
+        cashflow = getattr(stock, "cashflow", pd.DataFrame())
+
+    income = _normalize_index(income)
+    balance_sheet = _normalize_index(balance_sheet)
+    cashflow = _normalize_index(cashflow)
+    return income, balance_sheet, cashflow
+
+def _compute_rows_from_statements(ticker: str, income: pd.DataFrame, balance_sheet: pd.DataFrame, cashflow: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute per-period rows from statements. Returns empty DF if nothing usable.
+    """
+    def _cols(df):
+        return [] if df is None or df.empty else list(df.columns)
+
+    years = sorted(set(_cols(income)) | set(_cols(balance_sheet)) | set(_cols(cashflow)))
+    if not years:
+        logger.warning(f"{ticker}: no reporting columns found after fetch")
+        return pd.DataFrame()
+
+    data = {
+        "BOOK_VALUE_PER_SHARE": [],
+        "FREE_CASH_FLOW": [],
+        "NET_MARGIN": [],
+        "TOTAL_REVENUE": [],
+        "NET_INCOME": [],
+        "DILUTED_SHARES_OUTSTANDING": [],
+        "dates": []
+    }
+
+    for year in years:
+        year_str = year.strftime("%Y-%m-%d") if isinstance(year, pd.Timestamp) else str(year)
+
+        total_assets = _fuzzy_get(balance_sheet, LABELS["total_assets"], year)
+        total_liab   = _fuzzy_get(balance_sheet, LABELS["total_liabilities"], year)
+
+        # shares: first try BS, then diluted on IS
+        shares_out = _fuzzy_get(balance_sheet, LABELS["shares_out"][:2], year)
+        if (shares_out is None) or (isinstance(shares_out, float) and np.isnan(shares_out)):
+            shares_out = _fuzzy_get(income, LABELS["shares_out"][2:], year)
+
+        ocf   = _fuzzy_get(cashflow, LABELS["operating_cash_flow"], year)
+        capex = _fuzzy_get(cashflow, LABELS["capex"], year)
+
+        revenue    = _fuzzy_get(income, LABELS["revenue"], year)
+        net_income = _fuzzy_get(income, LABELS["net_income"], year)
+
+        # Calculations
+        if all(not np.isnan(x) and x != 0 for x in [total_assets, total_liab, shares_out]):
+            book_value = (total_assets - total_liab) / shares_out
+        else:
+            book_value = np.nan
+
+        # Yahoo usually reports CAPEX negative; OCF + CAPEX ≈ FCF
+        if all(not np.isnan(x) for x in [ocf, capex]):
+            free_cash_flow = ocf + capex
+        else:
+            free_cash_flow = np.nan
+
+        if all(not np.isnan(x) and revenue not in (0, np.nan) for x in [net_income, revenue]):
+            net_margin = (net_income / revenue) * 100.0
+        else:
+            net_margin = np.nan
+
+        # Skip if literally everything is NaN for this period
+        if all(np.isnan(x) for x in [book_value, free_cash_flow, net_margin, revenue, net_income]):
+            continue
+
+        data["BOOK_VALUE_PER_SHARE"].append(book_value)
+        data["FREE_CASH_FLOW"].append(free_cash_flow)
+        data["NET_MARGIN"].append(net_margin)
+        data["TOTAL_REVENUE"].append(revenue)
+        data["NET_INCOME"].append(net_income)
+        data["DILUTED_SHARES_OUTSTANDING"].append(shares_out)
+        data["dates"].append(year_str)
+
+    df = pd.DataFrame(data)
+    if df.empty:
+        logger.warning(f"{ticker}: no usable rows after computing metrics")
+        return pd.DataFrame()
+
+    df["dates"] = pd.to_datetime(df["dates"], errors="coerce")
+    df["ticker"] = ticker
+    return df.sort_values("dates").reset_index(drop=True)
+
+# Function: Fetch financial data for a ticker using yfinance (robust endpoints + fallbacks)
 def fetch_financial_data(ticker: str, retries: int = 3, delay: int = 2) -> pd.DataFrame:
     for attempt in range(retries):
         try:
             stock = yf.Ticker(ticker)
-            # Fetch all financials in one call
-            financials = stock.get_financials()
-            balance_sheet = stock.get_balance_sheet()
-            cashflow = stock.get_cashflow()
 
-            if financials.empty or balance_sheet.empty or cashflow.empty:
-                raise ValueError("Missing financial statement(s)")
+            # 1) Try annual
+            income_y, bs_y, cf_y = _fetch_statements(stock, freq="yearly")
+            missing = [name for name, df in [
+                ("income", income_y), ("balance_sheet", bs_y), ("cashflow", cf_y)
+            ] if df is None or df.empty]
+            if missing:
+                logger.error(f"[{ticker}] Statements missing (yearly): {', '.join(missing)}")
 
-            data = {
-                "BOOK_VALUE_PER_SHARE": [],
-                "FREE_CASH_FLOW": [],
-                "NET_MARGIN": [],
-                "TOTAL_REVENUE": [],
-                "NET_INCOME": [],
-                "DILUTED_SHARES_OUTSTANDING": [],
-                "dates": []
-            }
+            df = _compute_rows_from_statements(ticker, income_y, bs_y, cf_y)
 
-            for year in financials.columns:
-                year_str = year.strftime("%Y-%m-%d") if isinstance(year, pd.Timestamp) else str(year)
+            # 2) If no annual rows, try TTM (trailing) to at least capture one period
+            if df.empty:
+                income_t, bs_t, cf_t = _fetch_statements(stock, freq="trailing")
+                missing_t = [name for name, df2 in [
+                    ("income", income_t), ("balance_sheet", bs_t), ("cashflow", cf_t)
+                ] if df2 is None or df2.empty]
+                if missing_t:
+                    logger.error(f"[{ticker}] Statements missing (trailing): {', '.join(missing_t)}")
 
-                total_assets = get_financial_value(balance_sheet, ["total assets"], year)
-                total_liab = get_financial_value(balance_sheet, ["total liabilities", "total liabilities net minority interest", "liabilities"], year)
-                shares_out = get_financial_value(balance_sheet, ["ordinary shares number", "common stock shares outstanding"], year)
-                op_cash_flow = get_financial_value(cashflow, ["operating cash flow", "total cash from operating activities"], year)
-                capex = get_financial_value(cashflow, ["capital expenditure"], year)
-                revenue = get_financial_value(financials, ["total revenue", "revenue", "operating revenue"], year)
-                net_income = get_financial_value(financials, ["net income", "net income common stockholders", "net income from continuing operations"], year)
+                df = _compute_rows_from_statements(ticker, income_t, bs_t, cf_t)
 
-                book_value = (total_assets - total_liab) / shares_out if all(not np.isnan(x) and x != 0 for x in [total_assets, total_liab, shares_out]) else np.nan
-                free_cash_flow = op_cash_flow + capex if all(not np.isnan(x) for x in [op_cash_flow, capex]) else np.nan
-                net_margin = (net_income / revenue) * 100 if all(not np.isnan(x) and revenue != 0 for x in [net_income, revenue]) else np.nan
-
-                if all(np.isnan(x) for x in [book_value, free_cash_flow, net_margin, revenue, net_income]):
-                    continue
-
-                data["BOOK_VALUE_PER_SHARE"].append(book_value)
-                data["FREE_CASH_FLOW"].append(free_cash_flow)
-                data["NET_MARGIN"].append(net_margin)
-                data["TOTAL_REVENUE"].append(revenue)
-                data["NET_INCOME"].append(net_income)
-                data["DILUTED_SHARES_OUTSTANDING"].append(shares_out)
-                data["dates"].append(year_str)
-
-            df = pd.DataFrame(data)
-            df["dates"] = pd.to_datetime(df["dates"], errors="coerce")
-            df["ticker"] = ticker
-            return df.sort_values("dates").reset_index(drop=True)
+            return df  # may be empty
 
         except Exception as e:
             logger.error(f"Error fetching data for {ticker} (Attempt {attempt + 1}): {e}")
             if attempt < retries - 1:
                 time.sleep(delay)
 
-    logger.error(f"Failed to fetch data for {ticker}")
+    logger.error(f"Failed to fetch data for {ticker} after {retries} attempt(s)")
     return pd.DataFrame()
 
 # Function: Load tickers from file or companies table, with explicit override list
@@ -200,7 +344,7 @@ def process_tickers(tickers, max_workers=10):
                     logger.info(f"Collected {len(new_rows_df)} new row(s) for {ticker}")
 
             except Exception as e:
-                print(f"❌ Error processing {ticker}: {e}")
+                # File-only logging; no console errors
                 logger.error(f"Error processing {ticker}: {e}")
 
     # Combine all new rows and insert in bulk
@@ -251,7 +395,7 @@ if __name__ == "__main__":
     group.add_argument(
         "--tickers",
         type=str,
-        help="Optional comma/space separated list of tickers (e.g., \"AAPL,MSFT TSLA\")"
+        help='Optional comma/space separated list of tickers (e.g., "AAPL,MSFT TSLA")'
     )
     parser.add_argument(
         "--workers",

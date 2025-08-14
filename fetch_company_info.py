@@ -13,7 +13,7 @@ import logging
 from db import get_engine
 
 # ----------------------------------------------------------
-# Logging Setup
+# Logging Setup (file only)
 # ----------------------------------------------------------
 log_dir = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(log_dir, exist_ok=True)
@@ -32,10 +32,9 @@ engine = get_engine()
 # ----------------------------------------------------------
 # Constants
 # ----------------------------------------------------------
-# Valid US exchanges and invalid tickers
-VALID_EXCHANGES = {'NYQ', 'NMS', 'NGM', 'NCM'}  # NYSE/NASDAQ variants from yfinance
+# Accept any exchange if yfinance has pricing + info + financials.
 INVALID_TICKERS = {'AMRZ', 'B', 'LTM', 'NBIS', 'SAML', 'TBB'}
-INACTIVITY_BUSINESS_DAYS = 10  # how many *business* days without prices => delisted
+INACTIVITY_BUSINESS_DAYS = 10  # business days without DB prices => delisted
 
 # ----------------------------------------------------------
 # Helpers
@@ -51,26 +50,22 @@ def parse_tickers_arg(raw: str | None) -> list[str]:
     seen, out = set(), []
     for p in parts:
         if p not in seen:
-            out.append(p)
-            seen.add(p)
+            out.append(p); seen.add(p)
     return out
 
 def is_ticker_inactive_by_prices(ticker: str, max_business_days: int = INACTIVITY_BUSINESS_DAYS) -> tuple[bool, datetime | None]:
     """
-    Returns (inactive: bool, last_price_date: date|None).
-    Inactive means there have been no prices for >= `max_business_days` *business* days.
-    If the ticker has never had prices (last_price_date is None), treat as *not inactive* (new listing).
+    Returns (inactive: bool, last_price_date: date|None) based on your DB prices table.
+    If the ticker has never had prices (None), treat as NOT inactive (new/onboarding).
     """
     q = text("SELECT MAX(date) AS last_price_date FROM prices WHERE ticker = :t")
     with engine.connect() as conn:
         row = conn.execute(q, {"t": ticker}).fetchone()
     last_price_date = row[0] if row else None
     if not last_price_date:
-        # New/never-priced: don't auto-mark delisted
         return False, None
 
     today = pd.Timestamp.today().normalize().date()
-    # Business days strictly after last_price_date up to today
     bdays_without_prices = pd.bdate_range(
         pd.Timestamp(last_price_date) + pd.Timedelta(days=1),
         pd.Timestamp(today)
@@ -94,7 +89,7 @@ def set_delisted(ticker: str, delisted: bool, when=None):
     with engine.begin() as conn:
         conn.execute(q, {"d": delisted, "w": when, "t": ticker})
 
-# Function: Remove foreign ticker from all tables
+# (Kept for reference; not used now that we accept any exchange)
 def remove_foreign_ticker(ticker: str):
     tables = ['companies', 'prices', 'financials', 'greer_buyzone_daily', 'fair_value_gaps', 'greer_opportunity_periods']
     for table in tables:
@@ -104,12 +99,58 @@ def remove_foreign_ticker(ticker: str):
     print(f"Removed foreign ticker {ticker} from all tables.")
     logger.info(f"Removed foreign ticker {ticker} from all tables.")
 
-# Function: Fetch company info for a ticker using yfinance
+def _has_recent_pricing(stock: yf.Ticker) -> bool:
+    """
+    True if yfinance has any recent price history (5d fallback to 1mo).
+    """
+    try:
+        hist = stock.history(period="5d", auto_adjust=False)
+        if hist is not None and not hist.empty:
+            return True
+        hist = stock.history(period="1mo", auto_adjust=False)
+        return hist is not None and not hist.empty
+    except Exception as e:
+        logger.error(f"_has_recent_pricing error: {e}")
+        return False
+
+def _has_company_info(info: dict) -> bool:
+    """
+    True if yfinance info has at least a longName or shortName.
+    """
+    if not info:
+        return False
+    return bool(info.get("longName") or info.get("shortName"))
+
+def _normalize_index(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    df.index = df.index.astype(str).str.strip().str.lower()
+    return df
+
+def _has_financials(stock: yf.Ticker) -> bool:
+    """
+    True if yfinance returns at least one non-empty income statement (annual or trailing).
+    """
+    try:
+        inc = stock.get_income_stmt(freq="yearly")
+        if inc is None or inc.empty:
+            inc = stock.get_income_stmt(freq="trailing")
+        if inc is None or inc.empty:
+            inc = getattr(stock, "income_stmt", pd.DataFrame())  # legacy fallback
+        inc = _normalize_index(inc)
+        return inc is not None and not inc.empty and len(inc.columns) > 0
+    except Exception as e:
+        logger.error(f"_has_financials error: {e}")
+        return False
+
+# ----------------------------------------------------------
+# Fetch company info (accept ANY exchange if yfinance has pricing+info+financials)
+# ----------------------------------------------------------
 def fetch_company_info(ticker: str, retries: int = 3, delay: int = 2):
-    # 1) Price-based inactivity (business days)
+    # 1) Price-based inactivity from your DB (business days)
     inactive, last_price_date = is_ticker_inactive_by_prices(ticker)
     if inactive:
-        # Auto-mark delisted based on inactivity
         set_delisted(ticker, True, last_price_date or datetime.now().date())
         return {
             'ticker': ticker,
@@ -121,60 +162,59 @@ def fetch_company_info(ticker: str, retries: int = 3, delay: int = 2):
             'delisted_date': last_price_date or datetime.now().date()
         }
 
-    # 2) Try yfinance lookups
+    # 2) yfinance requirements: pricing + company info + financials (ANY exchange)
     for attempt in range(retries):
         try:
             stock = yf.Ticker(ticker)
-            # yfinance info access can vary by version; keep your existing approach
-            info = stock.info
-            if not info or 'longName' not in info:
-                raise ValueError("No info available")
 
-            name = info.get('longName', '') or info.get('shortName', '')
-            sector = info.get('sector', '')
-            industry = info.get('industry', '')
-            exchange = info.get('exchange', '')
+            # Company info
+            info = {}
+            try:
+                info = stock.info
+            except Exception:
+                info = {}
 
-            if exchange in VALID_EXCHANGES:
-                # If prices are flowing / valid exchange, ensure not marked delisted
-                set_delisted(ticker, False, None)
-                return {
-                    'ticker': ticker,
-                    'name': name,
-                    'sector': sector,
-                    'industry': industry,
-                    'exchange': exchange,
-                    'delisted': False,
-                    'delisted_date': None
-                }
+            name = (info.get('longName') or info.get('shortName') or '') if info else ''
+            sector = info.get('sector', '') if info else ''
+            industry = info.get('industry', '') if info else ''
+            exchange = info.get('exchange', '') if info else ''
 
-            # Non-US exchange: purge from your tables
-            remove_foreign_ticker(ticker)
-            raise ValueError(f"Non-US exchange: {exchange}")
+            info_ok = _has_company_info(info)
+            pricing_ok = _has_recent_pricing(stock)
+            financials_ok = _has_financials(stock)
+
+            if not info_ok or not pricing_ok or not financials_ok:
+                logger.info(
+                    f"[{ticker}] gating failed -> info_ok={info_ok}, pricing_ok={pricing_ok}, financials_ok={financials_ok}"
+                )
+                if attempt < retries - 1:
+                    time.sleep(delay)
+                    continue
+                return None
+
+            # All gates passed: ensure not delisted
+            set_delisted(ticker, False, None)
+            return {
+                'ticker': ticker,
+                'name': name,
+                'sector': sector,
+                'industry': industry,
+                'exchange': exchange,
+                'delisted': False,
+                'delisted_date': None
+            }
 
         except Exception as e:
             logger.error(f"Error fetching info for {ticker} (Attempt {attempt + 1}): {e}")
             if attempt < retries - 1:
                 time.sleep(delay)
 
-    # 3) Final fallback after retries: if now inactive by prices, mark delisted; else return None
-    inactive_end, last_price_date_end = is_ticker_inactive_by_prices(ticker)
-    if inactive_end:
-        set_delisted(ticker, True, last_price_date_end or datetime.now().date())
-        return {
-            'ticker': ticker,
-            'name': '',
-            'sector': '',
-            'industry': '',
-            'exchange': '',
-            'delisted': True,
-            'delisted_date': last_price_date_end or datetime.now().date()
-        }
-
     logger.error(f"Failed to fetch info for {ticker}")
     return None
 
-# Function: Load tickers from --tickers, file, or companies table (in that order)
+# ----------------------------------------------------------
+# Load tickers from --tickers, file, or companies table (in that order)
+# ----------------------------------------------------------
 def load_tickers(file_path: str | None = None, explicit_tickers: list[str] | None = None):
     if explicit_tickers:
         print(f"🎯 Using explicit tickers: {', '.join(explicit_tickers)}")
@@ -199,11 +239,12 @@ def load_tickers(file_path: str | None = None, explicit_tickers: list[str] | Non
             df = pd.read_sql(q, conn)
         tickers = df["ticker"].tolist()
 
-    # Filter invalids
     tickers = [t for t in tickers if t not in INVALID_TICKERS]
     return tickers
 
-# Function: Process tickers in parallel
+# ----------------------------------------------------------
+# Process tickers (parallel)
+# ----------------------------------------------------------
 def process_tickers(tickers, max_workers=2):
     start_time = time.time()
     new_infos = []
@@ -224,28 +265,30 @@ def process_tickers(tickers, max_workers=2):
                     print(f"✅ Collected info for {ticker}: {status}")
                     logger.info(f"Collected info for {ticker}: {status}")
                 else:
-                    print(f"⚠️ Skipping {ticker}: no data.")
-                    logger.info(f"Skipping {ticker}: no data")
+                    print(f"⚠️ Skipping {ticker}: requirements not met (pricing/info/financials).")
+                    logger.info(f"Skipping {ticker}: gating failed or no data.")
             except Exception as e:
                 print(f"❌ Error processing {ticker}: {e}")
                 logger.error(f"Error processing {ticker}: {e}")
 
-    # Bulk update companies table
+    # UPSERT into companies (insert if missing, update if exists)
     if new_infos:
         q = text("""
-            UPDATE companies
-            SET name = :name,
-                sector = :sector,
-                industry = :industry,
-                exchange = :exchange,
-                delisted = :delisted,
-                delisted_date = :delisted_date
-            WHERE ticker = :ticker
+            INSERT INTO companies (ticker, name, sector, industry, exchange, delisted, delisted_date, added_at)
+            VALUES (:ticker, :name, :sector, :industry, :exchange, :delisted, :delisted_date, NOW())
+            ON CONFLICT (ticker) DO UPDATE SET
+                name = EXCLUDED.name,
+                sector = EXCLUDED.sector,
+                industry = EXCLUDED.industry,
+                exchange = EXCLUDED.exchange,
+                delisted = EXCLUDED.delisted,
+                delisted_date = EXCLUDED.delisted_date,
+                added_at = COALESCE(companies.added_at, EXCLUDED.added_at)
         """)
         with engine.begin() as conn:
             conn.execute(q, new_infos)
-        print(f"✅ Updated {len(new_infos)} companies in the database.")
-        logger.info(f"Updated {len(new_infos)} companies in the database")
+        print(f"✅ Upserted {len(new_infos)} companies in the database.")
+        logger.info(f"Upserted {len(new_infos)} companies in the database")
 
     elapsed = time.time() - start_time
     print(f"Total processing time: {elapsed:.2f} seconds")
