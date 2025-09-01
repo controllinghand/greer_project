@@ -136,6 +136,7 @@ def get_latest_gfv(ticker: str, _cache_buster=None):
             SELECT ticker, date, close_price, gfv_price, gfv_status,
                    dcf_value, graham_value,
                    growth_rate_fcf, growth_rate_eps,
+                   growth_rate_fcf_raw, growth_rate_eps_raw,      -- NEW
                    discount_rate, terminal_growth, graham_yield_Y
             FROM greer_fair_value_latest
             WHERE ticker = %(t)s
@@ -147,7 +148,7 @@ def get_latest_gfv(ticker: str, _cache_buster=None):
         if not df.empty:
             return df
     except Exception:
-        pass  # view might not exist
+        pass  # view might not exist or may not yet expose _raw columns
 
     # Fallback: pull latest from daily
     df = pd.read_sql(
@@ -156,6 +157,7 @@ def get_latest_gfv(ticker: str, _cache_buster=None):
                ticker, date, close_price, gfv_price, gfv_status,
                dcf_value, graham_value,
                growth_rate_fcf, growth_rate_eps,
+               growth_rate_fcf_raw, growth_rate_eps_raw,        -- NEW
                discount_rate, terminal_growth, graham_yield_Y
         FROM greer_fair_value_daily
         WHERE ticker = %(t)s
@@ -242,14 +244,22 @@ def render_gfv_badge(gfv_row: pd.Series):
     graham_val  = gfv_row.get("graham_value")
     g_fcf       = gfv_row.get("growth_rate_fcf")
     g_eps       = gfv_row.get("growth_rate_eps")
+    # NEW: raw (pre-cap) fields
+    g_fcf_raw   = gfv_row.get("growth_rate_fcf_raw")
+    g_eps_raw   = gfv_row.get("growth_rate_eps_raw")
+
     r           = gfv_row.get("discount_rate")
     tg          = gfv_row.get("terminal_growth")
-    Y           = gfv_row.get("graham_yield_Y")
+    Y           = gfv_row.get("graham_yield_y")
 
-    badge_color = {"gold": "#D4AF37", "green": "#22c55e", "red": "#ef4444"}.get(status, "#6b7280")
+    badge_color = {"gold": "#D4AF37", "green": "#22c55e", "red": "#ef4444"}.get(status, "#9ca3af")
+
+    # helper near money()/pct()
+    def yield_pp_str(y):  # y is in percent points, e.g., 4.4
+        return f"{float(y):.1f}%" if is_num(y) else "—"
 
     def is_num(x):
-        return isinstance(x, (int, float, np.floating)) and x is not None and not pd.isna(x)
+        return (x is not None) and isinstance(x, (int, float, np.floating)) and not pd.isna(x)
 
     def money(x):
         return f"${float(x):,.2f}" if is_num(x) else "—"
@@ -257,24 +267,59 @@ def render_gfv_badge(gfv_row: pd.Series):
     def pct(x):
         return f"{float(x)*100:.1f}%" if is_num(x) else "—"
 
-    # Build tooltip (never formats None)
+    def cap_note(used, raw):
+        """Return e.g. ' (capped from 22.3%)' only if raw is present and differs."""
+        if is_num(used) and is_num(raw) and abs(float(used) - float(raw)) > 1e-9:
+            return f" (capped from {pct(raw)})"
+        return ""
+
+    # AAA Y display (it’s a yield, not money)
+    Y_str = f"{float(Y):.2f}%" if is_num(Y) else "—"
+
+    # --- Tooltip builder ---
     fcfps = gfv_row.get("fcf_per_share")
 
-    reason = ""
+    # Reasons for unavailability
+    reason_dcf = ""
     if dcf_val is None:
         if isinstance(fcfps, (int, float, np.floating)) and not pd.isna(fcfps) and fcfps <= 0:
-            reason = " (unavailable: negative FCF/share)"
+            reason_dcf = " (unavailable: negative FCF/share)"
         else:
-            reason = " (unavailable)"
+            reason_dcf = " (unavailable)"
 
-    tooltip_lines = [
+    reason_graham = ""
+    if graham_val is None:
+        reason_graham = " (unavailable)"
+
+    # Growth raw vs capped
+    g_fcf_raw = gfv_row.get("growth_rate_fcf_raw")
+    g_eps_raw = gfv_row.get("growth_rate_eps_raw")
+
+    def growth_str(capped, raw):
+        if not is_num(capped):
+            return "—"
+        if is_num(raw) and round(float(raw), 4) != round(float(capped), 4):
+            return f"{pct(capped)} (capped from {pct(raw)})"
+        return pct(capped)
+
+    g_fcf_str = growth_str(g_fcf, g_fcf_raw)
+    g_eps_str = growth_str(g_eps, g_eps_raw)
+
+    # Add header if incomplete
+    header_line = "⚠️ Incomplete signal: one or both models unavailable." if status == "gray" else None
+
+    tooltip_lines = []
+    if header_line:
+        tooltip_lines.append(header_line)
+    tooltip_lines += [
         f"Today’s Price: {money(today_price)}",
         f"GFV Status: {status or '—'}",
         "",
-        f"DCF FV: {money(dcf_val)}{reason}  |  FCF growth: {pct(g_fcf)}  |  r: {pct(r)}  |  terminal g: {pct(tg)}",
-        f"Graham FV: {money(graham_val)}  |  EPS growth: {pct(g_eps)}  |  AAA Y: {money(Y) if is_num(Y) else (Y if Y else '—')}",
+        f"DCF FV: {money(dcf_val)}{reason_dcf}  |  FCF growth: {g_fcf_str}  |  r: {pct(r)}  |  terminal g: {pct(tg)}",
+        f"Graham FV: {money(graham_val)}{reason_graham}  |  EPS growth: {g_eps_str}  |  AAA Y: {yield_pp_str(Y)}",
     ]
 
+    from html import escape  # keep local import to avoid top-level duplication
     tooltip_attr = escape("\n".join(tooltip_lines), quote=True).replace("\n", "&#10;")
 
     st.markdown(f"""
@@ -294,7 +339,6 @@ def render_gfv_badge(gfv_row: pd.Series):
       </span>
     </div>
     """, unsafe_allow_html=True)
-
 
 
 # ----------------------------------------------------------

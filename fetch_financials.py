@@ -88,6 +88,9 @@ LABELS = {
         "capital expenditure", "capital expenditures",
         "purchase of property plant and equipment",
     ],
+    "free_cash_flow": [
+        "free cash flow",  # prefer explicit FCF row if present
+    ],
     "revenue": [
         "total revenue", "revenue", "operating revenue",
         "total operating revenue",  # sometimes shows up on REITs
@@ -187,8 +190,9 @@ def _compute_rows_from_statements(ticker: str, income: pd.DataFrame, balance_she
         if (shares_out is None) or (isinstance(shares_out, float) and np.isnan(shares_out)):
             shares_out = _fuzzy_get(income, LABELS["shares_out"][2:], year)
 
-        ocf   = _fuzzy_get(cashflow, LABELS["operating_cash_flow"], year)
-        capex = _fuzzy_get(cashflow, LABELS["capex"], year)
+        ocf        = _fuzzy_get(cashflow, LABELS["operating_cash_flow"], year)
+        capex      = _fuzzy_get(cashflow, LABELS["capex"], year)
+        fcf_direct = _fuzzy_get(cashflow, LABELS["free_cash_flow"], year)  # NEW: prefer Yahoo's explicit FCF if present
 
         revenue    = _fuzzy_get(income, LABELS["revenue"], year)
         net_income = _fuzzy_get(income, LABELS["net_income"], year)
@@ -199,8 +203,10 @@ def _compute_rows_from_statements(ticker: str, income: pd.DataFrame, balance_she
         else:
             book_value = np.nan
 
-        # Yahoo usually reports CAPEX negative; OCF + CAPEX ≈ FCF
-        if all(not np.isnan(x) for x in [ocf, capex]):
+        # Free Cash Flow: prefer Yahoo's explicit "Free Cash Flow" row; else derive OCF + CapEx
+        if not np.isnan(fcf_direct):
+            free_cash_flow = fcf_direct
+        elif all(not np.isnan(x) for x in [ocf, capex]):
             free_cash_flow = ocf + capex
         else:
             free_cash_flow = np.nan
@@ -211,7 +217,7 @@ def _compute_rows_from_statements(ticker: str, income: pd.DataFrame, balance_she
             net_margin = np.nan
 
         # Skip if literally everything is NaN for this period
-        if all(np.isnan(x) for x in [book_value, free_cash_flow, net_margin, revenue, net_income]):
+        if all(np.isnan(x) for x in [book_value, free_cash_flow, net_margin, revenue, net_income]) and (np.isnan(shares_out) or shares_out == 0):
             continue
 
         data["BOOK_VALUE_PER_SHARE"].append(book_value)
@@ -314,7 +320,7 @@ def get_existing_dates():
     return df.groupby("ticker")["report_date"].apply(list).to_dict()
 
 # Function: Process tickers in parallel
-def process_tickers(tickers, max_workers=10):
+def process_tickers(tickers, max_workers=10, reload=False, reload_missing=False):
     start_time = time.time()
     existing_dates = get_existing_dates()
     new_rows = []
@@ -330,56 +336,92 @@ def process_tickers(tickers, max_workers=10):
                     logger.info(f"Skipping {ticker}: no data")
                     continue
 
-                # Filter out existing dates
-                ticker_existing_dates = pd.to_datetime(existing_dates.get(ticker, []))
-                df["dates"] = pd.to_datetime(df["dates"])
-                new_rows_df = df[~df["dates"].isin(ticker_existing_dates)]
+                # Filter out existing dates only if NOT reloading
+                if not reload and not reload_missing:
+                    ticker_existing_dates = pd.to_datetime(existing_dates.get(ticker, []))
+                    df["dates"] = pd.to_datetime(df["dates"])
+                    new_rows_df = df[~df["dates"].isin(ticker_existing_dates)]
+                else:
+                    new_rows_df = df  # keep all rows; rely on ON CONFLICT DO UPDATE
 
                 if new_rows_df.empty:
                     print(f"✅ No new data for {ticker}.")
                     logger.info(f"No new data for {ticker}")
                 else:
                     new_rows.append(new_rows_df)
-                    print(f"✅ Collected {len(new_rows_df)} new row(s) for {ticker}.")
-                    logger.info(f"Collected {len(new_rows_df)} new row(s) for {ticker}")
+                    action = "reload" if reload else ("reload-missing" if reload_missing else "insert")
+                    print(f"✅ Collected {len(new_rows_df)} row(s) for {ticker} ({action}).")
+                    logger.info(f"Collected {len(new_rows_df)} row(s) for {ticker} ({action})")
 
             except Exception as e:
                 # File-only logging; no console errors
                 logger.error(f"Error processing {ticker}: {e}")
 
-    # Combine all new rows and insert in bulk
-    if new_rows:
-        all_new_rows = pd.concat(new_rows, ignore_index=True)
-        query = text("""
-            INSERT INTO financials (
-                ticker, report_date, book_value_per_share, free_cash_flow, 
-                net_margin, total_revenue, net_income, shares_outstanding
-            )
-            VALUES (:ticker, :report_date, :book_value_per_share, :free_cash_flow, 
-                    :net_margin, :total_revenue, :net_income, :shares_outstanding)
-            ON CONFLICT (ticker, report_date) DO NOTHING
-        """)
+    if not new_rows:
+        elapsed = time.time() - start_time
+        print(f"Total processing time: {elapsed:.2f} seconds")
+        logger.info(f"Total processing time: {elapsed:.2f} seconds")
+        return
 
-        # Use a transaction block
-        with engine.begin() as conn:
-            conn.execute(
-                query,
-                [
-                    {
-                        "ticker": row["ticker"],
-                        "report_date": row["dates"],
-                        "book_value_per_share": row["BOOK_VALUE_PER_SHARE"],
-                        "free_cash_flow": row["FREE_CASH_FLOW"],
-                        "net_margin": row["NET_MARGIN"],
-                        "total_revenue": row["TOTAL_REVENUE"],
-                        "net_income": row["NET_INCOME"],
-                        "shares_outstanding": row["DILUTED_SHARES_OUTSTANDING"]
-                    }
-                    for _, row in all_new_rows.iterrows()
-                ]
-            )
-        print(f"✅ Inserted {len(all_new_rows)} new rows into financials.")
-        logger.info(f"Inserted {len(all_new_rows)} new rows into financials")
+    all_new_rows = pd.concat(new_rows, ignore_index=True)
+
+    # Base INSERT
+    base_insert = """
+        INSERT INTO financials (
+            ticker, report_date, book_value_per_share, free_cash_flow, 
+            net_margin, total_revenue, net_income, shares_outstanding
+        )
+        VALUES (:ticker, :report_date, :book_value_per_share, :free_cash_flow, 
+                :net_margin, :total_revenue, :net_income, :shares_outstanding)
+    """
+
+    if reload:
+        # Overwrite existing values on conflict
+        on_conflict = """
+            ON CONFLICT (ticker, report_date) DO UPDATE SET
+                book_value_per_share = EXCLUDED.book_value_per_share,
+                free_cash_flow       = EXCLUDED.free_cash_flow,
+                net_margin           = EXCLUDED.net_margin,
+                total_revenue        = EXCLUDED.total_revenue,
+                net_income           = EXCLUDED.net_income,
+                shares_outstanding   = EXCLUDED.shares_outstanding
+        """
+    elif reload_missing:
+        # Only fill NULLs, leave existing non-NULL values as-is
+        on_conflict = """
+            ON CONFLICT (ticker, report_date) DO UPDATE SET
+                book_value_per_share = COALESCE(financials.book_value_per_share, EXCLUDED.book_value_per_share),
+                free_cash_flow       = COALESCE(financials.free_cash_flow,       EXCLUDED.free_cash_flow),
+                net_margin           = COALESCE(financials.net_margin,           EXCLUDED.net_margin),
+                total_revenue        = COALESCE(financials.total_revenue,        EXCLUDED.total_revenue),
+                net_income           = COALESCE(financials.net_income,           EXCLUDED.net_income),
+                shares_outstanding   = COALESCE(financials.shares_outstanding,   EXCLUDED.shares_outstanding)
+        """
+    else:
+        on_conflict = "ON CONFLICT (ticker, report_date) DO NOTHING"
+
+    query = text(base_insert + on_conflict)
+
+    payload = [
+        {
+            "ticker": row["ticker"],
+            "report_date": row["dates"],
+            "book_value_per_share": None if pd.isna(row["BOOK_VALUE_PER_SHARE"]) else float(row["BOOK_VALUE_PER_SHARE"]),
+            "free_cash_flow": None if pd.isna(row["FREE_CASH_FLOW"]) else float(row["FREE_CASH_FLOW"]),
+            "net_margin": None if pd.isna(row["NET_MARGIN"]) else float(row["NET_MARGIN"]),
+            "total_revenue": None if pd.isna(row["TOTAL_REVENUE"]) else float(row["TOTAL_REVENUE"]),
+            "net_income": None if pd.isna(row["NET_INCOME"]) else float(row["NET_INCOME"]),
+            "shares_outstanding": None if pd.isna(row["DILUTED_SHARES_OUTSTANDING"]) else float(row["DILUTED_SHARES_OUTSTANDING"]),
+        }
+        for _, row in all_new_rows.iterrows()
+    ]
+
+    # Use a transaction block
+    with engine.begin() as conn:
+        conn.execute(query, payload)
+
+    print(f"✅ Upserted {len(all_new_rows)} rows into financials.")
+    logger.info(f"Upserted {len(all_new_rows)} rows into financials")
 
     elapsed = time.time() - start_time
     print(f"Total processing time: {elapsed:.2f} seconds")
@@ -403,7 +445,20 @@ if __name__ == "__main__":
         default=10,
         help="Max parallel workers (default: 10)"
     )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Reload/overwrite existing rows on (ticker, report_date)."
+    )
+    parser.add_argument(
+        "--reload-missing",
+        action="store_true",
+        help="Only fill NULL columns for existing (ticker, report_date)."
+    )
     args = parser.parse_args()
+
+    if args.reload and args.reload_missing:
+        raise SystemExit("Choose either --reload or --reload-missing, not both.")
 
     explicit_tickers = parse_tickers_arg(args.tickers)
     tickers = load_tickers(args.file, explicit_tickers)
@@ -411,4 +466,4 @@ if __name__ == "__main__":
     print(f"✅ Loaded {len(tickers)} tickers")
     logger.info(f"Loaded {len(tickers)} tickers")
 
-    process_tickers(tickers, max_workers=args.workers)
+    process_tickers(tickers, max_workers=args.workers, reload=args.reload, reload_missing=args.reload_missing)

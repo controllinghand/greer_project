@@ -211,51 +211,50 @@ def compute_log_reg_growth(vals: pd.Series) -> Optional[float]:
     return float(np.exp(b) - 1.0)
 
 
+def apply_caps(g: Optional[float], cap: float, floor: float) -> Optional[float]:
+    if g is None:
+        return None
+    return max(floor, min(cap, g))
+
 def choose_growth(
     vals: pd.Series,
     method: str,
     cap: float,
     floor: float,
     manual: Optional[float]
-) -> Tuple[Optional[float], str, int]:
+) -> Tuple[Optional[float], str, int, Optional[float]]:
     """
-    Returns (g_used, method_used, points_used).
-    - manual overrides everything
-    - 'reg' uses log-reg on positive points (>=3 needed)
-    - 'cagr' uses CAGR on positive points (>=2 endpoints)
-    - 'auto' tries reg then falls back to CAGR
+    Returns (g_used, method_used, points_used, g_raw).
+    - g_raw is the estimator/override before capping.
+    - g_used is after apply_caps(g_raw, cap, floor).
     """
     if manual is not None:
-        return apply_caps(to_float(manual), cap, floor), "manual", len(vals or [])
+        g_raw = to_float(manual)
+        return apply_caps(g_raw, cap, floor), "manual", len(vals or []), g_raw
 
     if vals is None or len(vals) == 0:
-        return None, method, 0
+        return None, method, 0, None
 
     series = pd.to_numeric(vals, errors="coerce").dropna().astype(float)
-    pos_series = series[series > 0]  # useful for both methods
+    pos_series = series[series > 0]
 
     if method == "cagr":
-        g = compute_cagr_from_series(pos_series)
-        return apply_caps(g, cap, floor), "cagr", len(pos_series)
+        g_raw = compute_cagr_from_series(pos_series)
+        return apply_caps(g_raw, cap, floor), "cagr", len(pos_series), g_raw
 
     if method == "reg":
-        g = compute_log_reg_growth(series)  # it filters positives internally
-        return apply_caps(g, cap, floor), "reg", len(series[series > 0])
+        g_raw = compute_log_reg_growth(series)  # filters positives internally
+        return apply_caps(g_raw, cap, floor), "reg", len(series[series > 0]), g_raw
 
     # auto: prefer reg; if unavailable, fall back to CAGR
-    g = compute_log_reg_growth(series)
-    if g is not None:
-        return apply_caps(g, cap, floor), "reg", len(series[series > 0])
+    g_raw = compute_log_reg_growth(series)
+    if g_raw is not None:
+        return apply_caps(g_raw, cap, floor), "reg", len(series[series > 0]), g_raw
 
-    g = compute_cagr_from_series(pos_series)
-    used = "cagr" if g is not None else "auto"
-    return apply_caps(g, cap, floor), used, len(pos_series)
+    g_raw = compute_cagr_from_series(pos_series)
+    used = "cagr" if g_raw is not None else "auto"
+    return apply_caps(g_raw, cap, floor), used, len(pos_series), g_raw
 
-
-def apply_caps(g: Optional[float], cap: float, floor: float) -> Optional[float]:
-    if g is None:
-        return None
-    return max(floor, min(cap, g))
 
 
 # ----------------------------------------------------------
@@ -330,34 +329,38 @@ def upsert_gfv_row(engine, row: dict) -> None:
         (date, ticker, close_price, eps, fcf_per_share,
          cagr_years, growth_rate,                      -- legacy (stores FCF growth)
          growth_rate_fcf, growth_rate_eps,
+         growth_rate_fcf_raw, growth_rate_eps_raw,
          growth_method_fcf, growth_method_eps,
          discount_rate, terminal_growth, graham_yield_Y,
          graham_value, dcf_value, gfv_price, gfv_status)
         VALUES
         (:date, :ticker, :close_price, :eps, :fcfps,
-         :cagr_years, :growth_rate,                    -- legacy
+         :cagr_years, :growth_rate,
          :growth_rate_fcf, :growth_rate_eps,
+         :growth_rate_fcf_raw, :growth_rate_eps_raw,
          :growth_method_fcf, :growth_method_eps,
          :discount_rate, :terminal_growth, :graham_yield_Y,
          :graham_value, :dcf_value, :gfv_price, :gfv_status)
         ON CONFLICT (ticker, date) DO UPDATE SET
-          close_price        = EXCLUDED.close_price,
-          eps                = EXCLUDED.eps,
-          fcf_per_share      = EXCLUDED.fcf_per_share,
-          cagr_years         = EXCLUDED.cagr_years,
-          growth_rate        = EXCLUDED.growth_rate,           -- legacy stays in sync with FCF growth
-          growth_rate_fcf    = EXCLUDED.growth_rate_fcf,
-          growth_rate_eps    = EXCLUDED.growth_rate_eps,
-          growth_method_fcf  = EXCLUDED.growth_method_fcf,
-          growth_method_eps  = EXCLUDED.growth_method_eps,
-          discount_rate      = EXCLUDED.discount_rate,
-          terminal_growth    = EXCLUDED.terminal_growth,
-          graham_yield_Y     = EXCLUDED.graham_yield_Y,
-          graham_value       = EXCLUDED.graham_value,
-          dcf_value          = EXCLUDED.dcf_value,
-          gfv_price          = EXCLUDED.gfv_price,
-          gfv_status         = EXCLUDED.gfv_status,
-          updated_at         = now()
+          close_price           = EXCLUDED.close_price,
+          eps                   = EXCLUDED.eps,
+          fcf_per_share         = EXCLUDED.fcf_per_share,
+          cagr_years            = EXCLUDED.cagr_years,
+          growth_rate           = EXCLUDED.growth_rate,
+          growth_rate_fcf       = EXCLUDED.growth_rate_fcf,
+          growth_rate_eps       = EXCLUDED.growth_rate_eps,
+          growth_rate_fcf_raw   = EXCLUDED.growth_rate_fcf_raw,
+          growth_rate_eps_raw   = EXCLUDED.growth_rate_eps_raw,
+          growth_method_fcf     = EXCLUDED.growth_method_fcf,
+          growth_method_eps     = EXCLUDED.growth_method_eps,
+          discount_rate         = EXCLUDED.discount_rate,
+          terminal_growth       = EXCLUDED.terminal_growth,
+          graham_yield_Y        = EXCLUDED.graham_yield_Y,
+          graham_value          = EXCLUDED.graham_value,
+          dcf_value             = EXCLUDED.dcf_value,
+          gfv_price             = EXCLUDED.gfv_price,
+          gfv_status            = EXCLUDED.gfv_status,
+          updated_at            = now()
     """)
     with engine.begin() as conn:
         conn.execute(q, row)
@@ -366,15 +369,38 @@ def upsert_gfv_row(engine, row: dict) -> None:
 # ----------------------------------------------------------
 # Display status
 # ----------------------------------------------------------
-def pick_status_and_display(price: Optional[float], dcfv: Optional[float], gv: Optional[float]) -> Tuple[Optional[float], str]:
+def pick_status_and_display(price: Optional[float],
+                            dcfv: Optional[float],
+                            gv: Optional[float]) -> Tuple[Optional[float], str]:
+    """
+    Returns (gfv_display_value, status_color).
+
+    Colors:
+      - gold  = price <= both models (strongest agreement)
+      - green = price <= at least one model (and both are valid)
+      - red   = price > both models
+      - gray  = only one model available, or one/both invalid (<=0 or None)
+    """
     p = to_float(price); d = to_float(dcfv); g = to_float(gv)
-    if p is None or p <= 0: return None, "red"
+    if p is None or p <= 0:
+        return None, "red"
+
     candidates = [v for v in (d, g) if v is not None and v > 0]
-    if not candidates: return None, "red"
-    minv = min(candidates); maxv = max(candidates)
-    if p <= minv: return minv, "gold"
-    elif p <= maxv: return maxv, "green"
-    else: return maxv, "red"
+
+    if not candidates:
+        return None, "gray"     # was "yellow"
+
+    if len(candidates) == 1:
+        v = candidates[0]
+        return v, "gray"        # was "yellow"
+
+    lo, hi = min(candidates), max(candidates)
+    if p <= lo:
+        return lo, "gold"
+    elif p <= hi:
+        return hi, "green"
+    else:
+        return hi, "red"
 
 
 # ----------------------------------------------------------
@@ -417,20 +443,22 @@ def run(args) -> None:
                 eps_df = get_eps_history_fy(engine, t, args.cagr_years, d)
 
                 # Choose growths independently
-                g_fcf, used_fcf, pts_fcf = choose_growth(
+                g_fcf, used_fcf, pts_fcf, g_fcf_raw = choose_growth(
                     fcf_df["fcfps"] if not fcf_df.empty else pd.Series(dtype=float),
                     method=args.growth_method_fcf,
                     cap=args.growth_cap_fcf,
                     floor=args.growth_floor_fcf,
                     manual=args.growth_rate_fcf
                 )
-                g_eps, used_eps, pts_eps = choose_growth(
+
+                g_eps, used_eps, pts_eps, g_eps_raw = choose_growth(
                     eps_df["eps"] if not eps_df.empty else pd.Series(dtype=float),
                     method=args.growth_method_eps,
                     cap=args.growth_cap_eps,
                     floor=args.growth_floor_eps,
                     manual=args.growth_rate_eps
                 )
+
 
                 logger.debug(f"{t} {d} FCF growth={g_fcf} ({used_fcf},{pts_fcf}pts)  EPS growth={g_eps} ({used_eps},{pts_eps}pts)")
 
@@ -460,6 +488,8 @@ def run(args) -> None:
                     "graham_value": None if graham is None else float(graham),
                     "dcf_value": None if dcfv is None else float(dcfv),
                     "gfv_price": None if display_val is None else float(display_val),
+                    "growth_rate_fcf_raw": g_fcf_raw,
+                    "growth_rate_eps_raw": g_eps_raw,
                     "gfv_status": status,
                 }
                 upsert_gfv_row(engine, row)
@@ -495,7 +525,7 @@ def parse_args():
     # Growth (EPS for Graham)
     p.add_argument("--growth_method_eps", type=str, default="auto", choices=["auto", "reg", "cagr"],
                    help="Growth estimator for Graham (EPS): auto (default), reg, or cagr")
-    p.add_argument("--growth_cap_eps", type=float, default=0.20, help="Upper cap for EPS growth (e.g., 0.20)")
+    p.add_argument("--growth_cap_eps", type=float, default=0.15, help="Upper cap for EPS growth (e.g., 0.15)")
     p.add_argument("--growth_floor_eps", type=float, default=0.0,  # <-- was -0.10
                    help="Lower cap for EPS growth (e.g., 0.00 to disallow negative growth in Graham)")
     p.add_argument("--growth_rate_eps", type=float, default=None,
