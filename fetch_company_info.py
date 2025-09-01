@@ -32,32 +32,24 @@ engine = get_engine()
 # ----------------------------------------------------------
 # Constants
 # ----------------------------------------------------------
-# Accept any exchange if yfinance has pricing + info + financials.
 INVALID_TICKERS = {'AMRZ', 'B', 'LTM', 'NBIS', 'SAML', 'TBB'}
-INACTIVITY_BUSINESS_DAYS = 10  # business days without DB prices => delisted
+INACTIVITY_BUSINESS_DAYS = 10  # default cutoff
 
 # ----------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------
 def parse_tickers_arg(raw: str | None) -> list[str]:
-    """
-    Accepts comma and/or whitespace separated tickers.
-    Example: "AAPL, MSFT TSLA" -> ["AAPL","MSFT","TSLA"]
-    """
     if not raw:
         return []
     parts = [p.strip().upper() for p in raw.replace(",", " ").split() if p.strip()]
     seen, out = set(), []
     for p in parts:
         if p not in seen:
-            out.append(p); seen.add(p)
+            out.append(p)
+            seen.add(p)
     return out
 
 def is_ticker_inactive_by_prices(ticker: str, max_business_days: int = INACTIVITY_BUSINESS_DAYS) -> tuple[bool, datetime | None]:
-    """
-    Returns (inactive: bool, last_price_date: date|None) based on your DB prices table.
-    If the ticker has never had prices (None), treat as NOT inactive (new/onboarding).
-    """
     q = text("SELECT MAX(date) AS last_price_date FROM prices WHERE ticker = :t")
     with engine.connect() as conn:
         row = conn.execute(q, {"t": ticker}).fetchone()
@@ -73,10 +65,6 @@ def is_ticker_inactive_by_prices(ticker: str, max_business_days: int = INACTIVIT
     return (bdays_without_prices >= max_business_days), last_price_date
 
 def set_delisted(ticker: str, delisted: bool, when=None):
-    """
-    Update companies.delisted (+ delisted_date when delisted).
-    When clearing delisted, delisted_date is reset to NULL.
-    """
     q = text("""
         UPDATE companies
         SET delisted = :d,
@@ -89,20 +77,7 @@ def set_delisted(ticker: str, delisted: bool, when=None):
     with engine.begin() as conn:
         conn.execute(q, {"d": delisted, "w": when, "t": ticker})
 
-# (Kept for reference; not used now that we accept any exchange)
-def remove_foreign_ticker(ticker: str):
-    tables = ['companies', 'prices', 'financials', 'greer_buyzone_daily', 'fair_value_gaps', 'greer_opportunity_periods']
-    for table in tables:
-        q = text(f"DELETE FROM {table} WHERE ticker = :ticker")
-        with engine.begin() as conn:
-            conn.execute(q, {'ticker': ticker})
-    print(f"Removed foreign ticker {ticker} from all tables.")
-    logger.info(f"Removed foreign ticker {ticker} from all tables.")
-
 def _has_recent_pricing(stock: yf.Ticker) -> bool:
-    """
-    True if yfinance has any recent price history (5d fallback to 1mo).
-    """
     try:
         hist = stock.history(period="5d", auto_adjust=False)
         if hist is not None and not hist.empty:
@@ -114,9 +89,6 @@ def _has_recent_pricing(stock: yf.Ticker) -> bool:
         return False
 
 def _has_company_info(info: dict) -> bool:
-    """
-    True if yfinance info has at least a longName or shortName.
-    """
     if not info:
         return False
     return bool(info.get("longName") or info.get("shortName"))
@@ -129,15 +101,12 @@ def _normalize_index(df: pd.DataFrame | None) -> pd.DataFrame | None:
     return df
 
 def _has_financials(stock: yf.Ticker) -> bool:
-    """
-    True if yfinance returns at least one non-empty income statement (annual or trailing).
-    """
     try:
         inc = stock.get_income_stmt(freq="yearly")
         if inc is None or inc.empty:
             inc = stock.get_income_stmt(freq="trailing")
         if inc is None or inc.empty:
-            inc = getattr(stock, "income_stmt", pd.DataFrame())  # legacy fallback
+            inc = getattr(stock, "income_stmt", pd.DataFrame())
         inc = _normalize_index(inc)
         return inc is not None and not inc.empty and len(inc.columns) > 0
     except Exception as e:
@@ -145,10 +114,9 @@ def _has_financials(stock: yf.Ticker) -> bool:
         return False
 
 # ----------------------------------------------------------
-# Fetch company info (accept ANY exchange if yfinance has pricing+info+financials)
+# Fetch company info
 # ----------------------------------------------------------
-def fetch_company_info(ticker: str, retries: int = 3, delay: int = 2):
-    # 1) Price-based inactivity from your DB (business days)
+def fetch_company_info(ticker: str, retries: int = 3, delay: int = 2, verbose: bool = False, force: bool = False):
     inactive, last_price_date = is_ticker_inactive_by_prices(ticker)
     if inactive:
         set_delisted(ticker, True, last_price_date or datetime.now().date())
@@ -162,13 +130,9 @@ def fetch_company_info(ticker: str, retries: int = 3, delay: int = 2):
             'delisted_date': last_price_date or datetime.now().date()
         }
 
-    # 2) yfinance requirements: pricing + company info + financials (ANY exchange)
     for attempt in range(retries):
         try:
             stock = yf.Ticker(ticker)
-
-            # Company info
-            info = {}
             try:
                 info = stock.info
             except Exception:
@@ -183,16 +147,28 @@ def fetch_company_info(ticker: str, retries: int = 3, delay: int = 2):
             pricing_ok = _has_recent_pricing(stock)
             financials_ok = _has_financials(stock)
 
-            if not info_ok or not pricing_ok or not financials_ok:
-                logger.info(
-                    f"[{ticker}] gating failed -> info_ok={info_ok}, pricing_ok={pricing_ok}, financials_ok={financials_ok}"
-                )
-                if attempt < retries - 1:
-                    time.sleep(delay)
-                    continue
-                return None
+            if verbose:
+                print(f"[{ticker}] info_ok={info_ok} pricing_ok={pricing_ok} financials_ok={financials_ok} "
+                      f"name='{name}' sector='{sector}' industry='{industry}' exchange='{exchange}'")
 
-            # All gates passed: ensure not delisted
+            if not (info_ok and pricing_ok and financials_ok):
+                if force and info_ok:
+                    set_delisted(ticker, False, None)
+                    return {
+                        'ticker': ticker,
+                        'name': name,
+                        'sector': sector,
+                        'industry': industry,
+                        'exchange': exchange,
+                        'delisted': False,
+                        'delisted_date': None
+                    }
+                else:
+                    if attempt < retries - 1:
+                        time.sleep(delay)
+                        continue
+                    return None
+
             set_delisted(ticker, False, None)
             return {
                 'ticker': ticker,
@@ -213,9 +189,11 @@ def fetch_company_info(ticker: str, retries: int = 3, delay: int = 2):
     return None
 
 # ----------------------------------------------------------
-# Load tickers from --tickers, file, or companies table (in that order)
+# Load tickers
 # ----------------------------------------------------------
-def load_tickers(file_path: str | None = None, explicit_tickers: list[str] | None = None):
+def load_tickers(file_path: str | None = None,
+                 explicit_tickers: list[str] | None = None,
+                 reload_all: bool = False):
     if explicit_tickers:
         print(f"🎯 Using explicit tickers: {', '.join(explicit_tickers)}")
         tickers = explicit_tickers
@@ -224,33 +202,39 @@ def load_tickers(file_path: str | None = None, explicit_tickers: list[str] | Non
         df = pd.read_csv(file_path)
         tickers = df["ticker"].dropna().astype(str).str.upper().str.strip().unique().tolist()
     else:
-        print("🗃️ Loading tickers from companies table...")
-        q = text("""
-            SELECT ticker
-            FROM companies
-            WHERE name IS NULL OR name = ''
-               OR sector IS NULL OR sector = ''
-               OR industry IS NULL OR industry = ''
-               OR exchange IS NULL OR exchange = ''
-               OR delisted IS NULL OR delisted = FALSE
-            ORDER BY ticker
-        """)
         with engine.connect() as conn:
-            df = pd.read_sql(q, conn)
-        tickers = df["ticker"].tolist()
+            if reload_all:
+                print("🗃️ Reload mode: loading ALL tickers from companies…")
+                df = pd.read_sql("SELECT ticker FROM companies ORDER BY ticker;", conn)
+            else:
+                print("🗃️ Loading tickers with missing company fields…")
+                df = pd.read_sql(
+                    """
+                    SELECT ticker
+                    FROM companies
+                    WHERE name IS NULL OR name = ''
+                       OR sector IS NULL OR sector = ''
+                       OR industry IS NULL OR industry = ''
+                       OR exchange IS NULL OR exchange = ''
+                       OR delisted IS NULL
+                    ORDER BY ticker
+                    """,
+                    conn,
+                )
+        tickers = df["ticker"].astype(str).str.upper().tolist()
 
     tickers = [t for t in tickers if t not in INVALID_TICKERS]
     return tickers
 
 # ----------------------------------------------------------
-# Process tickers (parallel)
+# Process tickers
 # ----------------------------------------------------------
-def process_tickers(tickers, max_workers=2):
+def process_tickers(tickers, max_workers=2, verbose=False, force=False):
     start_time = time.time()
     new_infos = []
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_ticker = {executor.submit(fetch_company_info, ticker): ticker for ticker in tickers}
+        future_to_ticker = {executor.submit(fetch_company_info, ticker, verbose=verbose, force=force): ticker for ticker in tickers}
         for future in as_completed(future_to_ticker):
             ticker = future_to_ticker[future]
             try:
@@ -271,7 +255,6 @@ def process_tickers(tickers, max_workers=2):
                 print(f"❌ Error processing {ticker}: {e}")
                 logger.error(f"Error processing {ticker}: {e}")
 
-    # UPSERT into companies (insert if missing, update if exists)
     if new_infos:
         q = text("""
             INSERT INTO companies (ticker, name, sector, industry, exchange, delisted, delisted_date, added_at)
@@ -295,7 +278,7 @@ def process_tickers(tickers, max_workers=2):
     logger.info(f"Total processing time: {elapsed:.2f} seconds")
 
 # ----------------------------------------------------------
-# Main Execution
+# Main
 # ----------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fetch company info from yfinance and update PostgreSQL")
@@ -303,12 +286,20 @@ if __name__ == "__main__":
     group.add_argument("--file", type=str, help="Optional path to CSV file of tickers")
     group.add_argument("--tickers", type=str, help='Optional comma/space separated tickers, e.g. "AAPL,MSFT TSLA"')
     parser.add_argument("--workers", type=int, default=2, help="Parallel workers (default: 2)")
+    parser.add_argument("--reload", action="store_true", help="Reload company info for ALL tickers (or only --tickers if provided).")
+    parser.add_argument("--inactive-days", type=int, default=INACTIVITY_BUSINESS_DAYS,
+                        help=f"Business days without DB prices to mark delisted (default: {INACTIVITY_BUSINESS_DAYS}).")
+    parser.add_argument("--verbose", action="store_true", help="Print gating and extracted fields for each ticker.")
+    parser.add_argument("--force", action="store_true", help="Upsert even if gating fails (use when yfinance is flaky).")
+
     args = parser.parse_args()
 
     explicit = parse_tickers_arg(args.tickers)
-    tickers = load_tickers(args.file, explicit)
+    tickers = load_tickers(args.file, explicit, reload_all=args.reload)
+
+    INACTIVITY_BUSINESS_DAYS = int(args.inactive_days)
 
     print(f"✅ Loaded {len(tickers)} tickers")
     logger.info(f"Loaded {len(tickers)} tickers")
 
-    process_tickers(tickers, max_workers=args.workers)
+    process_tickers(tickers, max_workers=args.workers, verbose=args.verbose, force=args.force)

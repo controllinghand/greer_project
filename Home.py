@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from html import escape  
 from datetime import date
 from sqlalchemy import text
 from db import get_engine  # ✅ Centralized DB connection
@@ -122,6 +123,50 @@ def get_company_info(ticker: str):
     )
     return df
 
+@st.cache_data(ttl=300)
+def get_latest_gfv(ticker: str, _cache_buster=None):
+    """
+    Tries greer_fair_value_latest view first; falls back to DISTINCT ON if the view isn't present.
+    Returns a 1-row DataFrame or empty DataFrame.
+    """
+    engine = get_engine()
+    try:
+        df = pd.read_sql(
+            """
+            SELECT ticker, date, close_price, gfv_price, gfv_status,
+                   dcf_value, graham_value,
+                   growth_rate_fcf, growth_rate_eps,
+                   discount_rate, terminal_growth, graham_yield_Y
+            FROM greer_fair_value_latest
+            WHERE ticker = %(t)s
+            LIMIT 1;
+            """,
+            engine,
+            params={"t": ticker},
+        )
+        if not df.empty:
+            return df
+    except Exception:
+        pass  # view might not exist
+
+    # Fallback: pull latest from daily
+    df = pd.read_sql(
+        """
+        SELECT DISTINCT ON (ticker)
+               ticker, date, close_price, gfv_price, gfv_status,
+               dcf_value, graham_value,
+               growth_rate_fcf, growth_rate_eps,
+               discount_rate, terminal_growth, graham_yield_Y
+        FROM greer_fair_value_daily
+        WHERE ticker = %(t)s
+        ORDER BY ticker, date DESC
+        LIMIT 1;
+        """,
+        engine,
+        params={"t": ticker},
+    )
+    return df
+
 # ----------------------------------------------------------
 # Helper Functions: Classifiers and Card Renderers
 # ----------------------------------------------------------
@@ -184,6 +229,73 @@ def render_metric_card(label: str, main_html: str, sub_html: str, bg: str, fg: s
         """,
         unsafe_allow_html=True
     )
+
+
+
+def render_gfv_badge(gfv_row: pd.Series):
+    # Pull values
+    today_price = gfv_row.get("close_price")
+    gfv         = gfv_row.get("gfv_price")
+    status      = (gfv_row.get("gfv_status") or "").lower()
+
+    dcf_val     = gfv_row.get("dcf_value")
+    graham_val  = gfv_row.get("graham_value")
+    g_fcf       = gfv_row.get("growth_rate_fcf")
+    g_eps       = gfv_row.get("growth_rate_eps")
+    r           = gfv_row.get("discount_rate")
+    tg          = gfv_row.get("terminal_growth")
+    Y           = gfv_row.get("graham_yield_Y")
+
+    badge_color = {"gold": "#D4AF37", "green": "#22c55e", "red": "#ef4444"}.get(status, "#6b7280")
+
+    def is_num(x):
+        return isinstance(x, (int, float, np.floating)) and x is not None and not pd.isna(x)
+
+    def money(x):
+        return f"${float(x):,.2f}" if is_num(x) else "—"
+
+    def pct(x):
+        return f"{float(x)*100:.1f}%" if is_num(x) else "—"
+
+    # Build tooltip (never formats None)
+    fcfps = gfv_row.get("fcf_per_share")
+
+    reason = ""
+    if dcf_val is None:
+        if isinstance(fcfps, (int, float, np.floating)) and not pd.isna(fcfps) and fcfps <= 0:
+            reason = " (unavailable: negative FCF/share)"
+        else:
+            reason = " (unavailable)"
+
+    tooltip_lines = [
+        f"Today’s Price: {money(today_price)}",
+        f"GFV Status: {status or '—'}",
+        "",
+        f"DCF FV: {money(dcf_val)}{reason}  |  FCF growth: {pct(g_fcf)}  |  r: {pct(r)}  |  terminal g: {pct(tg)}",
+        f"Graham FV: {money(graham_val)}  |  EPS growth: {pct(g_eps)}  |  AAA Y: {money(Y) if is_num(Y) else (Y if Y else '—')}",
+    ]
+
+    tooltip_attr = escape("\n".join(tooltip_lines), quote=True).replace("\n", "&#10;")
+
+    st.markdown(f"""
+    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:10px;">
+      <div class="metric-card" style="background:#111; color:#fff; min-height:auto; padding:8px 12px;">
+        <div class="metric-label" style="opacity:.7;">Today’s Price</div>
+        <div class="metric-main" style="font-size:18px;">{money(today_price)}</div>
+      </div>
+
+      <span title="{tooltip_attr}">
+        <div class="metric-card" style="background:{badge_color}; color:#111; min-height:auto; padding:8px 12px; cursor:help;">
+          <div class="metric-label" style="opacity:.9; display:flex; align-items:center; gap:6px;">
+            Greer Fair Value <span style="font-weight:700;">ⓘ</span>
+          </div>
+          <div class="metric-main" style="font-size:18px;">{money(gfv)}</div>
+        </div>
+      </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 
 # ----------------------------------------------------------
 # Detail Renderers
@@ -495,6 +607,14 @@ if ticker:
         # Company info
         with col_company:
             render_company_card(ticker)
+
+            # GFV pill under the company card
+            gfv_df = get_latest_gfv(ticker)
+            if not gfv_df.empty:
+                render_gfv_badge(gfv_df.iloc[0])
+            else:
+                st.info("No Greer Fair Value yet for this ticker.")
+
 
         # Greer Value card
         gv_score = row.get("greer_value_score")

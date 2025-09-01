@@ -32,6 +32,7 @@ etl_commands = [
     ["python", "greer_value_yield_score.py"],
     ["python", "greer_fair_value_gap.py"],
     ["python", "greer_buyzone_calculator.py"],
+    ["python", "greer_fair_value_calculator.py"],
 ]
 
 # ----------------------------------------------------------
