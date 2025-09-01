@@ -137,7 +137,7 @@ def get_latest_gfv(ticker: str, _cache_buster=None):
                    dcf_value, graham_value,
                    growth_rate_fcf, growth_rate_eps,
                    growth_rate_fcf_raw, growth_rate_eps_raw,      -- NEW
-                   discount_rate, terminal_growth, graham_yield_Y
+                   discount_rate, terminal_growth, graham_yield_Y, fcf_per_share, eps
             FROM greer_fair_value_latest
             WHERE ticker = %(t)s
             LIMIT 1;
@@ -158,7 +158,7 @@ def get_latest_gfv(ticker: str, _cache_buster=None):
                dcf_value, graham_value,
                growth_rate_fcf, growth_rate_eps,
                growth_rate_fcf_raw, growth_rate_eps_raw,        -- NEW
-               discount_rate, terminal_growth, graham_yield_Y
+               discount_rate, terminal_growth, graham_yield_Y, fcf_per_share, eps
         FROM greer_fair_value_daily
         WHERE ticker = %(t)s
         ORDER BY ticker, date DESC
@@ -278,6 +278,7 @@ def render_gfv_badge(gfv_row: pd.Series):
 
     # --- Tooltip builder ---
     fcfps = gfv_row.get("fcf_per_share")
+    eps = gfv_row.get("eps")
 
     # Reasons for unavailability
     reason_dcf = ""
@@ -289,7 +290,10 @@ def render_gfv_badge(gfv_row: pd.Series):
 
     reason_graham = ""
     if graham_val is None:
-        reason_graham = " (unavailable)"
+        if isinstance(eps, (int, float, np.floating)) and not pd.isna(eps) and eps <= 0:
+            reason_graham = " (unavailable: negative EPS)"
+        else:
+            reason_graham = " (unavailable)"
 
     # Growth raw vs capped
     g_fcf_raw = gfv_row.get("growth_rate_fcf_raw")
@@ -315,8 +319,8 @@ def render_gfv_badge(gfv_row: pd.Series):
         f"Today’s Price: {money(today_price)}",
         f"GFV Status: {status or '—'}",
         "",
-        f"DCF FV: {money(dcf_val)}{reason_dcf}  |  FCF growth: {g_fcf_str}  |  r: {pct(r)}  |  terminal g: {pct(tg)}",
-        f"Graham FV: {money(graham_val)}{reason_graham}  |  EPS growth: {g_eps_str}  |  AAA Y: {yield_pp_str(Y)}",
+        f"DCF FV: {money(dcf_val)}{reason_dcf}  |  FCF/Share: {money(fcfps)}  | FCF growth: {g_fcf_str}  |  r: {pct(r)}  |  terminal g: {pct(tg)}",
+        f"Graham FV: {money(graham_val)}{reason_graham}  |  EPS: {money(eps)} | EPS growth: {g_eps_str}  |  AAA Y: {yield_pp_str(Y)}",
     ]
 
     from html import escape  # keep local import to avoid top-level duplication

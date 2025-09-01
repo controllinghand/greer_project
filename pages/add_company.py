@@ -210,6 +210,7 @@ def run_one_ticker_pipeline(symbol: str) -> list[tuple[str, int]]:
       5) greer_fair_value_gap
       6) greer_buyzone_calculator
       7) refresh_snapshot
+      8) greer_fair_value_calculator  <-- make sure this actually runs
     """
     results: list[tuple[str, int]] = []
 
@@ -218,12 +219,12 @@ def run_one_ticker_pipeline(symbol: str) -> list[tuple[str, int]]:
     if results[-1][1] != 0:
         return results
 
-    # 2) prices first so we can compute price-only features even if no financials yet
+    # 2) prices
     results.append(_call_step("price_loader", ["python", "price_loader.py", "--tickers", symbol]))
     if results[-1][1] != 0:
         return results
 
-    # 3) attempt to fetch financials
+    # 3) financials
     results.append(_call_step("fetch_financials", ["python", "fetch_financials.py", "--tickers", symbol]))
     if results[-1][1] != 0:
         return results
@@ -240,7 +241,6 @@ def run_one_ticker_pipeline(symbol: str) -> list[tuple[str, int]]:
         if results[-1][1] != 0:
             return results
     else:
-        # Skip these gracefully for newly listed tickers
         results.append(("greer_value_score (skipped – no financials)", 0))
         results.append(("greer_value_yield_score (skipped – no financials)", 0))
 
@@ -249,15 +249,21 @@ def run_one_ticker_pipeline(symbol: str) -> list[tuple[str, int]]:
     if results[-1][1] != 0:
         return results
 
-    # 6) BuyZone (if your buyzone needs financials, it should no-op safely)
+    # 6) BuyZone
     results.append(_call_step("greer_buyzone_calculator", ["python", "greer_buyzone_calculator.py", "--tickers", symbol]))
     if results[-1][1] != 0:
         return results
 
     # 7) refresh snapshot / MVs
     results.append(_call_step("run_opportunities_refresh", ["python", "refresh_snapshot.py"]))
+    if results[-1][1] != 0:
+        return results
+
+    # 8) Greer Fair Value (always run; handles missing data gracefully)
+    results.append(_call_step("greer_fair_value", ["python", "greer_fair_value_calculator.py", "--tickers", symbol]))
 
     return results
+
 
 def render_company_preview(info: dict) -> None:
     st.subheader("Company Preview")
