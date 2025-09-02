@@ -34,7 +34,4 @@ logs/
 # data
 data/
 
-# csv files
-*.csv
-
 yfinance_db.sql
