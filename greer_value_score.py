@@ -152,6 +152,105 @@ def insert_greer_score(conn, row, report_date):
     conn.commit()
 
 # ----------------------------------------------------------
+# Function: Calculate Daily Scores for Charting Purpose
+# ----------------------------------------------------------
+def calculate_daily_scores(ticker):
+    try:
+        with get_psycopg_connection() as conn:
+            with conn.cursor() as cur:
+                # Load all close prices for the ticker
+                cur.execute("""
+                    SELECT date, close
+                    FROM prices
+                    WHERE ticker = %s
+                    ORDER BY date
+                """, (ticker,))
+                price_rows = cur.fetchall()
+                if not price_rows:
+                    msg = f"No price data found for {ticker}"
+                    print(f"⚠️ {msg}")
+                    logger.warning(msg)
+                    return
+
+                # Load financials (sorted by report_date)
+                cur.execute("""
+                    SELECT report_date, book_value_per_share, free_cash_flow, net_margin,
+                           total_revenue, net_income, shares_outstanding
+                    FROM financials
+                    WHERE ticker = %s
+                    ORDER BY report_date
+                """, (ticker,))
+                fin_rows = cur.fetchall()
+                if not fin_rows:
+                    msg = f"No financial data found for {ticker}"
+                    print(f"⚠️ {msg}")
+                    logger.warning(msg)
+                    return
+
+                fin_idx = 0
+                current_fin = fin_rows[fin_idx]
+                first_fin_date = fin_rows[0][0]  # Only start after this
+                print(f"📅 First financial date for {ticker}: {first_fin_date}")
+
+                rows_inserted = 0
+                for p in price_rows:
+                    date, _ = p  # Price not used for score, but needed for date alignment
+                    if date < first_fin_date:
+                        continue  # Skip if before financial data is available
+
+                    # If next financials are available, switch to them
+                    if fin_idx + 1 < len(fin_rows) and date >= fin_rows[fin_idx + 1][0]:
+                        fin_idx += 1
+                        current_fin = fin_rows[fin_idx]
+                        print(f"📅 Switched to financials for {ticker} at report_date: {current_fin[0]}")
+
+                    report_date = current_fin[0]
+                    df_subset = pd.DataFrame(
+                        [fin_rows[i] for i in range(fin_idx + 1)],
+                        columns=["dates", "BOOK_VALUE_PER_SHARE", "FREE_CASH_FLOW", "NET_MARGIN",
+                                 "TOTAL_REVENUE", "NET_INCOME", "DILUTED_SHARES_OUTSTANDING"]
+                    )
+                    df_subset["dates"] = pd.to_datetime(df_subset["dates"])
+
+                    # Compute Greer Value Score
+                    result = compute_greer_value_score(ticker, df_subset)[ticker]
+                    row = {
+                        "greer_score": result["GreerValue"]["score"],
+                        "above_50_count": result["GreerValue"]["above_50_count"],
+                        "book_pct": result["BOOK_VALUE_PER_SHARE"]["pct"],
+                        "fcf_pct": result["FREE_CASH_FLOW"]["pct"],
+                        "margin_pct": result["NET_MARGIN"]["pct"],
+                        "revenue_pct": result["TOTAL_REVENUE"]["pct"],
+                        "income_pct": result["NET_INCOME"]["pct"],
+                        "shares_pct": result["DILUTED_SHARES_OUTSTANDING"]["pct"]
+                    }
+                    # Convert NumPy types to native Python types
+                    row = convert_numpy_types(row)
+
+                    # Insert into greer_scores_daily
+                    cur.execute("""
+                        INSERT INTO greer_scores_daily (
+                            ticker, date, greer_score, above_50_count,
+                            book_pct, fcf_pct, margin_pct, revenue_pct, income_pct, shares_pct
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (ticker, date) DO NOTHING
+                    """, (
+                        ticker, date,
+                        row["greer_score"], row["above_50_count"],
+                        row["book_pct"], row["fcf_pct"], row["margin_pct"],
+                        row["revenue_pct"], row["income_pct"], row["shares_pct"]
+                    ))
+                    rows_inserted += 1
+
+                conn.commit()
+                print(f"✅ Inserted {rows_inserted} daily score rows for {ticker}")
+
+    except Exception as e:
+        msg = f"Error processing daily scores for {ticker}: {e}"
+        print(f"❌ {msg}")
+        logger.error(msg)
+
+# ----------------------------------------------------------
 # Convert any numpy types to native Python types
 # ----------------------------------------------------------
 def convert_numpy_types(row_dict):
@@ -219,6 +318,7 @@ if __name__ == "__main__":
 
             df_full.to_csv(f"data/{ticker}_data.csv", index=False)
 
+            # Calculate scores for report_date (existing logic)
             for report_date in df_full["dates"].sort_values().unique():
                 df_subset = df_full[df_full["dates"] <= report_date]
                 result = compute_greer_value_score(ticker, df_subset)
@@ -239,6 +339,9 @@ if __name__ == "__main__":
                 summary_rows.append(row)
                 insert_greer_score(conn, convert_numpy_types(row), report_date)
                 print(f"✅ Inserted Greer score for {ticker} (as of {report_date})")
+
+            # Calculate daily scores
+            calculate_daily_scores(ticker)
 
         except Exception as e:
             logger.error(f"❌ Error processing {ticker}: {e}")

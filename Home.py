@@ -349,6 +349,7 @@ def render_gfv_badge(gfv_row: pd.Series):
 # Detail Renderers
 # ----------------------------------------------------------
 def render_gv_details(ticker, engine):
+    # Fetch latest Greer Value Score
     df = pd.read_sql(
         """
         SELECT *
@@ -364,12 +365,14 @@ def render_gv_details(ticker, engine):
         st.warning("No Greer Value data for this ticker.")
         return
 
+    # Display latest score and grade
     greer_score = df["greer_score"].iloc[0]
     above_50 = df["above_50_count"].iloc[0]
     grade, grade_color, txt_color = classify_greer(greer_score, above_50)
 
     st.markdown(
         f"""
+        <h3 style='margin:20px 0 10px;'>📊 {ticker.upper()} – Greer Value Snapshot</h3>
         <div style='text-align:center;margin:20px 0;'>
             <div style='font-size:32px;font-weight:bold;'>
                 Greer Value Score: <span style='color:{grade_color};'>{greer_score:.2f}%</span>
@@ -384,27 +387,115 @@ def render_gv_details(ticker, engine):
         unsafe_allow_html=True,
     )
 
-    labels = ["Book", "FCF", "Margin", "Revenue", "Income", "Shares"]
-    values = [
-        df["book_pct"].iloc[0] or 0,
-        df["fcf_pct"].iloc[0] or 0,
-        df["margin_pct"].iloc[0] or 0,
-        df["revenue_pct"].iloc[0] or 0,
-        df["income_pct"].iloc[0] or 0,
-        df["shares_pct"].iloc[0] or 0,
-    ]
-    values += values[:1]
-    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
-    angles += angles[:1]
+    # Small radar chart in top-left corner
+    col1, col2 = st.columns([1, 3])  # Adjusted column widths: 1 for radar, 3 for empty space
+    with col1:  # Moved radar chart to col1 (left side)
+        labels = ["Book", "FCF", "Margin", "Revenue", "Income", "Shares"]
+        values = [
+            df["book_pct"].iloc[0] or 0,
+            df["fcf_pct"].iloc[0] or 0,
+            df["margin_pct"].iloc[0] or 0,
+            df["revenue_pct"].iloc[0] or 0,
+            df["income_pct"].iloc[0] or 0,
+            df["shares_pct"].iloc[0] or 0,
+        ]
+        values += values[:1]
+        angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+        angles += angles[:1]
 
-    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
-    ax.plot(angles, values, linewidth=2)
-    ax.fill(angles, values, alpha=0.25)
-    ax.set_ylim(0, 100)
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(labels)
-    ax.set_title(f"{ticker.upper()} – Greer Component Radar", y=1.08)
+        fig, ax = plt.subplots(figsize=(3, 3), subplot_kw=dict(polar=True))
+        ax.plot(angles, values, linewidth=1, color="#1976D2")
+        ax.fill(angles, values, alpha=0.25, color="#1976D2")
+        ax.set_ylim(0, 100)
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(labels, fontsize=8)
+        ax.set_title(f"{ticker.upper()} – Component Radar", fontsize=10, y=1.08)
+        st.pyplot(fig)
+
+    # Fetch 180 days data for price and score chart
+    hist = pd.read_sql(
+        """
+        SELECT g.date, g.greer_score, g.above_50_count, p.close
+        FROM greer_scores_daily g
+        JOIN prices p ON g.ticker = p.ticker AND g.date = p.date
+        WHERE g.ticker = %(t)s
+          AND g.date >= CURRENT_DATE - INTERVAL '180 days'
+        ORDER BY g.date;
+        """,
+        engine,
+        params={'t': ticker},
+        parse_dates=['date']
+    )
+    if hist.empty:
+        st.warning("No Greer Value data for the last 180 days. Falling back to greer_scores.")
+        # Fallback to greer_scores
+        hist = pd.read_sql(
+            """
+            SELECT g.report_date AS date, g.greer_score, g.above_50_count, p.close
+            FROM greer_scores g
+            JOIN prices p ON g.ticker = p.ticker AND g.report_date = p.date
+            WHERE g.ticker = %(t)s
+              AND g.report_date >= CURRENT_DATE - INTERVAL '180 days'
+            ORDER BY g.report_date;
+            """,
+            engine,
+            params={'t': ticker},
+            parse_dates=['date']
+        )
+        if hist.empty:
+            st.warning("No Greer Value data available for the last 180 days.")
+            return
+
+    # Price and score ribbon chart
+    st.markdown(f"<h3 style='margin:20px 0 10px;'>📈 {ticker.upper()} – Greer Value Score Map (180 trading days)</h3>", unsafe_allow_html=True)
+    fig, (ax_price, ax_ribbon) = plt.subplots(
+        2, 1, sharex=True, figsize=(9, 5), gridspec_kw={"height_ratios": [4, 0.4]}
+    )
+    ax_price.plot(hist["date"], hist["close"], color="black", lw=1)
+    ax_price.set_ylabel("Close")
+    ax_price.set_title(f"{ticker.upper()} – Greer Value Score Map (180 trading days)")
+
+    # Create masks for each score category
+    exceptional_mask = (hist["above_50_count"] == 6)
+    strong_mask = (hist["greer_score"] >= 50) & (hist["above_50_count"] != 6)
+    weak_mask = (hist["greer_score"] < 50) & (hist["greer_score"].notnull())
+    none_mask = hist["greer_score"].isnull()
+
+    # Apply colors based on classify_greer
+    ax_ribbon.fill_between(hist["date"], 0, 1, where=exceptional_mask, color="#D4AF37", alpha=0.7, label="Exceptional")
+    ax_ribbon.fill_between(hist["date"], 0, 1, where=strong_mask, color="#4CAF50", alpha=0.7, label="Strong")
+    ax_ribbon.fill_between(hist["date"], 0, 1, where=weak_mask, color="#F44336", alpha=0.7, label="Weak")
+    ax_ribbon.fill_between(hist["date"], 0, 1, where=none_mask, color="#E0E0E0", alpha=0.7, label="None")
+
+    ax_ribbon.set_yticks([])
+    ax_ribbon.set_ylim(0, 1)
+    ax_ribbon.set_xlabel("Date")
     st.pyplot(fig)
+
+    # Score distribution stats
+    total = len(hist)
+    counts = {
+        "Exceptional": exceptional_mask.sum(),
+        "Strong": strong_mask.sum(),
+        "Weak": weak_mask.sum(),
+        "None": none_mask.sum()
+    }
+    stats_lines = []
+    for grade, count in counts.items():
+        pct = (count / total * 100) if total > 0 else 0
+        stats_lines.append(f"**{grade}:** {count} days ({pct:.1f}%)")
+    st.markdown("**Greer Score Distribution (last 180 days):** " + " | ".join(stats_lines))
+
+    with st.expander("ℹ️ Greer Value grade legend"):
+        st.markdown(
+            """
+            - **Exceptional**: Above 50% in all six components (Above_50_count = 6)  
+            - **Strong**: Greer Score ≥ 50%  
+            - **Weak**: Greer Score < 50%  
+            - **None**: No score available
+            """
+        )
+# Replace the existing render_yield_details function with this updated version
 
 def render_yield_details(ticker, engine):
     snap = pd.read_sql(
@@ -448,25 +539,58 @@ def render_yield_details(ticker, engine):
         unsafe_allow_html=True
     )
 
-    hist = pd.read_sql(
+    # Fetch 180 days data for chart
+    df = pd.read_sql(
         """
-        SELECT date, tvpct, tvavg
-        FROM greer_yields_daily
-        WHERE ticker = %(t)s
-        ORDER BY date;
+        SELECT y.date, y.score, p.close
+        FROM greer_yields_daily y
+        JOIN prices p ON y.ticker = p.ticker AND y.date = p.date
+        WHERE y.ticker = %(t)s
+          AND y.date >= CURRENT_DATE - INTERVAL '180 days'
+        ORDER BY y.date;
         """,
         engine,
-        params={"t": ticker}
+        params={'t': ticker},
+        parse_dates=['date']
     )
-    if not hist.empty:
-        st.markdown("### 📈 Yield Trend: TVPCT vs TVAVG")
-        fig, ax = plt.subplots()
-        ax.plot(hist["date"], hist["tvpct"], label="TVPCT (Current)", linewidth=2)
-        ax.plot(hist["date"], hist["tvavg"], label="TVAVG (Average)", linestyle="--")
-        ax.set_ylabel("Yield %")
-        ax.set_title("Valuation Yield Over Time")
-        ax.legend()
-        st.pyplot(fig)
+    if df.empty:
+        st.warning("No yield data for the last 180 days.")
+        return
+
+    df['score'] = df['score'].astype(int)
+
+    fig, (ax_price, ax_ribbon) = plt.subplots(
+        2, 1, sharex=True, figsize=(9, 5), gridspec_kw={"height_ratios": [4, 0.4]}
+    )
+    ax_price.plot(df["date"], df["close"], color="black", lw=1)
+    ax_price.set_ylabel("Close")
+    ax_price.set_title(f"{ticker.upper()} – Yield Score Map (180 trading days)")
+
+    colors = {
+        4: "#D4AF37",  # gold
+        3: "#4CAF50",  # green
+        2: "#2196F3",  # blue
+        1: "#2196F3",  # blue
+        0: "#F44336",  # red
+    }
+    for score_val, color in colors.items():
+        mask = df["score"] == score_val
+        ax_ribbon.fill_between(df["date"], 0, 1, where=mask, color=color, alpha=0.7)
+
+    ax_ribbon.set_yticks([])
+    ax_ribbon.set_ylim(0, 1)
+    ax_ribbon.set_xlabel("Date")
+    st.pyplot(fig)
+
+    # Yield score distribution stats
+    total = len(df)
+    counts = df['score'].value_counts().sort_index(ascending=False)
+    stats_lines = []
+    for sc in range(4, -1, -1):
+        days = counts.get(sc, 0)
+        pct = (days / total * 100) if total > 0 else 0
+        stats_lines.append(f"**{sc}:** {days} days ({pct:.1f}%)")
+    st.markdown("**Yield Score Distribution (last 180 days):** " + " | ".join(stats_lines))
 
     with st.expander("ℹ️ Yield grade legend"):
         st.markdown(
