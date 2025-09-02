@@ -209,7 +209,7 @@ def render_company_card(ticker: str):
 
     st.markdown(
         f"""
-        <div class="company-card">
+        <div class="company-card" style="color: rgb(49, 51, 63);">
             <div class="company-title">{ticker} — {name}</div>
             <div class="company-meta"><b>Exchange:</b> {exchange}</div>
             <div class="company-meta"><b>Sector:</b> {sector}</div>
