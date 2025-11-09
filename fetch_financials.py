@@ -442,7 +442,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--workers",
         type=int,
-        default=10,
+        default=3,
         help="Max parallel workers (default: 10)"
     )
     parser.add_argument(

@@ -28,6 +28,7 @@ etl_commands = [
     ["python", "fetch_company_info.py"],
     ["python", "fetch_financials.py"],
     ["python", "price_loader.py"],
+    ["python", "fetch_iv_summary.py"],  # <-- added
     ["python", "greer_value_score.py"],
     ["python", "greer_value_yield_score.py"],
     ["python", "greer_fair_value_gap.py"],
