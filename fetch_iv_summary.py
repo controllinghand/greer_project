@@ -35,10 +35,6 @@ engine = get_engine()
 # ----------------------------------------------------------
 # Helper functions
 def load_tickers(file_path: str | None) -> list[str]:
-    """
-    Load tickers from either a CSV file (with column "ticker")
-    or from the companies table.
-    """
     if file_path:
         logger.info(f"Loading tickers from file: {file_path}")
         df = pd.read_csv(file_path)
@@ -61,10 +57,7 @@ def load_tickers(file_path: str | None) -> list[str]:
     logger.info(f"Loaded {len(tickers)} tickers from companies table")
     return tickers
 
-# ----------------------------------------------------------
-# Utility to enforce timeout on a function call
 def run_with_timeout(func, args=(), kwargs=None, timeout_sec=60):
-    """Runs func(*args, **kwargs) and raises TimeoutError if it takes more than timeout_sec seconds."""
     if kwargs is None:
         kwargs = {}
     result = {}
@@ -86,21 +79,13 @@ def run_with_timeout(func, args=(), kwargs=None, timeout_sec=60):
         raise exc['error']
     return result.get('value')
 
-# ----------------------------------------------------------
-# Core function: Fetch IV summary for one ticker
 def fetch_iv_summary_for_ticker(
     ticker: str,
     max_retries: int = 3,
     initial_backoff: float = 30.0,
     timeout_sec: float = 60.0
 ) -> dict | None:
-    """
-    Fetches the implied volatility summary for the next expiry of the given ticker.
-    Retries on rate-limit error or timeout, with exponential back-off.
-    Also skips fetching if already processed today.
-    """
     today = pd.Timestamp.utcnow().date()
-    # skip check
     with engine.connect() as conn:
         exists_row = conn.execute(
             text("SELECT 1 FROM iv_summary WHERE ticker = :ticker AND fetch_date = :today"),
@@ -150,22 +135,35 @@ def fetch_iv_summary_for_ticker(
         logger.error(f"{ticker}: exceeded max retries ({max_retries}) due to timeout or rate-limit; skipping ticker.")
         return None
 
-    df = pd.concat([opt.calls, opt.puts], ignore_index=True)
-    df = df.dropna(subset=["impliedVolatility"])
-    if df.empty:
-        logger.warning(f"{ticker}: no impliedVolatility data for expiry {expiry}")
+    # Using calls only for ATM call premium
+    calls = opt.calls.dropna(subset=["impliedVolatility"])
+    if calls.empty:
+        logger.warning(f"{ticker}: no call option data for expiry {expiry}")
         return None
 
-    stats = df["impliedVolatility"].describe()
+    stats = calls["impliedVolatility"].describe()
     logger.info(f"{ticker}: impliedVolatility stats computed.")
 
-    atm_iv = None
     price = stock.info.get("regularMarketPrice", None)
+    atm_iv = None
+    atm_premium = None
+    atm_premium_pct = None
+
     if price is not None:
-        df["dist"] = (df["strike"] - price).abs()
-        atm_row = df.loc[df["dist"].idxmin()]
-        atm_iv = float(atm_row["impliedVolatility"])
-        logger.info(f"{ticker}: ATM strike approx at {atm_row['strike']}, iv_atm = {atm_iv:.6f}.")
+        calls["dist"] = (calls["strike"] - price).abs()
+        atm_call = calls.loc[calls["dist"].idxmin()]
+
+        atm_iv = float(atm_call["impliedVolatility"])
+        # try to get lastPrice (premium)
+        last_price = atm_call.get("lastPrice", None)
+        if last_price is not None and not np.isnan(last_price):
+            atm_premium = float(last_price)
+            # premium as percent of underlying price
+            atm_premium_pct = atm_premium / price
+            logger.info(f"{ticker}: ATM strike {atm_call['strike']}, iv_atm = {atm_iv:.6f}, premium = {atm_premium:.2f}, premium_pct = {atm_premium_pct:.4f}")
+        else:
+            logger.warning(f"{ticker}: ATM call lastPrice not available (None or NaN).")
+
     else:
         logger.warning(f"{ticker}: could not retrieve regularMarketPrice for ATM calculation.")
 
@@ -181,14 +179,14 @@ def fetch_iv_summary_for_ticker(
         "iv_median": float(stats["50%"]),
         "iv_75": float(stats["75%"]),
         "iv_max": float(stats["max"]),
-        "iv_atm": atm_iv
+        "iv_atm": atm_iv,
+        "atm_premium": atm_premium,
+        "atm_premium_pct": atm_premium_pct
     }
 
     logger.info(f"{ticker}: fetched IV summary for expiry {expiry}: {result}")
     return result
 
-# ----------------------------------------------------------
-# Process tickers in parallel & insert into DB
 def process_tickers(tickers: list[str], max_workers: int = 3, delay_between: float = 2.0):
     start_time = time.time()
     summaries = []
@@ -219,18 +217,20 @@ def process_tickers(tickers: list[str], max_workers: int = 3, delay_between: flo
         logger.info("No summaries to insert. Ending process_tickers without DB insert.")
         return
 
+    # ----------------------------------------------------------
+    # IMPORTANT: Make sure iv_summary table has atm_premium (numeric) and atm_premium_pct (numeric) columns!
     insert_query = text("""
         INSERT INTO iv_summary (
             ticker, fetch_date, expiry,
             contract_count, iv_mean, iv_std,
             iv_min, iv_25, iv_median, iv_75,
-            iv_max, iv_atm
+            iv_max, iv_atm, atm_premium, atm_premium_pct
         )
         VALUES (
             :ticker, :fetch_date, :expiry,
             :contract_count, :iv_mean, :iv_std,
             :iv_min, :iv_25, :iv_median, :iv_75,
-            :iv_max, :iv_atm
+            :iv_max, :iv_atm, :atm_premium, :atm_premium_pct
         )
         ON CONFLICT (ticker, fetch_date, expiry) DO NOTHING
     """)
@@ -242,12 +242,10 @@ def process_tickers(tickers: list[str], max_workers: int = 3, delay_between: flo
     elapsed2 = time.time() - start_time
     logger.info(f"Completed DB insert in {elapsed2:.2f}s")
 
-# ----------------------------------------------------------
-# Main
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fetch option-chain IV summary and store in DB")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--file", type=str, help="Optional path to CSV with tickers (expects 'ticker' column')")
+    group.add_argument("--file", type=str, help="Optional path to CSV with tickers (expects 'ticker' column)")
     group.add_argument("--tickers", nargs="+", type=str,
                        help='List of tickers (e.g., TSLA AAPL MSFT)')
     parser.add_argument("--workers", type=int, default=3, help="Max parallel workers (default: 3)")
@@ -268,7 +266,6 @@ if __name__ == "__main__":
 
     logger.info(f"Starting IV summary fetch for {len(tickers_list)} tickers with {args.workers} workers, delay {args.delay}s, retries {args.retries}, timeout {args.timeout}s, batch_size {args.batch_size}, pause_between_batches {args.pause_between_batches}s.")
 
-    # Batch processing
     for i in range(0, len(tickers_list), args.batch_size):
         batch = tickers_list[i : i + args.batch_size]
         logger.info(f"Processing batch {i//args.batch_size + 1} (tickers {batch})")

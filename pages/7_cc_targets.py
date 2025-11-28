@@ -48,8 +48,12 @@ def load_cc_targets(iv_min_atm: float, market_cap_min: float):
       SELECT
         ivs.ticker,
         ivs.fetch_date,
+        ivs.expiry,
+        ivs.contract_count,
         ivs.iv_median,
-        ivs.iv_atm
+        ivs.iv_atm,
+        ivs.atm_premium,
+        ivs.atm_premium_pct
       FROM iv_summary ivs
       WHERE ivs.fetch_date = (
         SELECT MAX(fetch_date)
@@ -60,9 +64,13 @@ def load_cc_targets(iv_min_atm: float, market_cap_min: float):
     SELECT
       r.ticker,
       mc.market_cap,
-      r.iv_median,
+      lp.latest_price as latest_price,
       r.iv_atm,
-      lp.latest_price
+      r.iv_median,
+      r.atm_premium,
+      r.atm_premium_pct,
+      r.expiry,
+      r.contract_count
     FROM recent_iv r
     JOIN mc ON r.ticker = mc.ticker
     JOIN latest_price lp ON r.ticker = lp.ticker
@@ -76,10 +84,8 @@ def load_cc_targets(iv_min_atm: float, market_cap_min: float):
     df = pd.read_sql(
         query,
         engine,
-        params={
-            "market_cap_min": market_cap_min,
-            "iv_min_atm": iv_min_atm
-        }
+        params={"market_cap_min": market_cap_min,
+                "iv_min_atm": iv_min_atm}
     )
     return df
 
@@ -90,7 +96,7 @@ def main():
         **Filter criteria:**  
         * Market Cap ≥ your threshold  
         * ATM Implied Volatility (IV ATM) ≥ your threshold  
-        * (Optional) IV Median also shown  
+        * (Optional) Option Premium, Expiry & Contract Count shown  
         """
     )
 
@@ -117,20 +123,40 @@ def main():
         st.info("No tickers match the current filter criteria.")
         return
 
-    # Format numeric columns
+    # Format numeric / date columns
     df["market_cap"] = df["market_cap"].apply(lambda x: f"${x:,.0f}")
     df["latest_price"] = df["latest_price"].round(2)
     df["iv_median"] = df["iv_median"].round(3)
     df["iv_atm"] = df["iv_atm"].round(3)
 
-    # Optional: ticker filter
+    if "atm_premium" in df.columns:
+        df["atm_premium"] = df["atm_premium"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else "")
+    if "atm_premium_pct" in df.columns:
+        df["atm_premium_pct"] = df["atm_premium_pct"].apply(lambda x: f"{x*100:.2f}%" if pd.notnull(x) else "")
+
+    # Format expiry & contract_count
+    df["expiry"] = pd.to_datetime(df["expiry"]).dt.date
+    df["contract_count"] = df["contract_count"].astype("Int64")
+
+    # Optional ticker filter
     search = st.text_input("Search ticker (optional):").upper().strip()
     if search:
         df = df[df["ticker"].str.contains(search)]
 
-    st.dataframe(df, hide_index=True, use_container_width=True)
+    # Define display column order
+    columns = [
+        "ticker",
+        "latest_price",
+        "market_cap",
+        "iv_atm",
+        "iv_median"
+    ]
+    if "atm_premium" in df.columns:
+        columns += ["atm_premium", "atm_premium_pct"]
+    columns += ["expiry", "contract_count"]
 
-    # Download button
+    st.dataframe(df[columns], hide_index=True, use_container_width=True)
+
     st.download_button(
         "Download CSV",
         df.to_csv(index=False).encode("utf-8"),
