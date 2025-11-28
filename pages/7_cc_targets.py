@@ -1,4 +1,4 @@
-# cc_targets.py
+# 7_cc_targets.py
 
 import streamlit as st
 import pandas as pd
@@ -8,7 +8,7 @@ from db import get_engine
 st.set_page_config(page_title="Covered-Call Target Scan", layout="wide")
 
 @st.cache_data(ttl=3600)
-def load_cc_targets(iv_min: float, market_cap_min: float):
+def load_cc_targets(iv_min_atm: float, market_cap_min: float):
     engine = get_engine()
     query = text("""
     WITH latest_price AS (
@@ -68,14 +68,19 @@ def load_cc_targets(iv_min: float, market_cap_min: float):
     JOIN latest_price lp ON r.ticker = lp.ticker
     WHERE
       mc.market_cap >= :market_cap_min
-      AND r.iv_median >= :iv_min
+      AND r.iv_atm >= :iv_min_atm
     ORDER BY
-      r.iv_median DESC,
+      r.iv_atm DESC,
       mc.market_cap DESC
     """)
-    df = pd.read_sql(query, engine,
-                     params={"market_cap_min": market_cap_min,
-                             "iv_min": iv_min})
+    df = pd.read_sql(
+        query,
+        engine,
+        params={
+            "market_cap_min": market_cap_min,
+            "iv_min_atm": iv_min_atm
+        }
+    )
     return df
 
 def main():
@@ -84,18 +89,28 @@ def main():
         """
         **Filter criteria:**  
         * Market Cap ≥ your threshold  
-        * IV Median ≥ your threshold  
-        * (Optional) IV ATM also shown  
+        * ATM Implied Volatility (IV ATM) ≥ your threshold  
+        * (Optional) IV Median also shown  
         """
     )
 
     col1, col2 = st.columns(2)
     with col1:
-        iv_min = st.number_input("Minimum implied volatility (median) (decimal form)", value=0.70, step=0.05, format="%.2f")
+        iv_min_atm = st.number_input(
+            "Minimum implied volatility (ATM) (decimal form)",
+            value=0.70,
+            step=0.05,
+            format="%.2f"
+        )
     with col2:
-        market_cap_min = st.number_input("Minimum market cap", value=10_000_000_000, step=1_000_000_000, format="%d")
+        market_cap_min = st.number_input(
+            "Minimum market cap",
+            value=10_000_000_000,
+            step=1_000_000_000,
+            format="%d"
+        )
 
-    df = load_cc_targets(iv_min=iv_min, market_cap_min=market_cap_min)
+    df = load_cc_targets(iv_min_atm=iv_min_atm, market_cap_min=market_cap_min)
 
     st.subheader(f"🧮 Found {len(df)} potential targets")
     if df.empty:
