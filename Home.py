@@ -113,7 +113,7 @@ def get_company_info(ticker: str):
     engine = get_engine()
     df = pd.read_sql(
         """
-        SELECT ticker, name, sector, industry, exchange, delisted, delisted_date
+        SELECT ticker, name, sector, industry, exchange, delisted, delisted_date, greer_star_rating
         FROM companies
         WHERE ticker = %(t)s
         LIMIT 1;
@@ -207,7 +207,15 @@ def render_company_card(ticker: str):
         dd = pd.to_datetime(r["delisted_date"]).date()
         delisted_line = f"<div class='company-meta'><b>Delisted:</b> {dd}</div>"
 
-    st.markdown(
+    stars = int(r.get("greer_star_rating", 0))
+    if stars > 0:
+        # render filled vs empty stars (3-star max)
+        star_icons = "★" * stars + "☆" * (3 - stars)
+        star_html = f"<div style='font-size:1.3rem; color:#D4AF37; margin-top:4px;'>{star_icons}  {stars} Gold Star{'s' if stars>1 else ''}</div>"
+    else:
+        star_html = ""
+
+    st.html(
         f"""
         <div class="company-card" style="color: rgb(49, 51, 63);">
             <div class="company-title">{ticker} — {name}</div>
@@ -215,10 +223,11 @@ def render_company_card(ticker: str):
             <div class="company-meta"><b>Sector:</b> {sector}</div>
             <div class="company-meta"><b>Industry:</b> {industry}</div>
             {delisted_line}
+            {star_html}
         </div>
-        """,
-        unsafe_allow_html=True
+        """
     )
+    return  # skip the old card render and use the new one
 
 def render_metric_card(label: str, main_html: str, sub_html: str, bg: str, fg: str):
     st.markdown(
