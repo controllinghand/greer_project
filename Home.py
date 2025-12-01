@@ -734,13 +734,31 @@ def render_fvg_details(ticker, engine):
 # ----------------------------------------------------------
 # Main UI (Greer Value Search)
 # ----------------------------------------------------------
+# At top of main UI
 st.markdown('<div class="greer-header">Greer Value Search</div>', unsafe_allow_html=True)
-ticker = st.text_input(
+
+qp = st.query_params
+ticker_param = qp.get("ticker")
+
+if isinstance(ticker_param, (list, tuple)):
+    url_ticker = ticker_param[0]
+elif isinstance(ticker_param, str):
+    url_ticker = ticker_param
+else:
+    url_ticker = ""
+
+# Always render the text input; prefill with URL ticker if present
+user_ticker = st.text_input(
     "Search",
     placeholder="Enter ticker (e.g., AAPL)",
     key="ticker_input",
-    label_visibility="collapsed"
+    label_visibility="collapsed",
+    value=url_ticker  # prepopulate if URL provided
 )
+
+# Determine which ticker to use:
+ticker = user_ticker.strip().upper() if user_ticker else None
+
 
 # Start rendering if a ticker is entered
 if ticker:

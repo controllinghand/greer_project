@@ -1,5 +1,3 @@
-# all_stars.py
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -11,7 +9,6 @@ st.set_page_config(page_title="Greer 3-Star Companies", layout="wide")
 
 st.markdown("<h1>⭐ All 3-Star Companies</h1>", unsafe_allow_html=True)
 
-# ----------------------------------------------------------
 @st.cache_data(ttl=600)
 def fetch_3star_companies():
     engine = get_engine()
@@ -73,7 +70,6 @@ df = df.merge(gfv_df[[
     "ticker", "close_price", "gfv_price", "gfv_status", "gfv_date"
 ]], how="left", on="ticker")
 
-# ----------------------------------------------------------
 # Option: show table or cards
 show_table = st.checkbox("Show as table (vs cards)", value=True)
 
@@ -99,7 +95,12 @@ if show_table:
         "close_price": "Current Price",
     })
 
-    st.dataframe(tbl.sort_values("Ticker"), use_container_width=True)
+    # Convert ticker column to markdown links
+    def make_link(t):
+        return f'<a href="/?ticker={t}" target="_self">{t}</a>'
+
+    tbl["Ticker"] = tbl["Ticker"].apply(make_link)
+    st.markdown(tbl.to_html(escape=False, index=False), unsafe_allow_html=True)
 
     csv = tbl.to_csv(index=False).encode("utf-8")
     st.download_button(
@@ -114,7 +115,9 @@ else:
         name = row.get("name", "")
         stars = int(row.get("greer_star_rating", 0))
 
-        st.markdown(f"## ⭐ {ticker} — {name}  {'★'*stars}")
+        # Make the ticker + name heading a link
+        link = f"/?ticker={ticker}"
+        st.markdown(f"## ⭐ <a href='{link}' target='_self'>{ticker}</a> — {name}  {'★'*stars}", unsafe_allow_html=True)
 
         st.write({
             "Sector": row.get("sector"),
