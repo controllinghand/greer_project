@@ -1,109 +1,185 @@
 # opportunities.py
-
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
 from db import get_engine  # ✅ Centralized DB connection
 
-"""
-Greer Value Opportunities Page
----------------------------------
-**Source:** `latest_company_snapshot` materialized view & `fair_value_gaps` table  
-**Criteria:**
-1. Greer Value Score ≥ 50  
-2. Yield Score ≥ 3  
-3. Currently *in* the Buy‑Zone (`buyzone_flag` = TRUE)  
-4. Latest Fair‑Value‑Gap direction = **bullish**  
+# Page config — update tab title
+st.set_page_config(page_title="⭐ Opportunities", layout="wide")
 
-Surfaces each ticker’s most recent un‑mitigated bullish gap date.
-"""
+# --------------------------------------------------
+# Insert custom CSS for styled table
+st.markdown("""
+<style>
+  /* Table styling */
+  .op-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: Arial, sans-serif;
+  }
+  .op-table th, .op-table td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: center;
+  }
+  .op-table th {
+    background-color: #1976D2;
+    color: white;
+  }
+  .op-table tr:nth-child(even) {
+    background-color: #f9f9f9;
+  }
+  .op-table tr:hover {
+    background-color: #f1f1f1;
+  }
+  .star-icon {
+    color: #D4AF37; /* gold color for stars */
+    font-size: 1.1rem;
+  }
+  a.ticker-link {
+    color: #1976D2;
+    text-decoration: none;
+    font-weight: bold;
+  }
+  a.ticker-link:hover {
+    text-decoration: underline;
+  }
+</style>
+""", unsafe_allow_html=True)
+# --------------------------------------------------
 
-st.set_page_config(page_title="Greer Value Opportunities", layout="wide")
 
-# ----------------------------------------------------------
-# Load filtered tickers + last un-mitigated bullish gap date
-# ----------------------------------------------------------
 @st.cache_data(ttl=3600)
 def load_filtered_companies():
     engine = get_engine()
     query = text(
         """
         WITH live_bull_gaps AS (
-          SELECT
-            ticker,
-            date AS entry_date
+          SELECT ticker, date AS entry_date
           FROM public.fair_value_gaps
           WHERE direction = 'bullish'
             AND mitigated = false
         ),
         last_entry AS (
-          SELECT
-            ticker,
-            MAX(entry_date) AS last_entry_date
+          SELECT ticker, MAX(entry_date) AS last_entry_date
           FROM live_bull_gaps
           GROUP BY ticker
+        ),
+        latest_prices AS (
+          SELECT ticker, close AS current_price, date
+          FROM prices
+          WHERE (ticker, date) IN (
+               SELECT ticker, MAX(date) FROM prices GROUP BY ticker
+            )
+        ),
+        latest_gfv AS (
+          SELECT ticker, gfv_price, date
+          FROM greer_fair_value_daily
+          WHERE (ticker, date) IN (
+               SELECT ticker, MAX(date) FROM greer_fair_value_daily GROUP BY ticker
+            )
         )
         SELECT
           l.ticker,
-          l.greer_value_score  AS greer_value,
-          l.greer_yield_score  AS yield_score,
+          c.greer_star_rating    AS stars,
+          l.greer_value_score    AS greer_value,
+          l.greer_yield_score    AS yield_score,
           l.buyzone_flag,
           l.fvg_last_direction,
-          le.last_entry_date
+          le.last_entry_date,
+          p.current_price,
+          gfv.gfv_price,
+          gfv.gfv_price * 0.75  AS gfv_mos
         FROM last_entry le
-        JOIN latest_company_snapshot l
-          ON l.ticker = le.ticker
-        JOIN companies c  -- Join to companies for delisted check
-          ON l.ticker = c.ticker
+        JOIN latest_company_snapshot l ON l.ticker = le.ticker
+        JOIN companies c               ON l.ticker = c.ticker
+        JOIN latest_prices p           ON p.ticker = l.ticker
+        JOIN latest_gfv gfv            ON gfv.ticker = l.ticker
         WHERE l.greer_value_score >= 50
           AND l.greer_yield_score >= 3
           AND l.buyzone_flag = TRUE
           AND l.fvg_last_direction = 'bullish'
-          AND c.delisted = FALSE  -- Exclude delisted
+          AND p.current_price < gfv.gfv_price * 0.75
+          AND c.delisted = FALSE
         ORDER BY le.last_entry_date DESC;
         """
     )
     return pd.read_sql(query, engine)
 
-# ----------------------------------------------------------
-# Streamlit UI
-# ----------------------------------------------------------
+
 def main():
-    st.title("💎 Greer Value Opportunities")
+    st.title("⭐ Opportunities with Star Ratings")
     st.markdown(
         """
-        **Showing companies that currently satisfy:**  
-        * Greer Value ≥ **50**  
-        * Yield Score ≥ **3**  
-        * **In** the Buy‑Zone  
-        * Latest FVG direction is **bullish**
+        **Showing companies that currently meet all of the following criteria:**  
+        - Greer Value ≥ **50**  
+        - Yield Score ≥ **3**  
+        - **In** the Buy-Zone  
+        - Latest FVG direction is **bullish**  
+        - Current Price < GFV Price × **0.75** (25% margin of safety)
         """,
         unsafe_allow_html=True,
     )
 
     df = load_filtered_companies()
-
-    # format date column
-    df['last_entry_date'] = pd.to_datetime(df['last_entry_date']).dt.date
-
-    st.subheader(f"📈 {len(df)} matching companies")
     if df.empty:
         st.info("No companies currently meet all conditions.")
         return
 
-    # ticker filter
-    search = st.text_input("Filter by ticker …", "").upper()
-    if search:
-        df = df[df["ticker"].str.contains(search)]
+    # Format numeric columns
+    df['last_entry_date'] = pd.to_datetime(df['last_entry_date']).dt.date
+    for col in ['current_price', 'gfv_price', 'gfv_mos']:
+        if col in df.columns:
+            df[col] = df[col].round(2)
 
-    st.dataframe(df, hide_index=True, use_container_width=True)
+    # Total matching count
+    st.subheader(f"📈 {len(df)} matching companies")
+
+    # Build star-rating icons
+    def stars_to_html(n):
+        try:
+            n = int(n)
+        except:
+            return ""
+        return f"<span class='star-icon'>{'★'*n}{'☆'*(3-n)}</span>"
+
+    df = df.copy()
+    df['Stars'] = df['stars'].apply(stars_to_html)
+
+    # Make ticker column a clickable link
+    def link_ticker(t: str) -> str:
+        return f"<a href='/?ticker={t}' class='ticker-link'>{t}</a>"
+
+    df['Ticker'] = df['ticker'].apply(link_ticker)
+
+    # Build display table
+    df_display = df[[
+        'Ticker', 'Stars', 'greer_value', 'yield_score',
+        'current_price', 'gfv_price', 'gfv_mos', 'last_entry_date'
+    ]].rename(columns={
+        'greer_value': 'Greer Value %',
+        'yield_score': 'Yield Score',
+        'current_price': 'Current Price',
+        'gfv_price': 'GFV',
+        'gfv_mos': 'GFV 75% MOS',
+        'last_entry_date': 'Last Gap Date'
+    })
+
+    html_table = df_display.to_html(
+        index=False,
+        escape=False,
+        classes="op-table"
+    )
+
+    st.markdown(html_table, unsafe_allow_html=True)
 
     st.download_button(
         "Download CSV",
-        df.to_csv(index=False).encode("utf-8"),
-        file_name="greer_value_opportunities.csv",
-        mime="text/csv",
+        df_display.to_csv(index=False).encode('utf-8'),
+        file_name="greer_gfv_opportunities.csv",
+        mime="text/csv"
     )
+
 
 if __name__ == "__main__":
     main()
