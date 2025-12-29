@@ -382,6 +382,9 @@ def main():
     def fmt_pct(x):
         return f"{float(x)*100:.2f}%" if pd.notnull(x) else ""
 
+    def fmt_pct_from_ratio(x):
+        return f"{x*100:.2f}%" if pd.notnull(x) else ""
+
     df["put_20d_premium_fmt"] = df["put_20d_premium"].apply(fmt_money)
     df["put_20d_premium_pct_fmt"] = df["put_20d_premium_pct"].apply(fmt_pct)
 
@@ -565,11 +568,22 @@ def main():
     if weekly_totals.empty:
         st.info("No logged trades found for upcoming expiries in this window.")
     else:
-        weekly_totals["gross_credit"] = weekly_totals["gross_credit"].apply(lambda x: f"${float(x):,.2f}")
-        weekly_totals["total_fees"] = weekly_totals["total_fees"].apply(lambda x: f"${float(x):,.2f}")
-        weekly_totals["net_credit"] = weekly_totals["net_credit"].apply(lambda x: f"${float(x):,.2f}")
-        weekly_totals["total_cash_secured"] = weekly_totals["total_cash_secured"].apply(lambda x: f"${float(x):,.0f}")
+        # --- Yield calc BEFORE formatting (CSP yield only uses cash secured)
+        weekly_totals["yield_pct"] = None
+        mask = pd.to_numeric(weekly_totals["total_cash_secured"], errors="coerce") > 0
+        weekly_totals.loc[mask, "yield_pct"] = (
+            pd.to_numeric(weekly_totals.loc[mask, "net_credit"], errors="coerce")
+            / pd.to_numeric(weekly_totals.loc[mask, "total_cash_secured"], errors="coerce")
+        )
+
+        # --- Now format for display
+        weekly_totals["gross_credit"] = weekly_totals["gross_credit"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
+        weekly_totals["total_fees"] = weekly_totals["total_fees"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
+        weekly_totals["net_credit"] = weekly_totals["net_credit"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
+        weekly_totals["total_cash_secured"] = weekly_totals["total_cash_secured"].apply(lambda x: f"${float(x):,.0f}" if pd.notnull(x) else "")
         weekly_totals["total_shares_covered"] = weekly_totals["total_shares_covered"].fillna(0).astype(int)
+        weekly_totals["yield_pct"] = weekly_totals["yield_pct"].apply(fmt_pct_from_ratio)
+
         st.write("**Totals by expiry**")
         st.dataframe(weekly_totals, hide_index=True, use_container_width=True)
 
@@ -579,12 +593,26 @@ def main():
     else:
         recent_trades["created_at"] = pd.to_datetime(recent_trades["created_at"])
         recent_trades["expiry"] = pd.to_datetime(recent_trades["expiry"]).dt.date
-        recent_trades["fill_price"] = recent_trades["fill_price"].apply(lambda x: f"${float(x):.2f}")
-        recent_trades["fees"] = recent_trades["fees"].apply(lambda x: f"${float(x):.2f}")
-        recent_trades["gross_credit"] = recent_trades["gross_credit"].apply(lambda x: f"${float(x):,.2f}")
-        recent_trades["net_credit"] = recent_trades["net_credit"].apply(lambda x: f"${float(x):,.2f}")
-        recent_trades["cash_secured"] = recent_trades["cash_secured"].apply(lambda x: f"${float(x):,.0f}")
+
+        # --- Yield calc BEFORE formatting
+        recent_trades["yield_pct"] = None
+        mask_csp = (
+            (recent_trades["strategy"] == "CSP")
+            & (pd.to_numeric(recent_trades["cash_secured"], errors="coerce") > 0)
+        )
+        recent_trades.loc[mask_csp, "yield_pct"] = (
+            pd.to_numeric(recent_trades.loc[mask_csp, "net_credit"], errors="coerce")
+            / pd.to_numeric(recent_trades.loc[mask_csp, "cash_secured"], errors="coerce")
+        )
+
+        # --- Now format for display
+        recent_trades["fill_price"] = recent_trades["fill_price"].apply(lambda x: f"${float(x):.2f}" if pd.notnull(x) else "")
+        recent_trades["fees"] = recent_trades["fees"].apply(lambda x: f"${float(x):.2f}" if pd.notnull(x) else "")
+        recent_trades["gross_credit"] = recent_trades["gross_credit"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
+        recent_trades["net_credit"] = recent_trades["net_credit"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
+        recent_trades["cash_secured"] = recent_trades["cash_secured"].apply(lambda x: f"${float(x):,.0f}" if pd.notnull(x) else "")
         recent_trades["shares_covered"] = recent_trades["shares_covered"].fillna(0).astype(int)
+        recent_trades["yield_pct"] = recent_trades["yield_pct"].apply(fmt_pct_from_ratio)
 
         st.write("**Recent trade logs**")
         st.dataframe(
@@ -593,13 +621,14 @@ def main():
                     "created_at", "ticker", "strategy", "option_type", "expiry",
                     "strike", "contracts", "fill_price", "fees",
                     "gross_credit", "net_credit",
-                    "cash_secured", "shares_covered",
+                    "cash_secured", "shares_covered", "yield_pct",
                     "notes"
                 ]
             ],
             hide_index=True,
             use_container_width=True
         )
+
 
 if __name__ == "__main__":
     main()
