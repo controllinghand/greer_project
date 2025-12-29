@@ -1,10 +1,18 @@
 # Wk_IV_Targets.py
 
+import os
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
 from db import get_engine
 from datetime import date, timedelta
+
+# ----------------------------------------------------------
+# Admin flag (set on Render)
+# - public service:  YRC_ADMIN=0 (or unset)
+# - admin service:   YRC_ADMIN=1
+# ----------------------------------------------------------
+IS_ADMIN = os.getenv("YRC_ADMIN", "0") == "1"
 
 st.set_page_config(page_title="Weekly IV Targets", layout="wide")
 
@@ -28,7 +36,7 @@ def stars_display(x) -> str:
 # - within that fetch_date, prefer nearest expiry (smallest dte then expiry)
 # ----------------------------------------------------------
 @st.cache_data(ttl=3600)
-def load_weekly_targets(iv_min_atm: float, market_cap_min: float, min_star_rating: int):
+def load_weekly_targets(iv_min_atm: float, market_cap_min: float, min_star_rating: int) -> pd.DataFrame:
     engine = get_engine()
     query = text("""
     WITH latest_price AS (
@@ -105,7 +113,6 @@ def load_weekly_targets(iv_min_atm: float, market_cap_min: float, min_star_ratin
       r.call_20d_delta,
       r.call_20d_premium,
       r.call_20d_premium_pct
-
     FROM recent_iv r
     JOIN mc ON r.ticker = mc.ticker
     JOIN latest_price lp ON r.ticker = lp.ticker
@@ -118,7 +125,6 @@ def load_weekly_targets(iv_min_atm: float, market_cap_min: float, min_star_ratin
       r.iv_atm DESC,
       mc.market_cap DESC
     """)
-
     df = pd.read_sql(
         query,
         engine,
@@ -132,6 +138,7 @@ def load_weekly_targets(iv_min_atm: float, market_cap_min: float, min_star_ratin
 
 # ----------------------------------------------------------
 # Insert a trade log row for Income Fund tracking
+# - Computes premium_total, notional, cash_secured, shares_covered
 # ----------------------------------------------------------
 def insert_income_trade(
     ticker: str,
@@ -145,15 +152,81 @@ def insert_income_trade(
     notes: str
 ) -> None:
     engine = get_engine()
+
+    # Normalize / validate
+    t = (ticker or "").strip().upper()
+    if not t:
+        raise ValueError("Ticker is required.")
+
+    strategy = (strategy or "").strip().upper()
+    option_type = (option_type or "").strip().lower()
+
+    if strategy not in ("CSP", "CC"):
+        raise ValueError("Strategy must be CSP or CC.")
+    if option_type not in ("put", "call"):
+        raise ValueError("Option type must be put or call.")
+    if strategy == "CSP" and option_type != "put":
+        raise ValueError("CSP trades must have option_type='put'.")
+    if strategy == "CC" and option_type != "call":
+        raise ValueError("CC trades must have option_type='call'.")
+
+    if contracts <= 0:
+        raise ValueError("Contracts must be > 0.")
+    if strike <= 0:
+        raise ValueError("Strike must be > 0.")
+    if fill_price < 0:
+        raise ValueError("Fill price must be >= 0.")
+    if fees < 0:
+        raise ValueError("Fees must be >= 0.")
+
+    premium_total = contracts * 100 * fill_price
+    notional = strike * contracts * 100
+
+    cash_secured = 0
+    shares_covered = 0
+    if strategy == "CSP":
+        cash_secured = notional
+    else:
+        shares_covered = contracts * 100
+
     ins = text("""
         INSERT INTO income_fund_trades
-        (ticker, strategy, expiry, strike, option_type, contracts, fill_price, fees, notes)
+        (
+            ticker,
+            strategy,
+            expiry,
+            strike,
+            option_type,
+            contracts,
+            fill_price,
+            fees,
+            premium_total,
+            notional,
+            cash_secured,
+            shares_covered,
+            notes
+        )
         VALUES
-        (:ticker, :strategy, :expiry, :strike, :option_type, :contracts, :fill_price, :fees, :notes)
+        (
+            :ticker,
+            :strategy,
+            :expiry,
+            :strike,
+            :option_type,
+            :contracts,
+            :fill_price,
+            :fees,
+            :premium_total,
+            :notional,
+            :cash_secured,
+            :shares_covered,
+            :notes
+        )
     """)
+
     with engine.begin() as conn:
         conn.execute(ins, {
-            "ticker": ticker,
+            "ticker": t,
             "strategy": strategy,
             "expiry": expiry,
             "strike": strike,
@@ -161,11 +234,16 @@ def insert_income_trade(
             "contracts": contracts,
             "fill_price": fill_price,
             "fees": fees,
+            "premium_total": premium_total,
+            "notional": notional,
+            "cash_secured": cash_secured,
+            "shares_covered": shares_covered,
             "notes": notes
         })
 
 # ----------------------------------------------------------
-# Load recent trades (for confirmation + tracking)
+# Load recent trades (admin only)
+# - Uses premium_total if present
 # ----------------------------------------------------------
 @st.cache_data(ttl=300)
 def load_recent_trades(limit: int = 25) -> pd.DataFrame:
@@ -181,9 +259,11 @@ def load_recent_trades(limit: int = 25) -> pd.DataFrame:
           strike,
           contracts,
           fill_price,
-          fees,
-          (contracts * 100 * fill_price) AS gross_credit,
-          (contracts * 100 * fill_price) - COALESCE(fees, 0) AS net_credit,
+          COALESCE(fees, 0) AS fees,
+          COALESCE(premium_total, (contracts * 100 * fill_price)) AS gross_credit,
+          COALESCE(premium_total, (contracts * 100 * fill_price)) - COALESCE(fees, 0) AS net_credit,
+          COALESCE(cash_secured, 0) AS cash_secured,
+          COALESCE(shares_covered, 0) AS shares_covered,
           notes
         FROM income_fund_trades
         ORDER BY created_at DESC
@@ -194,7 +274,8 @@ def load_recent_trades(limit: int = 25) -> pd.DataFrame:
     return df
 
 # ----------------------------------------------------------
-# Weekly totals by expiry (simple “this week” roll-up)
+# Weekly totals by expiry (admin only)
+# - Includes secured cash + shares covered
 # ----------------------------------------------------------
 @st.cache_data(ttl=300)
 def load_weekly_totals(days_forward: int = 14) -> pd.DataFrame:
@@ -204,9 +285,11 @@ def load_weekly_totals(days_forward: int = 14) -> pd.DataFrame:
           expiry,
           COUNT(*) AS trades,
           SUM(contracts) AS total_contracts,
-          SUM(contracts * 100 * fill_price) AS gross_credit,
+          SUM(COALESCE(premium_total, (contracts * 100 * fill_price))) AS gross_credit,
           SUM(COALESCE(fees, 0)) AS total_fees,
-          SUM((contracts * 100 * fill_price) - COALESCE(fees, 0)) AS net_credit
+          SUM(COALESCE(premium_total, (contracts * 100 * fill_price)) - COALESCE(fees, 0)) AS net_credit,
+          SUM(COALESCE(cash_secured, 0)) AS total_cash_secured,
+          SUM(COALESCE(shares_covered, 0)) AS total_shares_covered
         FROM income_fund_trades
         WHERE expiry >= CURRENT_DATE
           AND expiry <= (CURRENT_DATE + (:days_forward || ' days')::interval)
@@ -224,7 +307,7 @@ def main():
         """
         **Weekend plan:** Use this page on Sat/Sun to prep your Monday orders for options expiring Friday.
 
-        **Now included:**  
+        **Included:**  
         - **~20Δ Put** (Cash-Secured Put candidate)  
         - **~20Δ Call** (Covered Call candidate)  
         - Premium % filters to target **~1%/week**
@@ -306,7 +389,7 @@ def main():
     df["call_20d_premium_pct_fmt"] = df["call_20d_premium_pct"].apply(fmt_pct)
 
     # ----------------------------------------------------------
-    # Filters you already had (kept)
+    # Filters
     # ----------------------------------------------------------
     df = df[df["contract_count"] >= 10]
 
@@ -339,7 +422,7 @@ def main():
     # Require action fields
     df = df[df["action_premium_pct"].notna() & df["action_strike"].notna() & df["action_premium"].notna()]
 
-    # Premium target filter (your 1% weekly rule)
+    # Premium target filter
     df = df[df["action_premium_pct"] >= float(min_target_premium_pct)]
 
     if df.empty:
@@ -369,9 +452,6 @@ def main():
 
     st.subheader(f"🧮 Found {len(df)} targets (Wheel Mode: {wheel_mode})")
 
-    # ----------------------------------------------------------
-    # Display table
-    # ----------------------------------------------------------
     columns = [
         "ticker",
         "stars",
@@ -382,17 +462,14 @@ def main():
         "expiry",
         "dte",
         "contract_count",
-
         "put_20d_strike",
         "put_20d_delta",
         "put_20d_premium_fmt",
         "put_20d_premium_pct_fmt",
-
         "call_20d_strike",
         "call_20d_delta",
         "call_20d_premium_fmt",
         "call_20d_premium_pct_fmt",
-
         "action_strategy",
         "action_strike",
         "action_delta",
@@ -410,20 +487,28 @@ def main():
     )
 
     # ----------------------------------------------------------
-    # Income Fund tracking: Log executed trades
+    # Admin-only tracking / inserts
     # ----------------------------------------------------------
+    if not IS_ADMIN:
+        st.divider()
+        st.info("Income Fund trade logging is admin-only.")
+        return
+
     st.divider()
-    st.subheader("✅ Income Fund Tracking — Log Executed Trade")
+    st.subheader("✅ Income Fund Tracking — Log Executed Trade (ADMIN)")
 
     tickers = df["ticker"].dropna().unique().tolist()
-    selected_ticker = st.selectbox("Ticker to log", tickers)
+    if not tickers:
+        st.warning("No tickers available to log from this filtered list.")
+        return
 
+    selected_ticker = st.selectbox("Ticker to log", tickers)
     row = df[df["ticker"] == selected_ticker].head(1).iloc[0]
 
     default_expiry = row["expiry"]
     default_strike = float(row["action_strike"])
-    default_type = row["action_type"]
-    default_strategy = row["action_strategy"]
+    default_type = str(row["action_type"])
+    default_strategy = str(row["action_strategy"])
     default_fill = float(row["action_premium"]) if pd.notnull(row["action_premium"]) else 0.0
 
     x1, x2, x3, x4, x5 = st.columns([1.1, 1.0, 1.2, 1.0, 2.0])
@@ -438,11 +523,14 @@ def main():
     with x5:
         notes = st.text_input(
             "Notes (optional)",
-            value=f"Logged from Weekly IV Targets: {strategy} {default_type} exp {default_expiry} strike {default_strike}"
+            value=f"Logged from Weekly IV Targets: {default_strategy} {default_type} exp {default_expiry} strike {default_strike}"
         )
 
+    # enforce option type based on strategy
+    option_type = "put" if strategy == "CSP" else "call"
+
     st.caption(
-        f"Defaults: expiry={default_expiry} | type={default_type} | strike={default_strike} | "
+        f"Defaults: expiry={default_expiry} | type={option_type} | strike={default_strike} | "
         f"est_delta={row['action_delta']:.3f} | est_premium={row['action_premium_fmt']} ({row['action_premium_pct_fmt']})"
     )
 
@@ -453,7 +541,7 @@ def main():
                 strategy=strategy,
                 expiry=default_expiry,
                 strike=float(default_strike),
-                option_type=str(default_type),
+                option_type=option_type,
                 contracts=int(contracts),
                 fill_price=float(fill_price),
                 fees=float(fees),
@@ -464,11 +552,8 @@ def main():
         except Exception as e:
             st.error(f"Failed to insert trade. Error: {e}")
 
-    # ----------------------------------------------------------
-    # Tracking visibility: Weekly totals + recent trades
-    # ----------------------------------------------------------
     st.divider()
-    st.subheader("📊 Income Fund Tracking — This Week + Recent Trades")
+    st.subheader("📊 Income Fund Tracking — This Week + Recent Trades (ADMIN)")
 
     wt1, wt2 = st.columns([1.2, 1.0])
     with wt1:
@@ -476,33 +561,41 @@ def main():
     with wt2:
         recent_limit = st.selectbox("Recent trades to show", [10, 25, 50, 100], index=1)
 
-    weekly_totals = load_weekly_totals(days_forward=days_forward)
+    weekly_totals = load_weekly_totals(days_forward=int(days_forward))
     if weekly_totals.empty:
         st.info("No logged trades found for upcoming expiries in this window.")
     else:
-        # Format totals
         weekly_totals["gross_credit"] = weekly_totals["gross_credit"].apply(lambda x: f"${float(x):,.2f}")
         weekly_totals["total_fees"] = weekly_totals["total_fees"].apply(lambda x: f"${float(x):,.2f}")
         weekly_totals["net_credit"] = weekly_totals["net_credit"].apply(lambda x: f"${float(x):,.2f}")
-        st.write("**Totals by expiry** (great for your weekly recap to members):")
+        weekly_totals["total_cash_secured"] = weekly_totals["total_cash_secured"].apply(lambda x: f"${float(x):,.0f}")
+        weekly_totals["total_shares_covered"] = weekly_totals["total_shares_covered"].fillna(0).astype(int)
+        st.write("**Totals by expiry**")
         st.dataframe(weekly_totals, hide_index=True, use_container_width=True)
 
     recent_trades = load_recent_trades(limit=int(recent_limit))
     if recent_trades.empty:
         st.info("No trades logged yet.")
     else:
-        # Format display
         recent_trades["created_at"] = pd.to_datetime(recent_trades["created_at"])
         recent_trades["expiry"] = pd.to_datetime(recent_trades["expiry"]).dt.date
         recent_trades["fill_price"] = recent_trades["fill_price"].apply(lambda x: f"${float(x):.2f}")
         recent_trades["fees"] = recent_trades["fees"].apply(lambda x: f"${float(x):.2f}")
         recent_trades["gross_credit"] = recent_trades["gross_credit"].apply(lambda x: f"${float(x):,.2f}")
         recent_trades["net_credit"] = recent_trades["net_credit"].apply(lambda x: f"${float(x):,.2f}")
+        recent_trades["cash_secured"] = recent_trades["cash_secured"].apply(lambda x: f"${float(x):,.0f}")
+        recent_trades["shares_covered"] = recent_trades["shares_covered"].fillna(0).astype(int)
 
-        st.write("**Recent trade logs** (confirmation + audit trail):")
+        st.write("**Recent trade logs**")
         st.dataframe(
             recent_trades[
-                ["created_at", "ticker", "strategy", "option_type", "expiry", "strike", "contracts", "fill_price", "fees", "gross_credit", "net_credit", "notes"]
+                [
+                    "created_at", "ticker", "strategy", "option_type", "expiry",
+                    "strike", "contracts", "fill_price", "fees",
+                    "gross_credit", "net_credit",
+                    "cash_secured", "shares_covered",
+                    "notes"
+                ]
             ],
             hide_index=True,
             use_container_width=True
