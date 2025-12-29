@@ -238,7 +238,7 @@ def main():
     with top1:
         iv_min_atm = st.number_input(
             "Minimum implied volatility (ATM) (decimal form)",
-            value=0.00,
+            value=0.40,
             step=0.05,
             format="%.2f"
         )
