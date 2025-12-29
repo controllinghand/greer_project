@@ -22,8 +22,13 @@ def stars_display(x) -> str:
     except Exception:
         return ""
 
+# ----------------------------------------------------------
+# Load Weekly Targets
+# - latest fetch_date per ticker
+# - within that fetch_date, prefer nearest expiry (smallest dte then expiry)
+# ----------------------------------------------------------
 @st.cache_data(ttl=3600)
-def load_cc_targets(iv_min_atm: float, market_cap_min: float):
+def load_weekly_targets(iv_min_atm: float, market_cap_min: float, min_star_rating: int):
     engine = get_engine()
     query = text("""
     WITH latest_price AS (
@@ -59,34 +64,48 @@ def load_cc_targets(iv_min_atm: float, market_cap_min: float):
       FROM latest_shares ls
       JOIN latest_price lp ON ls.ticker = lp.ticker
     ),
-    recent_iv AS (
+    latest_fetch AS (
       SELECT
-        ivs.ticker,
-        ivs.fetch_date,
-        ivs.expiry,
-        ivs.contract_count,
-        ivs.iv_median,
-        ivs.iv_atm,
-        ivs.atm_premium,
-        ivs.atm_premium_pct
+        ticker,
+        MAX(fetch_date) AS max_fetch_date
+      FROM iv_summary
+      GROUP BY ticker
+    ),
+    recent_iv AS (
+      SELECT DISTINCT ON (ivs.ticker)
+        ivs.*
       FROM iv_summary ivs
-      WHERE ivs.fetch_date = (
-        SELECT MAX(fetch_date)
-          FROM iv_summary
-         WHERE ticker = ivs.ticker
-      )
+      JOIN latest_fetch lf
+        ON lf.ticker = ivs.ticker
+       AND lf.max_fetch_date = ivs.fetch_date
+      ORDER BY ivs.ticker, ivs.dte ASC NULLS LAST, ivs.expiry ASC
     )
     SELECT
       r.ticker,
       COALESCE(c.greer_star_rating, 0) AS greer_star_rating,
       mc.market_cap,
-      lp.latest_price as latest_price,
+      lp.latest_price AS latest_price,
+
+      r.fetch_date,
+      r.expiry,
+      r.dte,
+      r.contract_count,
       r.iv_atm,
       r.iv_median,
       r.atm_premium,
       r.atm_premium_pct,
-      r.expiry,
-      r.contract_count
+      r.underlying_price,
+
+      r.put_20d_strike,
+      r.put_20d_delta,
+      r.put_20d_premium,
+      r.put_20d_premium_pct,
+
+      r.call_20d_strike,
+      r.call_20d_delta,
+      r.call_20d_premium,
+      r.call_20d_premium_pct
+
     FROM recent_iv r
     JOIN mc ON r.ticker = mc.ticker
     JOIN latest_price lp ON r.ticker = lp.ticker
@@ -94,86 +113,237 @@ def load_cc_targets(iv_min_atm: float, market_cap_min: float):
     WHERE
       mc.market_cap >= :market_cap_min
       AND r.iv_atm >= :iv_min_atm
+      AND COALESCE(c.greer_star_rating, 0) >= :min_star_rating
     ORDER BY
       r.iv_atm DESC,
       mc.market_cap DESC
     """)
+
     df = pd.read_sql(
         query,
         engine,
-        params={"market_cap_min": market_cap_min, "iv_min_atm": iv_min_atm}
+        params={
+            "market_cap_min": market_cap_min,
+            "iv_min_atm": iv_min_atm,
+            "min_star_rating": min_star_rating
+        }
     )
     return df
 
+# ----------------------------------------------------------
+# Insert a trade log row for Income Fund tracking
+# ----------------------------------------------------------
+def insert_income_trade(
+    ticker: str,
+    strategy: str,
+    expiry: date,
+    strike: float,
+    option_type: str,
+    contracts: int,
+    fill_price: float,
+    fees: float,
+    notes: str
+) -> None:
+    engine = get_engine()
+    ins = text("""
+        INSERT INTO income_fund_trades
+        (ticker, strategy, expiry, strike, option_type, contracts, fill_price, fees, notes)
+        VALUES
+        (:ticker, :strategy, :expiry, :strike, :option_type, :contracts, :fill_price, :fees, :notes)
+    """)
+    with engine.begin() as conn:
+        conn.execute(ins, {
+            "ticker": ticker,
+            "strategy": strategy,
+            "expiry": expiry,
+            "strike": strike,
+            "option_type": option_type,
+            "contracts": contracts,
+            "fill_price": fill_price,
+            "fees": fees,
+            "notes": notes
+        })
+
+# ----------------------------------------------------------
+# Load recent trades (for confirmation + tracking)
+# ----------------------------------------------------------
+@st.cache_data(ttl=300)
+def load_recent_trades(limit: int = 25) -> pd.DataFrame:
+    engine = get_engine()
+    q = text("""
+        SELECT
+          trade_id,
+          created_at,
+          ticker,
+          strategy,
+          option_type,
+          expiry,
+          strike,
+          contracts,
+          fill_price,
+          fees,
+          (contracts * 100 * fill_price) AS gross_credit,
+          (contracts * 100 * fill_price) - COALESCE(fees, 0) AS net_credit,
+          notes
+        FROM income_fund_trades
+        ORDER BY created_at DESC
+        LIMIT :limit
+    """)
+    with engine.connect() as conn:
+        df = pd.read_sql(q, conn, params={"limit": limit})
+    return df
+
+# ----------------------------------------------------------
+# Weekly totals by expiry (simple “this week” roll-up)
+# ----------------------------------------------------------
+@st.cache_data(ttl=300)
+def load_weekly_totals(days_forward: int = 14) -> pd.DataFrame:
+    engine = get_engine()
+    q = text("""
+        SELECT
+          expiry,
+          COUNT(*) AS trades,
+          SUM(contracts) AS total_contracts,
+          SUM(contracts * 100 * fill_price) AS gross_credit,
+          SUM(COALESCE(fees, 0)) AS total_fees,
+          SUM((contracts * 100 * fill_price) - COALESCE(fees, 0)) AS net_credit
+        FROM income_fund_trades
+        WHERE expiry >= CURRENT_DATE
+          AND expiry <= (CURRENT_DATE + (:days_forward || ' days')::interval)
+        GROUP BY expiry
+        ORDER BY expiry ASC
+    """)
+    with engine.connect() as conn:
+        df = pd.read_sql(q, conn, params={"days_forward": days_forward})
+    return df
+
 def main():
-    st.title("📋 Weekly IV Targets")
+    st.title("📋 Weekly IV Targets (20Δ Wheel Targets)")
+
     st.markdown(
         """
-        **Filter criteria:**  
-        - Market Cap ≥ your threshold  
-        - ATM Implied Volatility (IV ATM) ≥ your threshold  
-        - Option contract count ≥ 10  
-        - Option expiry ≤ 7 days from today  
+        **Weekend plan:** Use this page on Sat/Sun to prep your Monday orders for options expiring Friday.
+
+        **Now included:**  
+        - **~20Δ Put** (Cash-Secured Put candidate)  
+        - **~20Δ Call** (Covered Call candidate)  
+        - Premium % filters to target **~1%/week**
         """
     )
 
-    # Input params
-    col1, col2 = st.columns(2)
-    with col1:
+    # ----------------------------------------------------------
+    # Inputs
+    # ----------------------------------------------------------
+    top1, top2, top3, top4 = st.columns([1.1, 1.2, 1.1, 1.2])
+    with top1:
         iv_min_atm = st.number_input(
             "Minimum implied volatility (ATM) (decimal form)",
-            value=0.70,
+            value=0.00,
             step=0.05,
             format="%.2f"
         )
-    with col2:
+    with top2:
         market_cap_min = st.number_input(
             "Minimum market cap",
             value=10_000_000_000,
             step=1_000_000_000,
             format="%d"
         )
+    with top3:
+        min_star_rating = st.slider("Min ⭐ rating", 0, 5, 0)
+    with top4:
+        expiry_days = st.slider("Max expiry days from today", 1, 14, 7)
 
-    df = load_cc_targets(iv_min_atm=iv_min_atm, market_cap_min=market_cap_min)
+    colA, colB, colC = st.columns([1.35, 1.15, 1.2])
+    with colA:
+        wheel_mode = st.selectbox("Wheel Mode (what you're preparing for Monday)", ["CASH (Sell CSP)", "SHARES (Sell CC)"])
+    with colB:
+        min_target_premium_pct = st.number_input(
+            "Min target premium % (0.01 = 1%)",
+            min_value=0.0,
+            value=0.01,
+            step=0.001,
+            format="%.3f"
+        )
+    with colC:
+        sort_by = st.selectbox("Sort by", ["Action premium %", "IV ATM", "Stars", "Market Cap", "Ticker"])
+
+    df = load_weekly_targets(iv_min_atm=iv_min_atm, market_cap_min=market_cap_min, min_star_rating=min_star_rating)
 
     if df.empty:
-        st.info("No raw candidates found under market cap / IV filters.")
+        st.info("No candidates found under market cap / IV / star filters.")
         return
 
     # ----------------------------------------------------------
-    # Add star string column for display
+    # Add star display + clean types
     # ----------------------------------------------------------
     df["stars"] = df["greer_star_rating"].apply(stars_display)
 
-    # Pre-format
-    df["market_cap"] = df["market_cap"].apply(lambda x: f"${x:,.0f}")
-    df["latest_price"] = df["latest_price"].round(2)
-    df["iv_median"] = df["iv_median"].round(3)
-    df["iv_atm"] = df["iv_atm"].round(3)
-
-    if "atm_premium" in df.columns:
-        df["atm_premium"] = df["atm_premium"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else "")
-    if "atm_premium_pct" in df.columns:
-        df["atm_premium_pct"] = df["atm_premium_pct"].apply(
-            lambda x: f"{x*100:.2f}%" if pd.notnull(x) else ""
-        )
-
     df["expiry"] = pd.to_datetime(df["expiry"]).dt.date
-    df["contract_count"] = df["contract_count"].astype("Int64")
+    df["fetch_date"] = pd.to_datetime(df["fetch_date"]).dt.date
+    df["contract_count"] = pd.to_numeric(df["contract_count"], errors="coerce").astype("Int64")
 
-    # ********** FILTERS **********
-    # 1) contract_count >= 10
+    df["latest_price"] = pd.to_numeric(df["latest_price"], errors="coerce").round(2)
+    df["underlying_price"] = pd.to_numeric(df["underlying_price"], errors="coerce").round(2)
+    df["iv_atm"] = pd.to_numeric(df["iv_atm"], errors="coerce").round(3)
+    df["iv_median"] = pd.to_numeric(df["iv_median"], errors="coerce").round(3)
+
+    # Market cap formatting
+    df["market_cap_raw"] = pd.to_numeric(df["market_cap"], errors="coerce")
+    df["market_cap"] = df["market_cap_raw"].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "")
+
+    # Format helpers
+    def fmt_money(x):
+        return f"${float(x):.2f}" if pd.notnull(x) else ""
+
+    def fmt_pct(x):
+        return f"{float(x)*100:.2f}%" if pd.notnull(x) else ""
+
+    df["put_20d_premium_fmt"] = df["put_20d_premium"].apply(fmt_money)
+    df["put_20d_premium_pct_fmt"] = df["put_20d_premium_pct"].apply(fmt_pct)
+
+    df["call_20d_premium_fmt"] = df["call_20d_premium"].apply(fmt_money)
+    df["call_20d_premium_pct_fmt"] = df["call_20d_premium_pct"].apply(fmt_pct)
+
+    # ----------------------------------------------------------
+    # Filters you already had (kept)
+    # ----------------------------------------------------------
     df = df[df["contract_count"] >= 10]
 
-    # 2) expiry within next 7 days (including today)
     today = date.today()
-    max_allowed = today + timedelta(days=7)
+    max_allowed = today + timedelta(days=expiry_days)
     df = df[df["expiry"] <= max_allowed]
-    # *****************************
 
-    st.subheader(f"🧮 Found {len(df)} potential targets after contract & expiry filter")
+    # ----------------------------------------------------------
+    # Wheel mode action columns
+    # ----------------------------------------------------------
+    if wheel_mode.startswith("CASH"):
+        df["action_strategy"] = "CSP"
+        df["action_type"] = "put"
+        df["action_strike"] = df["put_20d_strike"]
+        df["action_delta"] = df["put_20d_delta"]
+        df["action_premium"] = df["put_20d_premium"]
+        df["action_premium_pct"] = df["put_20d_premium_pct"]
+        df["action_premium_fmt"] = df["put_20d_premium_fmt"]
+        df["action_premium_pct_fmt"] = df["put_20d_premium_pct_fmt"]
+    else:
+        df["action_strategy"] = "CC"
+        df["action_type"] = "call"
+        df["action_strike"] = df["call_20d_strike"]
+        df["action_delta"] = df["call_20d_delta"]
+        df["action_premium"] = df["call_20d_premium"]
+        df["action_premium_pct"] = df["call_20d_premium_pct"]
+        df["action_premium_fmt"] = df["call_20d_premium_fmt"]
+        df["action_premium_pct_fmt"] = df["call_20d_premium_pct_fmt"]
+
+    # Require action fields
+    df = df[df["action_premium_pct"].notna() & df["action_strike"].notna() & df["action_premium"].notna()]
+
+    # Premium target filter (your 1% weekly rule)
+    df = df[df["action_premium_pct"] >= float(min_target_premium_pct)]
+
     if df.empty:
-        st.info("No tickers match all filter criteria (market cap / IV / contract count / expiry).")
+        st.info("No tickers match all criteria after premium filter.")
         return
 
     # Optional ticker search filter
@@ -181,18 +351,54 @@ def main():
     if search:
         df = df[df["ticker"].str.contains(search)]
 
-    # Columns to display
+    if df.empty:
+        st.info("No tickers match your search.")
+        return
+
+    # Sorting
+    if sort_by == "Action premium %":
+        df = df.sort_values(by="action_premium_pct", ascending=False, na_position="last")
+    elif sort_by == "IV ATM":
+        df = df.sort_values(by="iv_atm", ascending=False, na_position="last")
+    elif sort_by == "Stars":
+        df = df.sort_values(by="greer_star_rating", ascending=False, na_position="last")
+    elif sort_by == "Market Cap":
+        df = df.sort_values(by="market_cap_raw", ascending=False, na_position="last")
+    else:
+        df = df.sort_values(by="ticker", ascending=True)
+
+    st.subheader(f"🧮 Found {len(df)} targets (Wheel Mode: {wheel_mode})")
+
+    # ----------------------------------------------------------
+    # Display table
+    # ----------------------------------------------------------
     columns = [
         "ticker",
         "stars",
         "latest_price",
         "market_cap",
         "iv_atm",
-        "iv_median"
+        "iv_median",
+        "expiry",
+        "dte",
+        "contract_count",
+
+        "put_20d_strike",
+        "put_20d_delta",
+        "put_20d_premium_fmt",
+        "put_20d_premium_pct_fmt",
+
+        "call_20d_strike",
+        "call_20d_delta",
+        "call_20d_premium_fmt",
+        "call_20d_premium_pct_fmt",
+
+        "action_strategy",
+        "action_strike",
+        "action_delta",
+        "action_premium_fmt",
+        "action_premium_pct_fmt",
     ]
-    if "atm_premium" in df.columns:
-        columns += ["atm_premium", "atm_premium_pct"]
-    columns += ["expiry", "contract_count"]
 
     st.dataframe(df[columns], hide_index=True, use_container_width=True)
 
@@ -202,6 +408,105 @@ def main():
         file_name="weekly_iv_targets_filtered.csv",
         mime="text/csv",
     )
+
+    # ----------------------------------------------------------
+    # Income Fund tracking: Log executed trades
+    # ----------------------------------------------------------
+    st.divider()
+    st.subheader("✅ Income Fund Tracking — Log Executed Trade")
+
+    tickers = df["ticker"].dropna().unique().tolist()
+    selected_ticker = st.selectbox("Ticker to log", tickers)
+
+    row = df[df["ticker"] == selected_ticker].head(1).iloc[0]
+
+    default_expiry = row["expiry"]
+    default_strike = float(row["action_strike"])
+    default_type = row["action_type"]
+    default_strategy = row["action_strategy"]
+    default_fill = float(row["action_premium"]) if pd.notnull(row["action_premium"]) else 0.0
+
+    x1, x2, x3, x4, x5 = st.columns([1.1, 1.0, 1.2, 1.0, 2.0])
+    with x1:
+        strategy = st.selectbox("Strategy", ["CSP", "CC"], index=0 if default_strategy == "CSP" else 1)
+    with x2:
+        contracts = st.number_input("Contracts", min_value=1, value=1, step=1)
+    with x3:
+        fill_price = st.number_input("Fill Price (credit)", min_value=0.0, value=default_fill, step=0.01, format="%.2f")
+    with x4:
+        fees = st.number_input("Fees", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+    with x5:
+        notes = st.text_input(
+            "Notes (optional)",
+            value=f"Logged from Weekly IV Targets: {strategy} {default_type} exp {default_expiry} strike {default_strike}"
+        )
+
+    st.caption(
+        f"Defaults: expiry={default_expiry} | type={default_type} | strike={default_strike} | "
+        f"est_delta={row['action_delta']:.3f} | est_premium={row['action_premium_fmt']} ({row['action_premium_pct_fmt']})"
+    )
+
+    if st.button("📌 Log Trade to income_fund_trades"):
+        try:
+            insert_income_trade(
+                ticker=selected_ticker,
+                strategy=strategy,
+                expiry=default_expiry,
+                strike=float(default_strike),
+                option_type=str(default_type),
+                contracts=int(contracts),
+                fill_price=float(fill_price),
+                fees=float(fees),
+                notes=notes
+            )
+            st.success("Trade logged! (income_fund_trades)")
+            st.cache_data.clear()
+        except Exception as e:
+            st.error(f"Failed to insert trade. Error: {e}")
+
+    # ----------------------------------------------------------
+    # Tracking visibility: Weekly totals + recent trades
+    # ----------------------------------------------------------
+    st.divider()
+    st.subheader("📊 Income Fund Tracking — This Week + Recent Trades")
+
+    wt1, wt2 = st.columns([1.2, 1.0])
+    with wt1:
+        days_forward = st.slider("Show totals for expiries within next N days", 7, 28, 14)
+    with wt2:
+        recent_limit = st.selectbox("Recent trades to show", [10, 25, 50, 100], index=1)
+
+    weekly_totals = load_weekly_totals(days_forward=days_forward)
+    if weekly_totals.empty:
+        st.info("No logged trades found for upcoming expiries in this window.")
+    else:
+        # Format totals
+        weekly_totals["gross_credit"] = weekly_totals["gross_credit"].apply(lambda x: f"${float(x):,.2f}")
+        weekly_totals["total_fees"] = weekly_totals["total_fees"].apply(lambda x: f"${float(x):,.2f}")
+        weekly_totals["net_credit"] = weekly_totals["net_credit"].apply(lambda x: f"${float(x):,.2f}")
+        st.write("**Totals by expiry** (great for your weekly recap to members):")
+        st.dataframe(weekly_totals, hide_index=True, use_container_width=True)
+
+    recent_trades = load_recent_trades(limit=int(recent_limit))
+    if recent_trades.empty:
+        st.info("No trades logged yet.")
+    else:
+        # Format display
+        recent_trades["created_at"] = pd.to_datetime(recent_trades["created_at"])
+        recent_trades["expiry"] = pd.to_datetime(recent_trades["expiry"]).dt.date
+        recent_trades["fill_price"] = recent_trades["fill_price"].apply(lambda x: f"${float(x):.2f}")
+        recent_trades["fees"] = recent_trades["fees"].apply(lambda x: f"${float(x):.2f}")
+        recent_trades["gross_credit"] = recent_trades["gross_credit"].apply(lambda x: f"${float(x):,.2f}")
+        recent_trades["net_credit"] = recent_trades["net_credit"].apply(lambda x: f"${float(x):,.2f}")
+
+        st.write("**Recent trade logs** (confirmation + audit trail):")
+        st.dataframe(
+            recent_trades[
+                ["created_at", "ticker", "strategy", "option_type", "expiry", "strike", "contracts", "fill_price", "fees", "gross_credit", "net_credit", "notes"]
+            ],
+            hide_index=True,
+            use_container_width=True
+        )
 
 if __name__ == "__main__":
     main()
