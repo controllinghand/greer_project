@@ -244,6 +244,7 @@ def insert_income_trade(
 # ----------------------------------------------------------
 # Load recent trades (admin only)
 # - Uses premium_total if present
+# - Adds notional so CC yield can be computed consistently
 # ----------------------------------------------------------
 @st.cache_data(ttl=300)
 def load_recent_trades(limit: int = 25) -> pd.DataFrame:
@@ -260,10 +261,16 @@ def load_recent_trades(limit: int = 25) -> pd.DataFrame:
           contracts,
           fill_price,
           COALESCE(fees, 0) AS fees,
+
           COALESCE(premium_total, (contracts * 100 * fill_price)) AS gross_credit,
           COALESCE(premium_total, (contracts * 100 * fill_price)) - COALESCE(fees, 0) AS net_credit,
+
           COALESCE(cash_secured, 0) AS cash_secured,
           COALESCE(shares_covered, 0) AS shares_covered,
+
+          -- For CC yield denominator (and blended weekly yield)
+          COALESCE(notional, (strike * contracts * 100)) AS notional,
+
           notes
         FROM income_fund_trades
         ORDER BY created_at DESC
@@ -273,9 +280,11 @@ def load_recent_trades(limit: int = 25) -> pd.DataFrame:
         df = pd.read_sql(q, conn, params={"limit": limit})
     return df
 
+
 # ----------------------------------------------------------
 # Weekly totals by expiry (admin only)
 # - Includes secured cash + shares covered
+# - Adds CC notional for proper blended yield calc
 # ----------------------------------------------------------
 @st.cache_data(ttl=300)
 def load_weekly_totals(days_forward: int = 14) -> pd.DataFrame:
@@ -285,11 +294,22 @@ def load_weekly_totals(days_forward: int = 14) -> pd.DataFrame:
           expiry,
           COUNT(*) AS trades,
           SUM(contracts) AS total_contracts,
+
           SUM(COALESCE(premium_total, (contracts * 100 * fill_price))) AS gross_credit,
           SUM(COALESCE(fees, 0)) AS total_fees,
           SUM(COALESCE(premium_total, (contracts * 100 * fill_price)) - COALESCE(fees, 0)) AS net_credit,
+
           SUM(COALESCE(cash_secured, 0)) AS total_cash_secured,
-          SUM(COALESCE(shares_covered, 0)) AS total_shares_covered
+          SUM(COALESCE(shares_covered, 0)) AS total_shares_covered,
+
+          -- CC collateral proxy (notional)
+          SUM(
+            CASE WHEN strategy = 'CC'
+                 THEN COALESCE(notional, (strike * contracts * 100))
+                 ELSE 0
+            END
+          ) AS total_cc_notional
+
         FROM income_fund_trades
         WHERE expiry >= CURRENT_DATE
           AND expiry <= (CURRENT_DATE + (:days_forward || ' days')::interval)
@@ -300,6 +320,9 @@ def load_weekly_totals(days_forward: int = 14) -> pd.DataFrame:
         df = pd.read_sql(q, conn, params={"days_forward": days_forward})
     return df
 
+# ----------------------------------------------------------
+# MAIN
+# ----------------------------------------------------------
 def main():
     st.title("📋 Weekly IV Targets (20Δ Wheel Targets)")
 
@@ -568,24 +591,45 @@ def main():
     if weekly_totals.empty:
         st.info("No logged trades found for upcoming expiries in this window.")
     else:
-        # --- Yield calc BEFORE formatting (CSP yield only uses cash secured)
+        # ----------------------------------------------------------
+        # Yield calc BEFORE formatting
+        # - blended yield = net_credit / (cash_secured + cc_notional)
+        # ----------------------------------------------------------
         weekly_totals["yield_pct"] = None
-        mask = pd.to_numeric(weekly_totals["total_cash_secured"], errors="coerce") > 0
-        weekly_totals.loc[mask, "yield_pct"] = (
-            pd.to_numeric(weekly_totals.loc[mask, "net_credit"], errors="coerce")
-            / pd.to_numeric(weekly_totals.loc[mask, "total_cash_secured"], errors="coerce")
-        )
 
-        # --- Now format for display
+        net_credit_num = pd.to_numeric(weekly_totals["net_credit"], errors="coerce").fillna(0)
+        cash_secured_num = pd.to_numeric(weekly_totals["total_cash_secured"], errors="coerce").fillna(0)
+
+        # total_cc_notional should come from your SQL in load_weekly_totals()
+        if "total_cc_notional" in weekly_totals.columns:
+            cc_notional_num = pd.to_numeric(weekly_totals["total_cc_notional"], errors="coerce").fillna(0)
+        else:
+            cc_notional_num = pd.Series(0, index=weekly_totals.index)
+
+        denom = cash_secured_num + cc_notional_num
+        mask = denom > 0
+
+        weekly_totals.loc[mask, "yield_pct"] = net_credit_num[mask] / denom[mask]
+
+        # ----------------------------------------------------------
+        # Now format for display
+        # ----------------------------------------------------------
         weekly_totals["gross_credit"] = weekly_totals["gross_credit"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
         weekly_totals["total_fees"] = weekly_totals["total_fees"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
         weekly_totals["net_credit"] = weekly_totals["net_credit"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
         weekly_totals["total_cash_secured"] = weekly_totals["total_cash_secured"].apply(lambda x: f"${float(x):,.0f}" if pd.notnull(x) else "")
+
         weekly_totals["total_shares_covered"] = weekly_totals["total_shares_covered"].fillna(0).astype(int)
+
+        # Show CC notional if present (nice for context)
+        if "total_cc_notional" in weekly_totals.columns:
+            weekly_totals["total_cc_notional"] = weekly_totals["total_cc_notional"].apply(lambda x: f"${float(x):,.0f}" if pd.notnull(x) else "")
+
         weekly_totals["yield_pct"] = weekly_totals["yield_pct"].apply(fmt_pct_from_ratio)
 
         st.write("**Totals by expiry**")
         st.dataframe(weekly_totals, hide_index=True, use_container_width=True)
+
 
     recent_trades = load_recent_trades(limit=int(recent_limit))
     if recent_trades.empty:
@@ -594,18 +638,35 @@ def main():
         recent_trades["created_at"] = pd.to_datetime(recent_trades["created_at"])
         recent_trades["expiry"] = pd.to_datetime(recent_trades["expiry"]).dt.date
 
-        # --- Yield calc BEFORE formatting
+        # ----------------------------------------------------------
+        # Yield calc BEFORE formatting
+        # - CSP: net_credit / cash_secured
+        # - CC:  net_credit / notional  (fallback: strike*contracts*100)
+        # ----------------------------------------------------------
         recent_trades["yield_pct"] = None
-        mask_csp = (
-            (recent_trades["strategy"] == "CSP")
-            & (pd.to_numeric(recent_trades["cash_secured"], errors="coerce") > 0)
-        )
-        recent_trades.loc[mask_csp, "yield_pct"] = (
-            pd.to_numeric(recent_trades.loc[mask_csp, "net_credit"], errors="coerce")
-            / pd.to_numeric(recent_trades.loc[mask_csp, "cash_secured"], errors="coerce")
-        )
 
-        # --- Now format for display
+        net_credit_num = pd.to_numeric(recent_trades["net_credit"], errors="coerce")
+        cash_secured_num = pd.to_numeric(recent_trades["cash_secured"], errors="coerce")
+
+        # use stored notional if present, else compute it
+        if "notional" in recent_trades.columns:
+            notional_num = pd.to_numeric(recent_trades["notional"], errors="coerce")
+        else:
+            strike_num = pd.to_numeric(recent_trades["strike"], errors="coerce")
+            contracts_num = pd.to_numeric(recent_trades["contracts"], errors="coerce")
+            notional_num = strike_num * contracts_num * 100
+
+        # CSP yield
+        mask_csp = (recent_trades["strategy"] == "CSP") & (cash_secured_num > 0)
+        recent_trades.loc[mask_csp, "yield_pct"] = net_credit_num[mask_csp] / cash_secured_num[mask_csp]
+
+        # CC yield
+        mask_cc = (recent_trades["strategy"] == "CC") & (notional_num > 0)
+        recent_trades.loc[mask_cc, "yield_pct"] = net_credit_num[mask_cc] / notional_num[mask_cc]
+
+        # ----------------------------------------------------------
+        # Now format for display
+        # ----------------------------------------------------------
         recent_trades["fill_price"] = recent_trades["fill_price"].apply(lambda x: f"${float(x):.2f}" if pd.notnull(x) else "")
         recent_trades["fees"] = recent_trades["fees"].apply(lambda x: f"${float(x):.2f}" if pd.notnull(x) else "")
         recent_trades["gross_credit"] = recent_trades["gross_credit"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
@@ -628,6 +689,7 @@ def main():
             hide_index=True,
             use_container_width=True
         )
+
 
 
 if __name__ == "__main__":
