@@ -1,233 +1,186 @@
 # nav.py
 """
-Nightly NAV builder (Phase 1)
-- Computes end-of-day NAV for ALL portfolios
-- Mirrors the SQL logic you provided:
-  - cash_eod = SUM(cash_delta) for all events before (nav_date + 1 day)
-  - shares_eod = SUM(quantity) for share-impacting events before (nav_date + 1 day)
-  - equity_value uses close on nav_date, else falls back to most recent prior close
-  - nav = cash + equity_value
-- Writes to portfolio_nav_daily with UPSERT
+Nightly NAV builder for all portfolios.
+
+Writes to:
+  portfolio_nav_daily (portfolio_id, nav_date, cash, equity_value, nav)
+
+Logic:
+- cash EOD = sum(cash_delta) for events with event_time < (nav_date + 1 day)
+- shares EOD per ticker = sum(quantity) for share-impact events with event_time < (nav_date + 1 day)
+- equity_value = sum(shares * close) using prices on nav_date, or last close before nav_date
+- nav = cash + equity_value
+
+Runs for every portfolio from its start_date through CURRENT_DATE.
 """
 
-import os
 import logging
-from datetime import date, timedelta
-
-import pandas as pd
+import os
 from sqlalchemy import text
 from db import get_engine
 
 # ----------------------------------------------------------
 # Logging
 # ----------------------------------------------------------
-def setup_logger() -> logging.Logger:
-    log_dir = os.path.join(os.path.dirname(__file__), "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "nav.log")
+log_dir = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "nav.log")
 
-    logging.basicConfig(
-        filename=log_file,
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s"
-    )
-    return logging.getLogger("nav")
-
-logger = setup_logger()
+logging.basicConfig(
+    filename=log_file,
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------
-# Load portfolios
+# SQL (only binds :portfolio_id)
 # ----------------------------------------------------------
-def load_portfolios() -> pd.DataFrame:
+NAV_SQL = text("""
+WITH p AS (
+  SELECT portfolio_id, start_date
+  FROM portfolios
+  WHERE portfolio_id = :portfolio_id
+),
+days AS (
+  SELECT generate_series(
+    (SELECT start_date FROM p)::date,
+    CURRENT_DATE::date,
+    interval '1 day'
+  )::date AS nav_date
+),
+cash_eod AS (
+  SELECT
+    d.nav_date,
+    COALESCE(SUM(e.cash_delta), 0) AS cash
+  FROM days d
+  LEFT JOIN portfolio_events e
+    ON e.portfolio_id = (SELECT portfolio_id FROM p)
+   AND e.event_time < (d.nav_date + interval '1 day')
+  GROUP BY d.nav_date
+),
+shares_eod AS (
+  SELECT
+    d.nav_date,
+    e.ticker,
+    COALESCE(SUM(
+      CASE
+        WHEN e.event_type IN ('ASSIGN_PUT', 'CALL_AWAY', 'BUY_SHARES', 'SELL_SHARES')
+          THEN COALESCE(e.quantity, 0)
+        ELSE 0
+      END
+    ), 0) AS shares
+  FROM days d
+  LEFT JOIN portfolio_events e
+    ON e.portfolio_id = (SELECT portfolio_id FROM p)
+   AND e.event_time < (d.nav_date + interval '1 day')
+  WHERE e.ticker IS NOT NULL AND e.ticker <> ''
+  GROUP BY d.nav_date, e.ticker
+),
+equity_eod AS (
+  SELECT
+    s.nav_date,
+    COALESCE(SUM(
+      s.shares *
+      COALESCE(
+        pr.close,
+        (
+          SELECT pr2.close
+          FROM prices pr2
+          WHERE pr2.ticker = s.ticker
+            AND pr2.date < s.nav_date
+          ORDER BY pr2.date DESC
+          LIMIT 1
+        ),
+        0
+      )
+    ), 0) AS equity_value
+  FROM shares_eod s
+  LEFT JOIN prices pr
+    ON pr.ticker = s.ticker
+   AND pr.date = s.nav_date
+  GROUP BY s.nav_date
+),
+final_nav AS (
+  SELECT
+    (SELECT portfolio_id FROM p) AS portfolio_id,
+    c.nav_date,
+    c.cash,
+    COALESCE(e.equity_value, 0) AS equity_value,
+    (c.cash + COALESCE(e.equity_value, 0)) AS nav
+  FROM cash_eod c
+  LEFT JOIN equity_eod e
+    ON e.nav_date = c.nav_date
+)
+INSERT INTO portfolio_nav_daily (portfolio_id, nav_date, cash, equity_value, nav)
+SELECT portfolio_id, nav_date, cash, equity_value, nav
+FROM final_nav
+ON CONFLICT (portfolio_id, nav_date)
+DO UPDATE SET
+  cash = EXCLUDED.cash,
+  equity_value = EXCLUDED.equity_value,
+  nav = EXCLUDED.nav;
+""")
+
+COUNT_DAYS_SQL = text("""
+SELECT (CURRENT_DATE::date - start_date::date + 1) AS days
+FROM portfolios
+WHERE portfolio_id = :portfolio_id
+""")
+
+# ----------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------
+def load_portfolios():
     engine = get_engine()
-    q = text("""
-        SELECT portfolio_id, code, name, start_date
-        FROM portfolios
-        ORDER BY portfolio_id
-    """)
+    q = text("SELECT portfolio_id, code, name, start_date FROM portfolios ORDER BY portfolio_id;")
     with engine.connect() as conn:
-        return pd.read_sql(q, conn)
+        rows = conn.execute(q).mappings().all()
+    return rows
 
-# ----------------------------------------------------------
-# Get last computed nav_date (per portfolio)
-# ----------------------------------------------------------
-def get_last_nav_date(portfolio_id: int):
+def run_nav_for_portfolio(portfolio_id: int, code: str):
     engine = get_engine()
-    q = text("""
-        SELECT MAX(nav_date) AS max_nav_date
-        FROM portfolio_nav_daily
-        WHERE portfolio_id = :pid
-    """)
-    with engine.connect() as conn:
-        row = conn.execute(q, {"pid": portfolio_id}).mappings().first()
-    return row["max_nav_date"] if row else None
+    try:
+        with engine.begin() as conn:
+            # Upsert NAV rows
+            conn.execute(NAV_SQL, {"portfolio_id": int(portfolio_id)})
 
-# ----------------------------------------------------------
-# Get max available price date (global)
-# ----------------------------------------------------------
-def get_max_price_date():
-    engine = get_engine()
-    q = text("SELECT MAX(date) AS max_date FROM prices")
-    with engine.connect() as conn:
-        row = conn.execute(q).mappings().first()
-    return row["max_date"] if row else None
+            # How many calendar days in range (for a friendly log message)
+            days = conn.execute(COUNT_DAYS_SQL, {"portfolio_id": int(portfolio_id)}).scalar() or 0
 
-# ----------------------------------------------------------
-# UPSERT NAV rows (generated by SQL)
-# ----------------------------------------------------------
-def compute_and_upsert_nav(portfolio_id: int, start_date: date, end_date: date) -> int:
-    """
-    Runs the CTE pipeline (your SQL) for a portfolio_id over a date range,
-    and UPSERTs into portfolio_nav_daily.
-
-    Returns: number of days attempted (end_date - start_date + 1)
-    """
-    engine = get_engine()
-
-    q = text("""
-    WITH p AS (
-      SELECT portfolio_id, start_date
-      FROM portfolios
-      WHERE portfolio_id = :portfolio_id
-    ),
-    days AS (
-      SELECT generate_series(
-        :start_date::date,
-        :end_date::date,
-        interval '1 day'
-      )::date AS nav_date
-    ),
-    cash_eod AS (
-      SELECT
-        d.nav_date,
-        COALESCE(SUM(e.cash_delta), 0) AS cash
-      FROM days d
-      LEFT JOIN portfolio_events e
-        ON e.portfolio_id = (SELECT portfolio_id FROM p)
-       AND e.event_time < (d.nav_date + interval '1 day')
-      GROUP BY d.nav_date
-    ),
-    shares_eod AS (
-      SELECT
-        d.nav_date,
-        e.ticker,
-        COALESCE(SUM(
-          CASE
-            WHEN e.event_type IN ('ASSIGN_PUT', 'CALL_AWAY', 'BUY_SHARES', 'SELL_SHARES')
-              THEN COALESCE(e.quantity, 0)
-            ELSE 0
-          END
-        ), 0) AS shares
-      FROM days d
-      LEFT JOIN portfolio_events e
-        ON e.portfolio_id = (SELECT portfolio_id FROM p)
-       AND e.event_time < (d.nav_date + interval '1 day')
-      WHERE e.ticker IS NOT NULL AND e.ticker <> ''
-      GROUP BY d.nav_date, e.ticker
-    ),
-    equity_eod AS (
-      SELECT
-        s.nav_date,
-        COALESCE(SUM(
-          s.shares *
-          COALESCE(
-            pr.close,
-            (
-              SELECT pr2.close
-              FROM prices pr2
-              WHERE pr2.ticker = s.ticker
-                AND pr2.date < s.nav_date
-              ORDER BY pr2.date DESC
-              LIMIT 1
-            ),
-            0
-          )
-        ), 0) AS equity_value
-      FROM shares_eod s
-      LEFT JOIN prices pr
-        ON pr.ticker = s.ticker
-       AND pr.date = s.nav_date
-      GROUP BY s.nav_date
-    ),
-    final_nav AS (
-      SELECT
-        (SELECT portfolio_id FROM p) AS portfolio_id,
-        c.nav_date,
-        c.cash,
-        e.equity_value,
-        (c.cash + e.equity_value) AS nav
-      FROM cash_eod c
-      LEFT JOIN equity_eod e
-        ON e.nav_date = c.nav_date
-    )
-    INSERT INTO portfolio_nav_daily (portfolio_id, nav_date, cash, equity_value, nav)
-    SELECT portfolio_id, nav_date, cash, equity_value, nav
-    FROM final_nav
-    ON CONFLICT (portfolio_id, nav_date)
-    DO UPDATE SET
-      cash = EXCLUDED.cash,
-      equity_value = EXCLUDED.equity_value,
-      nav = EXCLUDED.nav
-    """)
-
-    # Execute as one statement
-    with engine.begin() as conn:
-        conn.execute(q, {
-            "portfolio_id": int(portfolio_id),
-            "start_date": start_date,
-            "end_date": end_date
-        })
-
-    # rows attempted = number of days in range
-    return (end_date - start_date).days + 1
+        msg = f"✅ NAV complete for {code} (pid={portfolio_id}). Days in range: {int(days)}"
+        print(msg)
+        logger.info(msg)
+        return True
+    except Exception as e:
+        msg = f"❌ NAV failed for {code} (pid={portfolio_id}): {e}"
+        print(msg)
+        logger.exception(msg)
+        return False
 
 # ----------------------------------------------------------
 # Main
 # ----------------------------------------------------------
 def main():
-    logger.info("Starting nightly NAV build for all portfolios")
-
     portfolios = load_portfolios()
-    if portfolios.empty:
-        logger.info("No portfolios found.")
-        print("No portfolios found.")
+    if not portfolios:
+        print("No portfolios found. Nothing to do.")
         return
 
-    max_price_date = get_max_price_date()
-    if not max_price_date:
-        logger.warning("No prices available; skipping NAV.")
-        print("No prices available in prices table; skipping NAV.")
-        return
+    ok = 0
+    bad = 0
 
-    end_date = max_price_date  # aligns NAV valuation to latest known close
-
-    total_days = 0
-    for _, p in portfolios.iterrows():
+    for p in portfolios:
         pid = int(p["portfolio_id"])
-        code = p["code"]
-        p_start = p["start_date"]
+        code = (p["code"] or f"pid_{pid}").strip()
+        success = run_nav_for_portfolio(pid, code)
+        if success:
+            ok += 1
+        else:
+            bad += 1
 
-        try:
-            last_nav = get_last_nav_date(pid)
-            start_date = (last_nav + timedelta(days=1)) if last_nav else p_start
-
-            if start_date > end_date:
-                logger.info(f"{code} (pid={pid}): NAV up to date through {end_date}")
-                continue
-
-            logger.info(f"{code} (pid={pid}): computing NAV {start_date} -> {end_date}")
-            days_written = compute_and_upsert_nav(pid, start_date=start_date, end_date=end_date)
-
-            total_days += days_written
-            logger.info(f"{code} (pid={pid}): upserted NAV for {days_written} days")
-
-        except Exception as e:
-            # don't kill nightly run for one portfolio
-            logger.error(f"{code} (pid={pid}): NAV failed: {e}", exc_info=True)
-            print(f"❌ NAV failed for {code} (pid={pid}): {e}")
-
-    logger.info(f"NAV complete. Total days processed: {total_days}")
-    print(f"✅ NAV complete. Total days processed: {total_days}")
+    print(f"\nNAV finished. Portfolios ok={ok}, failed={bad}")
+    logger.info(f"NAV finished. Portfolios ok={ok}, failed={bad}")
 
 if __name__ == "__main__":
     main()
