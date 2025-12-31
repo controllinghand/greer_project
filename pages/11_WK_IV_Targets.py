@@ -31,6 +31,85 @@ def stars_display(x) -> str:
         return ""
 
 # ----------------------------------------------------------
+# Wheel safety flags (keep rows but warn / optionally hide)
+# ----------------------------------------------------------
+def add_wheel_flags(df: pd.DataFrame, wheel_mode: str) -> pd.DataFrame:
+    out = df.copy()
+
+    # Ensure numeric
+    out["underlying_price"] = pd.to_numeric(out["underlying_price"], errors="coerce")
+    out["put_20d_strike"] = pd.to_numeric(out["put_20d_strike"], errors="coerce")
+    out["call_20d_strike"] = pd.to_numeric(out["call_20d_strike"], errors="coerce")
+    out["put_20d_delta"] = pd.to_numeric(out["put_20d_delta"], errors="coerce")
+    out["call_20d_delta"] = pd.to_numeric(out["call_20d_delta"], errors="coerce")
+
+    # Basic ITM checks (relative to underlying)
+    out["put_itm_flag"] = (
+        out["put_20d_strike"].notna()
+        & out["underlying_price"].notna()
+        & (out["put_20d_strike"] > out["underlying_price"])
+    )
+    out["call_itm_flag"] = (
+        out["call_20d_strike"].notna()
+        & out["underlying_price"].notna()
+        & (out["call_20d_strike"] < out["underlying_price"])
+    )
+
+    # “Delta mismatch” heuristic: ~20Δ should not be deep ITM.
+    out["put_delta_abs"] = out["put_20d_delta"].abs()
+    out["call_delta_abs"] = out["call_20d_delta"].abs()
+
+    out["delta_mismatch_flag"] = False
+    out.loc[out["put_delta_abs"].notna(), "delta_mismatch_flag"] |= (out["put_delta_abs"] > 0.35)
+    out.loc[out["call_delta_abs"].notna(), "delta_mismatch_flag"] |= (out["call_delta_abs"] > 0.35)
+
+    # Which side matters depends on wheel mode
+    if wheel_mode.startswith("CASH"):
+        bad_itm = out["put_itm_flag"]
+        bad_delta = out["put_delta_abs"] > 0.35
+    else:
+        bad_itm = out["call_itm_flag"]
+        bad_delta = out["call_delta_abs"] > 0.35
+
+    # Build reason text
+    reasons = []
+    for i in range(len(out)):
+        r = []
+
+        if bool(out.iloc[i]["put_itm_flag"]):
+            r.append("PUT strike > underlying (PUT ITM)")
+        if bool(out.iloc[i]["call_itm_flag"]):
+            r.append("CALL strike < underlying (CALL ITM)")
+
+        if wheel_mode.startswith("CASH"):
+            if pd.notna(out.iloc[i]["put_delta_abs"]) and float(out.iloc[i]["put_delta_abs"]) > 0.35:
+                r.append(f"PUT |Δ| too high ({out.iloc[i]['put_delta_abs']:.2f})")
+        else:
+            if pd.notna(out.iloc[i]["call_delta_abs"]) and float(out.iloc[i]["call_delta_abs"]) > 0.35:
+                r.append(f"CALL |Δ| too high ({out.iloc[i]['call_delta_abs']:.2f})")
+
+        reasons.append(" · ".join(r) if r else "OK")
+
+    out["wheel_reason"] = reasons
+
+    # Wheel flag (✅ / ⚠️ / ❌)
+    out["wheel_flag"] = "✅"
+
+    red = (bad_itm.fillna(False)) | (bad_delta.fillna(False))
+    out.loc[red, "wheel_flag"] = "❌"
+
+    yellow = (~red) & (
+        out["delta_mismatch_flag"].fillna(False)
+        | out["put_itm_flag"].fillna(False)
+        | out["call_itm_flag"].fillna(False)
+    )
+    out.loc[yellow, "wheel_flag"] = "⚠️"
+
+    out["wheel_fit"] = out["wheel_flag"].map({"✅": "Wheel-ready", "⚠️": "Caution", "❌": "Avoid/Review"})
+
+    return out
+
+# ----------------------------------------------------------
 # Load Weekly Targets
 # - latest fetch_date per ticker
 # - within that fetch_date, prefer nearest expiry (smallest dte then expiry)
@@ -105,14 +184,17 @@ def load_weekly_targets(iv_min_atm: float, market_cap_min: float, min_star_ratin
       r.underlying_price,
 
       r.put_20d_strike,
-      r.put_20d_delta,
+      r.put_20d_iv,
       r.put_20d_premium,
       r.put_20d_premium_pct,
+      r.put_20d_delta,
 
       r.call_20d_strike,
-      r.call_20d_delta,
+      r.call_20d_iv,
       r.call_20d_premium,
-      r.call_20d_premium_pct
+      r.call_20d_premium_pct,
+      r.call_20d_delta
+
     FROM recent_iv r
     JOIN mc ON r.ticker = mc.ticker
     JOIN latest_price lp ON r.ticker = lp.ticker
@@ -280,7 +362,6 @@ def load_recent_trades(limit: int = 25) -> pd.DataFrame:
         df = pd.read_sql(q, conn, params={"limit": limit})
     return df
 
-
 # ----------------------------------------------------------
 # Weekly totals by expiry (admin only)
 # - Includes secured cash + shares covered
@@ -399,20 +480,20 @@ def main():
     df["market_cap"] = df["market_cap_raw"].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "")
 
     # Format helpers
-    def fmt_money(x):
+    def fmt_money_local(x):
         return f"${float(x):.2f}" if pd.notnull(x) else ""
 
-    def fmt_pct(x):
+    def fmt_pct_local(x):
         return f"{float(x)*100:.2f}%" if pd.notnull(x) else ""
 
     def fmt_pct_from_ratio(x):
         return f"{x*100:.2f}%" if pd.notnull(x) else ""
 
-    df["put_20d_premium_fmt"] = df["put_20d_premium"].apply(fmt_money)
-    df["put_20d_premium_pct_fmt"] = df["put_20d_premium_pct"].apply(fmt_pct)
+    df["put_20d_premium_fmt"] = df["put_20d_premium"].apply(fmt_money_local)
+    df["put_20d_premium_pct_fmt"] = df["put_20d_premium_pct"].apply(fmt_pct_local)
 
-    df["call_20d_premium_fmt"] = df["call_20d_premium"].apply(fmt_money)
-    df["call_20d_premium_pct_fmt"] = df["call_20d_premium_pct"].apply(fmt_pct)
+    df["call_20d_premium_fmt"] = df["call_20d_premium"].apply(fmt_money_local)
+    df["call_20d_premium_pct_fmt"] = df["call_20d_premium_pct"].apply(fmt_pct_local)
 
     # ----------------------------------------------------------
     # Filters
@@ -464,6 +545,15 @@ def main():
         st.info("No tickers match your search.")
         return
 
+    # ----------------------------------------------------------
+    # Wheel flags + optional hide
+    # ----------------------------------------------------------
+    df = add_wheel_flags(df, wheel_mode=wheel_mode)
+
+    hide_red = st.checkbox("Hide ❌ Red flags (recommended)", value=True)
+    if hide_red:
+        df = df[df["wheel_flag"] != "❌"]
+
     # Sorting
     if sort_by == "Action premium %":
         df = df.sort_values(by="action_premium_pct", ascending=False, na_position="last")
@@ -479,6 +569,9 @@ def main():
     st.subheader(f"🧮 Found {len(df)} targets (Wheel Mode: {wheel_mode})")
 
     columns = [
+        "wheel_flag",
+        "wheel_fit",
+        "wheel_reason",
         "ticker",
         "stars",
         "latest_price",
@@ -501,6 +594,8 @@ def main():
         "action_delta",
         "action_premium_fmt",
         "action_premium_pct_fmt",
+        "put_itm_flag",
+        "call_itm_flag",
     ]
 
     st.dataframe(df[columns], hide_index=True, use_container_width=True)
@@ -591,16 +686,11 @@ def main():
     if weekly_totals.empty:
         st.info("No logged trades found for upcoming expiries in this window.")
     else:
-        # ----------------------------------------------------------
-        # Yield calc BEFORE formatting
-        # - blended yield = net_credit / (cash_secured + cc_notional)
-        # ----------------------------------------------------------
         weekly_totals["yield_pct"] = None
 
         net_credit_num = pd.to_numeric(weekly_totals["net_credit"], errors="coerce").fillna(0)
         cash_secured_num = pd.to_numeric(weekly_totals["total_cash_secured"], errors="coerce").fillna(0)
 
-        # total_cc_notional should come from your SQL in load_weekly_totals()
         if "total_cc_notional" in weekly_totals.columns:
             cc_notional_num = pd.to_numeric(weekly_totals["total_cc_notional"], errors="coerce").fillna(0)
         else:
@@ -608,12 +698,8 @@ def main():
 
         denom = cash_secured_num + cc_notional_num
         mask = denom > 0
-
         weekly_totals.loc[mask, "yield_pct"] = net_credit_num[mask] / denom[mask]
 
-        # ----------------------------------------------------------
-        # Now format for display
-        # ----------------------------------------------------------
         weekly_totals["gross_credit"] = weekly_totals["gross_credit"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
         weekly_totals["total_fees"] = weekly_totals["total_fees"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
         weekly_totals["net_credit"] = weekly_totals["net_credit"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
@@ -621,7 +707,6 @@ def main():
 
         weekly_totals["total_shares_covered"] = weekly_totals["total_shares_covered"].fillna(0).astype(int)
 
-        # Show CC notional if present (nice for context)
         if "total_cc_notional" in weekly_totals.columns:
             weekly_totals["total_cc_notional"] = weekly_totals["total_cc_notional"].apply(lambda x: f"${float(x):,.0f}" if pd.notnull(x) else "")
 
@@ -630,7 +715,6 @@ def main():
         st.write("**Totals by expiry**")
         st.dataframe(weekly_totals, hide_index=True, use_container_width=True)
 
-
     recent_trades = load_recent_trades(limit=int(recent_limit))
     if recent_trades.empty:
         st.info("No trades logged yet.")
@@ -638,17 +722,11 @@ def main():
         recent_trades["created_at"] = pd.to_datetime(recent_trades["created_at"])
         recent_trades["expiry"] = pd.to_datetime(recent_trades["expiry"]).dt.date
 
-        # ----------------------------------------------------------
-        # Yield calc BEFORE formatting
-        # - CSP: net_credit / cash_secured
-        # - CC:  net_credit / notional  (fallback: strike*contracts*100)
-        # ----------------------------------------------------------
         recent_trades["yield_pct"] = None
 
         net_credit_num = pd.to_numeric(recent_trades["net_credit"], errors="coerce")
         cash_secured_num = pd.to_numeric(recent_trades["cash_secured"], errors="coerce")
 
-        # use stored notional if present, else compute it
         if "notional" in recent_trades.columns:
             notional_num = pd.to_numeric(recent_trades["notional"], errors="coerce")
         else:
@@ -656,17 +734,12 @@ def main():
             contracts_num = pd.to_numeric(recent_trades["contracts"], errors="coerce")
             notional_num = strike_num * contracts_num * 100
 
-        # CSP yield
         mask_csp = (recent_trades["strategy"] == "CSP") & (cash_secured_num > 0)
         recent_trades.loc[mask_csp, "yield_pct"] = net_credit_num[mask_csp] / cash_secured_num[mask_csp]
 
-        # CC yield
         mask_cc = (recent_trades["strategy"] == "CC") & (notional_num > 0)
         recent_trades.loc[mask_cc, "yield_pct"] = net_credit_num[mask_cc] / notional_num[mask_cc]
 
-        # ----------------------------------------------------------
-        # Now format for display
-        # ----------------------------------------------------------
         recent_trades["fill_price"] = recent_trades["fill_price"].apply(lambda x: f"${float(x):.2f}" if pd.notnull(x) else "")
         recent_trades["fees"] = recent_trades["fees"].apply(lambda x: f"${float(x):.2f}" if pd.notnull(x) else "")
         recent_trades["gross_credit"] = recent_trades["gross_credit"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) else "")
@@ -689,8 +762,6 @@ def main():
             hide_index=True,
             use_container_width=True
         )
-
-
 
 if __name__ == "__main__":
     main()
