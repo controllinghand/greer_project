@@ -1,4 +1,4 @@
-# 12_YRI_Community.py
+# 12_YRI.py
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
