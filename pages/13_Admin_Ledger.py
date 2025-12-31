@@ -174,7 +174,7 @@ def main():
     st.title("🔒 Admin Ledger (Manual Entry)")
 
     if not IS_ADMIN:
-        st.error("This page is admin-only. Set YRC_ADMIN=1 to access.")
+        st.error("This page is admin-only.")
         st.stop()
 
     # ----------------------------------------------------------
