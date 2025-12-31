@@ -12,12 +12,16 @@ st.set_page_config(page_title="YRI Results", layout="wide")
 # ----------------------------------------------------------
 def fmt_money(x):
     try:
+        if x is None or pd.isna(x):
+            return ""
         return f"${float(x):,.2f}"
     except Exception:
         return ""
 
 def fmt_money0(x):
     try:
+        if x is None or pd.isna(x):
+            return ""
         return f"${float(x):,.0f}"
     except Exception:
         return ""
@@ -29,6 +33,37 @@ def fmt_pct(x):
         return f"{float(x)*100:.2f}%"
     except Exception:
         return "—"
+
+def safe_upper(s: str) -> str:
+    return (s or "").strip().upper()
+
+# ----------------------------------------------------------
+# DB: Portfolio helpers
+# ----------------------------------------------------------
+@st.cache_data(ttl=300)
+def load_portfolio_by_code(code: str) -> pd.DataFrame:
+    engine = get_engine()
+    q = text("""
+        SELECT portfolio_id, code, name, start_date, starting_cash
+        FROM portfolios
+        WHERE code = :code
+        LIMIT 1
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(q, conn, params={"code": safe_upper(code)})
+
+@st.cache_data(ttl=300)
+def load_nav_series(portfolio_id: int, start_date: date) -> pd.DataFrame:
+    engine = get_engine()
+    q = text("""
+        SELECT nav_date, cash, equity_value, nav
+        FROM portfolio_nav_daily
+        WHERE portfolio_id = :portfolio_id
+          AND nav_date >= :start_date
+        ORDER BY nav_date ASC
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(q, conn, params={"portfolio_id": int(portfolio_id), "start_date": start_date})
 
 # ----------------------------------------------------------
 # Load trades (read-only)
@@ -122,7 +157,7 @@ def load_totals_by_ticker(start_date: date) -> pd.DataFrame:
     return df
 
 # ----------------------------------------------------------
-# Header card
+# Header card (NAV-aware)
 # ----------------------------------------------------------
 def render_yri_header_card(
     start_date: date,
@@ -133,34 +168,62 @@ def render_yri_header_card(
     total_net: float,
     csp_collateral: float,
     cc_collateral: float,
+    latest_nav_row: dict | None,
 ):
     total_collateral = float(csp_collateral) + float(cc_collateral)
     util = (total_collateral / float(starting_cash)) if starting_cash and starting_cash > 0 else None
     blended_yield = (float(total_net) / total_collateral) if total_collateral > 0 else None
+
+    # NAV bits
+    nav_date = latest_nav_row.get("nav_date") if latest_nav_row else None
+    nav_val = float(latest_nav_row.get("nav")) if latest_nav_row and latest_nav_row.get("nav") is not None else None
+    nav_cash = float(latest_nav_row.get("cash")) if latest_nav_row and latest_nav_row.get("cash") is not None else None
+    nav_eq = float(latest_nav_row.get("equity_value")) if latest_nav_row and latest_nav_row.get("equity_value") is not None else None
+
+    nav_gain = (nav_val - float(starting_cash)) if (nav_val is not None and starting_cash) else None
+    nav_gain_pct = (nav_gain / float(starting_cash)) if (nav_gain is not None and starting_cash and starting_cash > 0) else None
 
     st.markdown(
         f"""
         <div style="
             border: 1px solid #e6e6e6;
             border-radius: 14px;
-            padding: 16px 16px 8px 16px;
+            padding: 16px 16px 10px 16px;
             background: #ffffff;
             box-shadow: 0 1px 2px rgba(0,0,0,0.05);
             margin-bottom: 10px;">
+
           <div style="display:flex; align-items:center; justify-content:space-between; gap: 12px;">
             <div>
               <div style="font-size: 22px; font-weight: 800; margin-bottom: 2px;">YRI — You Rock Income Fund</div>
               <div style="font-size: 13px; color:#666;">
-                Simulation start <b>{start_date}</b> · Starting cash <b>{fmt_money0(starting_cash)}</b> · Trades <b>{trades_count}</b>
+                Start <b>{start_date}</b> · Starting cash <b>{fmt_money0(starting_cash)}</b> · Trades <b>{trades_count}</b>
+              </div>
+              <div style="font-size: 12px; color:#777; margin-top:4px;">
+                Latest NAV date: <b>{nav_date if nav_date else "—"}</b>
               </div>
             </div>
             <div style="font-size: 12px; color:#777; text-align:right;">
               <div><b>Premiums</b> = net credit (after fees)</div>
               <div><b>Yield</b> = net credit / collateral proxy</div>
+              <div><b>NAV</b> = cash + equity (EOD)</div>
             </div>
           </div>
 
-          <div style="display:grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-top: 12px;">
+          <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap: 10px; margin-top: 12px;">
+            <div style="border:1px solid #f0f0f0; border-radius:12px; padding:10px;">
+              <div style="font-size:12px; color:#777;">Latest NAV</div>
+              <div style="font-size:18px; font-weight:800;">{fmt_money(nav_val) if nav_val is not None else "—"}</div>
+              <div style="font-size:12px; color:#777;">{fmt_money(nav_gain) if nav_gain is not None else "—"} · {fmt_pct(nav_gain_pct)}</div>
+            </div>
+            <div style="border:1px solid #f0f0f0; border-radius:12px; padding:10px;">
+              <div style="font-size:12px; color:#777;">NAV Cash</div>
+              <div style="font-size:18px; font-weight:700;">{fmt_money(nav_cash) if nav_cash is not None else "—"}</div>
+            </div>
+            <div style="border:1px solid #f0f0f0; border-radius:12px; padding:10px;">
+              <div style="font-size:12px; color:#777;">NAV Equity</div>
+              <div style="font-size:18px; font-weight:700;">{fmt_money(nav_eq) if nav_eq is not None else "—"}</div>
+            </div>
             <div style="border:1px solid #f0f0f0; border-radius:12px; padding:10px;">
               <div style="font-size:12px; color:#777;">Gross credit</div>
               <div style="font-size:18px; font-weight:700;">{fmt_money(total_gross)}</div>
@@ -174,15 +237,7 @@ def render_yri_header_card(
               <div style="font-size:18px; font-weight:700;">{fmt_money(total_net)}</div>
             </div>
             <div style="border:1px solid #f0f0f0; border-radius:12px; padding:10px;">
-              <div style="font-size:12px; color:#777;">CSP collateral</div>
-              <div style="font-size:18px; font-weight:700;">{fmt_money0(csp_collateral)}</div>
-            </div>
-            <div style="border:1px solid #f0f0f0; border-radius:12px; padding:10px;">
-              <div style="font-size:12px; color:#777;">CC notional proxy</div>
-              <div style="font-size:18px; font-weight:700;">{fmt_money0(cc_collateral)}</div>
-            </div>
-            <div style="border:1px solid #f0f0f0; border-radius:12px; padding:10px;">
-              <div style="font-size:12px; color:#777;">Blended yield · Utilization</div>
+              <div style="font-size:12px; color:#777;">Blended yield · Util</div>
               <div style="font-size:18px; font-weight:700;">
                 {fmt_pct(blended_yield)} · {fmt_pct(util)}
               </div>
@@ -190,7 +245,7 @@ def render_yri_header_card(
           </div>
 
           <div style="margin-top:10px; font-size: 12px; color:#666;">
-            Collateral proxy = <b>cash-secured</b> (CSP) + <b>strike×100×contracts</b> (CC).
+            Collateral proxy = <b>cash-secured</b> (CSP) + <b>strike×100×contracts</b> (CC). NAV comes from <b>portfolio_nav_daily</b>.
           </div>
         </div>
         """,
@@ -203,7 +258,7 @@ def main():
     st.markdown(
         """
         This is the **community results** page for YRI.  
-        It is **read-only** and summarizes the premiums collected from your logged options trades.
+        It is **read-only** and summarizes **premium credits** and the **true NAV** (cash + equity EOD).
         """
     )
 
@@ -212,71 +267,139 @@ def main():
     # ----------------------------------------------------------
     with st.sidebar:
         st.header("YRI Controls")
+        portfolio_code = st.text_input("Portfolio code", value="YRI").strip().upper()
         start_date = st.date_input("Simulation / Fund start date", value=date(2025, 12, 1))
-        starting_cash = st.number_input("Starting cash (for utilization)", value=100_000, step=5_000)
-        st.caption("Starting cash is used for utilization %, not full portfolio accounting (yet).")
 
-    trades = load_trades(start_date=start_date)
-    if trades.empty:
-        st.info("No YRI trades found for this start date yet.")
+    # Portfolio row (for NAV)
+    p = load_portfolio_by_code(portfolio_code)
+    if p.empty:
+        st.error(f"No portfolio found with code '{portfolio_code}'. Create it in Admin Ledger first.")
         return
 
-    # Clean types
-    trades["created_at"] = pd.to_datetime(trades["created_at"])
-    trades["expiry"] = pd.to_datetime(trades["expiry"]).dt.date
+    portfolio_id = int(p.iloc[0]["portfolio_id"])
+    portfolio_name = p.iloc[0]["name"]
+    portfolio_start = p.iloc[0]["start_date"]
+    starting_cash = float(p.iloc[0]["starting_cash"])
 
-    # ----------------------------------------------------------
-    # Per-trade yield logic
-    # - CSP: net_credit / cash_secured
-    # - CC:  net_credit / notional (collateral proxy)
-    # ----------------------------------------------------------
-    trades["collateral"] = 0.0
-    trades.loc[trades["strategy"] == "CSP", "collateral"] = pd.to_numeric(trades["cash_secured"], errors="coerce").fillna(0.0)
-    trades.loc[trades["strategy"] == "CC", "collateral"] = pd.to_numeric(trades["notional"], errors="coerce").fillna(0.0)
+    st.caption(f"Portfolio: **{portfolio_code} — {portfolio_name}** (portfolio_id={portfolio_id}) · Start date in DB: {portfolio_start}")
 
-    trades["yield_pct"] = None
-    mask = pd.to_numeric(trades["collateral"], errors="coerce").fillna(0.0) > 0
-    trades.loc[mask, "yield_pct"] = (
-        pd.to_numeric(trades.loc[mask, "net_credit"], errors="coerce").fillna(0.0)
-        / pd.to_numeric(trades.loc[mask, "collateral"], errors="coerce").fillna(0.0)
-    )
+    # NAV series
+    nav = load_nav_series(portfolio_id=portfolio_id, start_date=start_date)
+    if not nav.empty:
+        nav["nav_date"] = pd.to_datetime(nav["nav_date"]).dt.date
 
-    # ----------------------------------------------------------
-    # KPIs + Header Card
-    # ----------------------------------------------------------
-    total_gross = float(pd.to_numeric(trades["gross_credit"], errors="coerce").fillna(0.0).sum())
-    total_fees = float(pd.to_numeric(trades["fees"], errors="coerce").fillna(0.0).sum())
-    total_net = float(pd.to_numeric(trades["net_credit"], errors="coerce").fillna(0.0).sum())
+    latest_nav_row = None
+    if not nav.empty:
+        last = nav.iloc[-1].to_dict()
+        latest_nav_row = last
 
-    csp_collateral = float(pd.to_numeric(trades.loc[trades["strategy"] == "CSP", "cash_secured"], errors="coerce").fillna(0.0).sum())
-    cc_collateral = float(pd.to_numeric(trades.loc[trades["strategy"] == "CC", "notional"], errors="coerce").fillna(0.0).sum())
+    # Trades (for credits + tables)
+    trades = load_trades(start_date=start_date)
+    if trades.empty and nav.empty:
+        st.info("No YRI data found for this start date yet (no trades and no NAV).")
+        return
 
+    if not trades.empty:
+        trades["created_at"] = pd.to_datetime(trades["created_at"])
+        trades["expiry"] = pd.to_datetime(trades["expiry"]).dt.date
+
+        # Per-trade yield logic
+        trades["collateral"] = 0.0
+        trades.loc[trades["strategy"] == "CSP", "collateral"] = pd.to_numeric(trades["cash_secured"], errors="coerce").fillna(0.0)
+        trades.loc[trades["strategy"] == "CC", "collateral"] = pd.to_numeric(trades["notional"], errors="coerce").fillna(0.0)
+
+        trades["yield_pct"] = None
+        mask = pd.to_numeric(trades["collateral"], errors="coerce").fillna(0.0) > 0
+        trades.loc[mask, "yield_pct"] = (
+            pd.to_numeric(trades.loc[mask, "net_credit"], errors="coerce").fillna(0.0)
+            / pd.to_numeric(trades.loc[mask, "collateral"], errors="coerce").fillna(0.0)
+        )
+
+        total_gross = float(pd.to_numeric(trades["gross_credit"], errors="coerce").fillna(0.0).sum())
+        total_fees = float(pd.to_numeric(trades["fees"], errors="coerce").fillna(0.0).sum())
+        total_net = float(pd.to_numeric(trades["net_credit"], errors="coerce").fillna(0.0).sum())
+
+        csp_collateral = float(pd.to_numeric(trades.loc[trades["strategy"] == "CSP", "cash_secured"], errors="coerce").fillna(0.0).sum())
+        cc_collateral = float(pd.to_numeric(trades.loc[trades["strategy"] == "CC", "notional"], errors="coerce").fillna(0.0).sum())
+        trades_count = int(len(trades))
+    else:
+        # No trades yet
+        total_gross = total_fees = total_net = 0.0
+        csp_collateral = cc_collateral = 0.0
+        trades_count = 0
+
+    # Header card (NAV-aware)
     render_yri_header_card(
         start_date=start_date,
-        starting_cash=float(starting_cash),
-        trades_count=int(len(trades)),
+        starting_cash=starting_cash,
+        trades_count=trades_count,
         total_gross=total_gross,
         total_fees=total_fees,
         total_net=total_net,
         csp_collateral=csp_collateral,
         cc_collateral=cc_collateral,
+        latest_nav_row=latest_nav_row,
     )
 
     st.divider()
 
     # ----------------------------------------------------------
-    # Cumulative net credit chart
+    # NAV charts
     # ----------------------------------------------------------
-    st.subheader("📈 Cumulative net credit")
-    curve = trades[["created_at", "net_credit"]].copy()
-    curve["net_credit"] = pd.to_numeric(curve["net_credit"], errors="coerce").fillna(0.0)
-    curve = curve.sort_values("created_at")
-    curve["cum_net_credit"] = curve["net_credit"].cumsum()
-    curve = curve.set_index("created_at")
-
-    st.line_chart(curve["cum_net_credit"])
+    st.subheader("📈 NAV over time")
+    if nav.empty:
+        st.info("No NAV rows found yet for this portfolio. (Run nav.py or your nightly cron.)")
+    else:
+        nav_curve = nav.copy()
+        nav_curve["nav"] = pd.to_numeric(nav_curve["nav"], errors="coerce").fillna(0.0)
+        nav_curve = nav_curve.set_index(pd.to_datetime(nav_curve["nav_date"]))
+        st.line_chart(nav_curve["nav"])
 
     st.divider()
+
+    # ----------------------------------------------------------
+    # NAV vs cumulative net credit (if trades exist)
+    # ----------------------------------------------------------
+    st.subheader("📉 NAV vs cumulative net credit")
+    if nav.empty or trades_count == 0:
+        st.caption("Needs both NAV rows and trades. Once both exist, this chart will show NAV vs total credits over time.")
+    else:
+        # cumulative credits by date (EOD)
+        credits = trades[["created_at", "net_credit"]].copy()
+        credits["created_at"] = pd.to_datetime(credits["created_at"])
+        credits["trade_date"] = credits["created_at"].dt.date
+        credits["net_credit"] = pd.to_numeric(credits["net_credit"], errors="coerce").fillna(0.0)
+
+        credits_daily = credits.groupby("trade_date", as_index=False)["net_credit"].sum().sort_values("trade_date")
+        credits_daily["cum_net_credit"] = credits_daily["net_credit"].cumsum()
+
+        # join to nav dates so we plot both lines on same daily axis
+        nav_join = nav.copy()
+        nav_join["nav_date"] = pd.to_datetime(nav_join["nav_date"]).dt.date
+        nav_join["nav"] = pd.to_numeric(nav_join["nav"], errors="coerce").fillna(0.0)
+
+        merged = pd.merge(
+            nav_join[["nav_date", "nav"]],
+            credits_daily[["trade_date", "cum_net_credit"]],
+            left_on="nav_date",
+            right_on="trade_date",
+            how="left",
+        )
+
+        merged = merged.sort_values("nav_date")
+        merged["cum_net_credit"] = merged["cum_net_credit"].ffill().fillna(0.0)
+
+        merged = merged.set_index(pd.to_datetime(merged["nav_date"]))
+        st.line_chart(merged[["nav", "cum_net_credit"]])
+
+    st.divider()
+
+    # ----------------------------------------------------------
+    # Original: Totals + trades tables
+    # ----------------------------------------------------------
+    if trades_count == 0:
+        st.info("No trades logged yet for this date window.")
+        return
 
     # ----------------------------------------------------------
     # Totals by expiry
@@ -413,6 +536,14 @@ def main():
         file_name="yri_trades.csv",
         mime="text/csv",
     )
+
+    if not nav.empty:
+        st.download_button(
+            "Download NAV CSV",
+            nav.to_csv(index=False).encode("utf-8"),
+            file_name=f"{portfolio_code.lower()}_nav.csv",
+            mime="text/csv",
+        )
 
 if __name__ == "__main__":
     main()
