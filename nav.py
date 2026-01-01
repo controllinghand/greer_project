@@ -52,7 +52,8 @@ days AS (
 cash_eod AS (
   SELECT
     d.nav_date,
-    COALESCE(SUM(e.cash_delta), 0) AS cash
+    (SELECT COALESCE(starting_cash, 0) FROM portfolios WHERE portfolio_id = (SELECT portfolio_id FROM p))
+    + COALESCE(SUM(e.cash_delta), 0) AS cash
   FROM days d
   LEFT JOIN portfolio_events e
     ON e.portfolio_id = (SELECT portfolio_id FROM p)
