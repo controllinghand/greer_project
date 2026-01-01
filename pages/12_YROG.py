@@ -1,7 +1,6 @@
 # 12_YROG.py
 import streamlit as st
 import pandas as pd
-import re
 from sqlalchemy import text, bindparam
 from db import get_engine
 from datetime import date
@@ -64,7 +63,10 @@ def load_nav_series(portfolio_id: int, start_date: date) -> pd.DataFrame:
         ORDER BY nav_date ASC
     """)
     with engine.connect() as conn:
-        return pd.read_sql(q, conn, params={"portfolio_id": int(portfolio_id), "start_date": start_date})
+        return pd.read_sql(
+            q, conn,
+            params={"portfolio_id": int(portfolio_id), "start_date": start_date},
+        )
 
 # ----------------------------------------------------------
 # DB: Events
@@ -89,7 +91,10 @@ def load_events(portfolio_id: int, start_date: date) -> pd.DataFrame:
         ORDER BY event_time ASC, event_id ASC
     """)
     with engine.connect() as conn:
-        return pd.read_sql(q, conn, params={"portfolio_id": int(portfolio_id), "start_date": start_date})
+        return pd.read_sql(
+            q, conn,
+            params={"portfolio_id": int(portfolio_id), "start_date": start_date},
+        )
 
 @st.cache_data(ttl=300)
 def load_totals_by_type(portfolio_id: int, start_date: date) -> pd.DataFrame:
@@ -107,7 +112,10 @@ def load_totals_by_type(portfolio_id: int, start_date: date) -> pd.DataFrame:
         ORDER BY total_cash_delta DESC NULLS LAST
     """)
     with engine.connect() as conn:
-        return pd.read_sql(q, conn, params={"portfolio_id": int(portfolio_id), "start_date": start_date})
+        return pd.read_sql(
+            q, conn,
+            params={"portfolio_id": int(portfolio_id), "start_date": start_date},
+        )
 
 @st.cache_data(ttl=300)
 def load_totals_by_ticker(portfolio_id: int, start_date: date) -> pd.DataFrame:
@@ -126,10 +134,13 @@ def load_totals_by_ticker(portfolio_id: int, start_date: date) -> pd.DataFrame:
         ORDER BY total_cash_delta DESC NULLS LAST
     """)
     with engine.connect() as conn:
-        return pd.read_sql(q, conn, params={"portfolio_id": int(portfolio_id), "start_date": start_date})
+        return pd.read_sql(
+            q, conn,
+            params={"portfolio_id": int(portfolio_id), "start_date": start_date},
+        )
 
 # ----------------------------------------------------------
-# DB: Latest prices + company names
+# DB: Holdings helpers (latest prices + company names)
 # ----------------------------------------------------------
 @st.cache_data(ttl=300)
 def load_latest_prices_and_names(tickers: list[str]) -> pd.DataFrame:
@@ -163,7 +174,6 @@ def load_latest_prices_and_names(tickers: list[str]) -> pd.DataFrame:
 
 # ----------------------------------------------------------
 # Stock-fund analytics (BUY_SHARES / SELL_SHARES only)
-# Average-cost realized + unrealized
 # ----------------------------------------------------------
 def calc_cashflows_stockfund(events: pd.DataFrame) -> dict:
     if events is None or events.empty:
@@ -208,6 +218,7 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
     e["fees"] = pd.to_numeric(e["fees"], errors="coerce").fillna(0.0)
     e["cash_delta"] = pd.to_numeric(e["cash_delta"], errors="coerce")
 
+    # Infer price if missing: abs(cash_delta)/qty
     missing_price = e["price"].isna() | (e["price"] <= 0)
     can_infer = missing_price & e["cash_delta"].notna() & (e["quantity"] > 0)
     e.loc[can_infer, "price"] = (e.loc[can_infer, "cash_delta"].abs() / e.loc[can_infer, "quantity"])
@@ -217,6 +228,7 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
     for ticker, g in e.groupby("ticker", sort=False):
         shares = 0.0
         basis = 0.0
+
         realized_pl = 0.0
         realized_cost = 0.0
         realized_proceeds = 0.0
@@ -225,6 +237,7 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
             qty = float(r["quantity"] or 0.0)
             px = float(r["price"] or 0.0)
             fee = float(r["fees"] or 0.0)
+
             if qty <= 0:
                 continue
 
@@ -242,7 +255,7 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
                 avg_cost = (basis / shares) if shares > 0 else 0.0
                 cost_removed = sell_qty * avg_cost
 
-                # Prefer cash_delta (net proceeds already)
+                # Net proceeds: prefer cash_delta (already net), else compute
                 if pd.notna(r["cash_delta"]):
                     proceeds_net = float(r["cash_delta"])
                 else:
@@ -280,93 +293,7 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ----------------------------------------------------------
-# YROG Opportunities Journal (derived from events.notes)
-# ----------------------------------------------------------
-TAG_RE = re.compile(r"(?P<k>[a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?P<v>[^;,\n]+)")
-
-def extract_tags_from_notes(notes: str) -> dict:
-    """
-    Parse key=value tags from notes like:
-      "setup=breakout; score=3; target=220; stop=175; catalyst=earnings"
-    Works with separators ; , or newlines (because we just regex-scan).
-    """
-    if not notes:
-        return {}
-    tags = {}
-    for m in TAG_RE.finditer(str(notes)):
-        k = m.group("k").strip().lower()
-        v = m.group("v").strip()
-        tags[k] = v
-    return tags
-
-def build_opportunity_journal(events: pd.DataFrame) -> pd.DataFrame:
-    """
-    For YROG, we assume your 'opportunity context' is stored in notes on BUY_SHARES events.
-    Builds one row per ticker from the most recent BUY_SHARES event (within the selected window).
-    """
-    if events is None or events.empty:
-        return pd.DataFrame()
-
-    e = events.copy()
-    e["event_type"] = e["event_type"].astype(str).str.upper()
-    e["ticker"] = e["ticker"].fillna("").astype(str).str.upper().str.strip()
-    e["notes"] = e["notes"].fillna("").astype(str)
-    e["event_time"] = pd.to_datetime(e["event_time"], errors="coerce")
-
-    buys = e[(e["event_type"] == "BUY_SHARES") & (e["ticker"] != "")].copy()
-    if buys.empty:
-        return pd.DataFrame()
-
-    # latest buy per ticker
-    buys = buys.sort_values(["ticker", "event_time", "event_id"], ascending=[True, False, False])
-    latest = buys.groupby("ticker", as_index=False).head(1).copy()
-
-    rows = []
-    for _, r in latest.iterrows():
-        tags = extract_tags_from_notes(r["notes"])
-        rows.append(
-            {
-                "ticker": r["ticker"],
-                "last_buy_time": r["event_time"],
-                "qty": r["quantity"],
-                "price": r["price"],
-                "notes": r["notes"],
-                # common tag fields (optional)
-                "score": tags.get("score", ""),
-                "setup": tags.get("setup", ""),
-                "target": tags.get("target", ""),
-                "stop": tags.get("stop", ""),
-                "catalyst": tags.get("catalyst", ""),
-                "source": tags.get("source", ""),
-            }
-        )
-
-    df = pd.DataFrame(rows)
-    df["last_buy_time"] = pd.to_datetime(df["last_buy_time"], errors="coerce")
-    return df.sort_values("last_buy_time", ascending=False)
-
-def build_recent_opportunity_entries(events: pd.DataFrame, limit: int = 25) -> pd.DataFrame:
-    """
-    Recent BUY_SHARES events as a journal feed.
-    """
-    if events is None or events.empty:
-        return pd.DataFrame()
-
-    e = events.copy()
-    e["event_type"] = e["event_type"].astype(str).str.upper()
-    e["ticker"] = e["ticker"].fillna("").astype(str).str.upper().str.strip()
-    e["notes"] = e["notes"].fillna("").astype(str)
-    e["event_time"] = pd.to_datetime(e["event_time"], errors="coerce")
-
-    buys = e[(e["event_type"] == "BUY_SHARES") & (e["ticker"] != "")].copy()
-    if buys.empty:
-        return pd.DataFrame()
-
-    buys = buys.sort_values(["event_time", "event_id"], ascending=[False, False]).head(int(limit)).copy()
-    return buys[["event_time", "ticker", "quantity", "price", "fees", "cash_delta", "notes"]]
-
-# ----------------------------------------------------------
-# Header card
+# Header card (stock-only)
 # ----------------------------------------------------------
 def render_header_stockfund(
     portfolio_code: str,
@@ -440,13 +367,14 @@ def main():
 
     st.markdown(
         """
-        Stock-only community page for **YROG** (manual ledger).  
-        Same accounting as YR3G + an **Opportunities Journal** derived from your BUY notes.
+        Stock-only community page for **YROG** (buys & sells of shares).  
+        Uses **only**: portfolios, portfolio_events, portfolio_nav_daily.
         """
     )
 
     default_code = "YROG"
 
+    # Default start date = portfolio start_date if present
     p0 = load_portfolio_by_code(default_code)
     db_start = None
     if not p0.empty and pd.notna(p0.iloc[0]["start_date"]):
@@ -460,13 +388,6 @@ def main():
         st.header("Controls")
         portfolio_code = st.text_input("Portfolio code", value=default_code).strip().upper()
         start_date = st.date_input("Display start date", value=default_start_date)
-
-        st.divider()
-        st.subheader("Opportunities Journal")
-        show_journal = st.toggle("Show Opportunities Journal", value=True)
-        journal_limit = st.number_input("Recent BUY entries", min_value=5, max_value=100, value=25, step=5)
-
-        st.caption("Tip: use tags in notes like: `score=3; setup=...; target=...; stop=...; catalyst=...`")
 
     p = load_portfolio_by_code(portfolio_code)
     if p.empty:
@@ -526,21 +447,18 @@ def main():
 
     st.divider()
 
-    # -------------------------
-    # Holdings + P/L (same as YR3G)
-    # -------------------------
     st.subheader("📦 Holdings snapshot (Open positions)")
     pnl = calc_pnl_avg_cost(events)
+
     open_pos = pnl[pnl["shares"].abs() > 1e-9].copy()
     closed_pos = pnl[(pnl["shares"].abs() <= 1e-9) & (pnl["realized_proceeds"].abs() > 1e-9)].copy()
-
-    tickers_open = []
 
     if open_pos.empty:
         st.caption("No open positions right now.")
     else:
-        tickers_open = open_pos["ticker"].astype(str).str.upper().tolist()
-        px = load_latest_prices_and_names(tickers_open)
+        tickers = open_pos["ticker"].astype(str).str.upper().tolist()
+        px = load_latest_prices_and_names(tickers)
+
         snap = open_pos.merge(px, on="ticker", how="left")
 
         snap["last_close"] = pd.to_numeric(snap["last_close"], errors="coerce").fillna(0.0)
@@ -619,78 +537,39 @@ def main():
         show["realized_pct"] = show["realized_pct"].apply(fmt_pct_ratio)
 
         st.dataframe(
-            show[["ticker", "name", "realized_proceeds", "realized_cost", "realized_pl", "realized_pct"]]
-            .sort_values("realized_pl", ascending=False),
+            show[
+                ["ticker", "name", "realized_proceeds", "realized_cost", "realized_pl", "realized_pct"]
+            ].sort_values("realized_pl", ascending=False),
             hide_index=True,
             use_container_width=True,
         )
 
-    # -------------------------
-    # Opportunities Journal overlay (notes-driven)
-    # -------------------------
-    if show_journal:
-        st.divider()
-        st.subheader("🎯 Opportunities Journal (derived from BUY_SHARES notes)")
+    # Totals block (open + closed)
+    total_realized = float(pnl["realized_pl"].sum()) if not pnl.empty else 0.0
+    total_unrealized = 0.0
+    holdings_mv = 0.0
+    if not open_pos.empty:
+        tickers = open_pos["ticker"].astype(str).str.upper().tolist()
+        px = load_latest_prices_and_names(tickers)
+        tmp = open_pos.merge(px, on="ticker", how="left")
+        tmp["last_close"] = pd.to_numeric(tmp["last_close"], errors="coerce").fillna(0.0)
+        tmp["market_value"] = pd.to_numeric(tmp["shares"], errors="coerce").fillna(0.0) * tmp["last_close"]
+        tmp["cost_basis"] = pd.to_numeric(tmp["cost_basis"], errors="coerce").fillna(0.0)
+        total_unrealized = float((tmp["market_value"] - tmp["cost_basis"]).sum())
+        holdings_mv = float(tmp["market_value"].sum())
 
-        if events.empty:
-            st.info("No events to build a journal yet.")
-        else:
-            journal = build_opportunity_journal(events)
+    total_pl = total_realized + total_unrealized
 
-            if journal.empty:
-                st.caption("No BUY_SHARES notes found in this window yet.")
-            else:
-                # attach company names
-                tickers = journal["ticker"].astype(str).str.upper().tolist()
-                names = load_latest_prices_and_names(tickers)[["ticker", "name"]].drop_duplicates()
-                journal = journal.merge(names, on="ticker", how="left")
-                journal["name"] = journal["name"].fillna("")
-                journal["last_buy_time"] = pd.to_datetime(journal["last_buy_time"], errors="coerce")
-
-                # show journal for current open holdings first (if any), then the rest
-                if tickers_open:
-                    journal["is_open_holding"] = journal["ticker"].isin(tickers_open)
-                    journal = journal.sort_values(["is_open_holding", "last_buy_time"], ascending=[False, False])
-                else:
-                    journal = journal.sort_values("last_buy_time", ascending=False)
-
-                show = journal.copy()
-                show["last_buy_time"] = show["last_buy_time"].dt.strftime("%Y-%m-%d %H:%M")
-                show["price"] = show["price"].apply(fmt_money)
-                show["qty"] = pd.to_numeric(show["qty"], errors="coerce").fillna(0.0)
-
-                st.dataframe(
-                    show[
-                        [
-                            "ticker",
-                            "name",
-                            "last_buy_time",
-                            "qty",
-                            "price",
-                            "score",
-                            "setup",
-                            "target",
-                            "stop",
-                            "catalyst",
-                            "notes",
-                        ]
-                    ],
-                    hide_index=True,
-                    use_container_width=True,
-                )
-
-            st.subheader("📝 Recent opportunity entries (BUY_SHARES feed)")
-            recent = build_recent_opportunity_entries(events, limit=int(journal_limit))
-            if recent.empty:
-                st.caption("No BUY_SHARES events found.")
-            else:
-                r = recent.copy()
-                r["event_time"] = pd.to_datetime(r["event_time"], errors="coerce")
-                r["event_time"] = r["event_time"].dt.strftime("%Y-%m-%d %H:%M")
-                r["price"] = r["price"].apply(fmt_money)
-                r["fees"] = r["fees"].apply(fmt_money)
-                r["cash_delta"] = r["cash_delta"].apply(fmt_money)
-                st.dataframe(r, hide_index=True, use_container_width=True)
+    st.divider()
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Holdings MV", fmt_money(holdings_mv))
+    with c2:
+        st.metric("Total Unrealized", fmt_money(total_unrealized))
+    with c3:
+        st.metric("Total Realized", fmt_money(total_realized))
+    with c4:
+        st.metric("Total P/L", fmt_money(total_pl))
 
     st.divider()
 
@@ -728,8 +607,9 @@ def main():
         ev["cash_delta"] = ev["cash_delta"].apply(fmt_money)
 
         st.dataframe(
-            ev[["event_time", "event_type", "ticker", "quantity", "price", "fees", "cash_delta", "notes"]]
-            .sort_values("event_time", ascending=False),
+            ev[
+                ["event_time", "event_type", "ticker", "quantity", "price", "fees", "cash_delta", "notes"]
+            ].sort_values("event_time", ascending=False),
             hide_index=True,
             use_container_width=True,
         )
