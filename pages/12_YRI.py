@@ -258,7 +258,7 @@ def render_header(
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("📣 YRI Results (Community)")
+    st.title("📣 YRI Results (You Rock Income Fund)")
 
     st.markdown(
         """
