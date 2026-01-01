@@ -1,4 +1,4 @@
-# 12_YRI.py
+# 12_YRI_26.py
 import streamlit as st
 import pandas as pd
 from datetime import date
@@ -18,22 +18,22 @@ from portfolio_common import (
     fmt_pct_ratio,
 )
 
-st.set_page_config(page_title="YRI", layout="wide")
+st.set_page_config(page_title="YRI-26 Results", layout="wide")
 
 # ----------------------------------------------------------
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("📣 YRI Results (You Rock Income Fund)")
+    st.title("📣 YRI-26 Results (2026 Journey You Rock Income Fund)")
 
     st.markdown(
         """
-        Read-only community page for YRI.  
+        Read-only community page for **YRI-26**.  
         Uses **only**: portfolios, portfolio_events, portfolio_nav_daily.
         """
     )
 
-    default_code = "YRI"
+    default_code = "YRI-26"
 
     p0 = load_portfolio_by_code(default_code)
     db_start = None
@@ -42,7 +42,9 @@ def main():
             db_start = pd.to_datetime(p0.iloc[0]["start_date"]).date()
         except Exception:
             db_start = None
-    default_start_date = db_start or date(2025, 12, 1)
+
+    # Default: Jan 1, 2026 unless DB says otherwise
+    default_start_date = db_start or date(2026, 1, 1)
 
     with st.sidebar:
         st.header("Controls")
