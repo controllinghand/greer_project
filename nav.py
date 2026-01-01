@@ -65,8 +65,13 @@ shares_eod AS (
     e.ticker,
     COALESCE(SUM(
       CASE
-        WHEN e.event_type IN ('ASSIGN_PUT', 'CALL_AWAY', 'BUY_SHARES', 'SELL_SHARES')
-          THEN COALESCE(e.quantity, 0)
+        -- options-style share events: rely on stored quantity sign (ASSIGN_PUT usually +, CALL_AWAY usually -)
+        WHEN e.event_type IN ('ASSIGN_PUT', 'CALL_AWAY') THEN COALESCE(e.quantity, 0)
+
+        -- stock-only events: BUY adds, SELL subtracts
+        WHEN e.event_type = 'BUY_SHARES'  THEN COALESCE(e.quantity, 0)
+        WHEN e.event_type = 'SELL_SHARES' THEN -COALESCE(e.quantity, 0)
+
         ELSE 0
       END
     ), 0) AS shares
