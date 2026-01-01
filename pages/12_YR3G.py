@@ -1,363 +1,25 @@
 # 12_YR3G.py
 import streamlit as st
 import pandas as pd
-from sqlalchemy import text, bindparam
-from db import get_engine
 from datetime import date
 
+from portfolio_common import (
+    load_portfolio_by_code,
+    load_nav_series,
+    load_nav_series_between,
+    load_events_stockfund,
+    load_totals_by_type,
+    load_totals_by_ticker,
+    load_latest_prices_and_names,
+    calc_cashflows_stockfund,
+    calc_pnl_avg_cost,
+    render_header_stockfund,
+    render_year_summary_blocks,
+    fmt_money,
+    fmt_pct_ratio,
+)
+
 st.set_page_config(page_title="YR3G Results", layout="wide")
-
-# ----------------------------------------------------------
-# Helpers
-# ----------------------------------------------------------
-def fmt_money(x):
-    try:
-        if x is None or pd.isna(x):
-            return ""
-        return f"${float(x):,.2f}"
-    except Exception:
-        return ""
-
-def fmt_money0(x):
-    try:
-        if x is None or pd.isna(x):
-            return ""
-        return f"${float(x):,.0f}"
-    except Exception:
-        return ""
-
-def fmt_pct_ratio(x):
-    try:
-        if x is None or pd.isna(x):
-            return "—"
-        return f"{float(x) * 100:.2f}%"
-    except Exception:
-        return "—"
-
-def safe_upper(s: str) -> str:
-    return (s or "").strip().upper()
-
-# ----------------------------------------------------------
-# DB: Portfolio helpers
-# ----------------------------------------------------------
-@st.cache_data(ttl=300)
-def load_portfolio_by_code(code: str) -> pd.DataFrame:
-    engine = get_engine()
-    q = text("""
-        SELECT portfolio_id, code, name, start_date, starting_cash
-        FROM portfolios
-        WHERE code = :code
-        LIMIT 1
-    """)
-    with engine.connect() as conn:
-        return pd.read_sql(q, conn, params={"code": safe_upper(code)})
-
-@st.cache_data(ttl=300)
-def load_nav_series(portfolio_id: int, start_date: date) -> pd.DataFrame:
-    engine = get_engine()
-    q = text("""
-        SELECT nav_date, cash, equity_value, nav
-        FROM portfolio_nav_daily
-        WHERE portfolio_id = :portfolio_id
-          AND nav_date >= :start_date
-        ORDER BY nav_date ASC
-    """)
-    with engine.connect() as conn:
-        return pd.read_sql(
-            q, conn,
-            params={"portfolio_id": int(portfolio_id), "start_date": start_date},
-        )
-
-# ----------------------------------------------------------
-# DB: Events
-# ----------------------------------------------------------
-@st.cache_data(ttl=300)
-def load_events(portfolio_id: int, start_date: date) -> pd.DataFrame:
-    engine = get_engine()
-    q = text("""
-        SELECT
-          event_id,
-          event_time,
-          event_type,
-          ticker,
-          quantity,
-          price,
-          fees,
-          cash_delta,
-          notes
-        FROM portfolio_events
-        WHERE portfolio_id = :portfolio_id
-          AND event_time >= CAST(:start_date AS timestamp)
-        ORDER BY event_time ASC, event_id ASC
-    """)
-    with engine.connect() as conn:
-        return pd.read_sql(
-            q, conn,
-            params={"portfolio_id": int(portfolio_id), "start_date": start_date},
-        )
-
-@st.cache_data(ttl=300)
-def load_totals_by_type(portfolio_id: int, start_date: date) -> pd.DataFrame:
-    engine = get_engine()
-    q = text("""
-        SELECT
-          event_type,
-          COUNT(*) AS events,
-          SUM(COALESCE(fees,0)) AS total_fees,
-          SUM(COALESCE(cash_delta,0)) AS total_cash_delta
-        FROM portfolio_events
-        WHERE portfolio_id = :portfolio_id
-          AND event_time >= CAST(:start_date AS timestamp)
-        GROUP BY event_type
-        ORDER BY total_cash_delta DESC NULLS LAST
-    """)
-    with engine.connect() as conn:
-        return pd.read_sql(
-            q, conn,
-            params={"portfolio_id": int(portfolio_id), "start_date": start_date},
-        )
-
-@st.cache_data(ttl=300)
-def load_totals_by_ticker(portfolio_id: int, start_date: date) -> pd.DataFrame:
-    engine = get_engine()
-    q = text("""
-        SELECT
-          ticker,
-          COUNT(*) AS events,
-          SUM(COALESCE(fees,0)) AS total_fees,
-          SUM(COALESCE(cash_delta,0)) AS total_cash_delta
-        FROM portfolio_events
-        WHERE portfolio_id = :portfolio_id
-          AND event_time >= CAST(:start_date AS timestamp)
-          AND ticker IS NOT NULL AND ticker <> ''
-        GROUP BY ticker
-        ORDER BY total_cash_delta DESC NULLS LAST
-    """)
-    with engine.connect() as conn:
-        return pd.read_sql(
-            q, conn,
-            params={"portfolio_id": int(portfolio_id), "start_date": start_date},
-        )
-
-# ----------------------------------------------------------
-# DB: Holdings helpers (latest prices + company names)
-# ----------------------------------------------------------
-@st.cache_data(ttl=300)
-def load_latest_prices_and_names(tickers: list[str]) -> pd.DataFrame:
-    if not tickers:
-        return pd.DataFrame(columns=["ticker", "name", "last_close", "last_date"])
-
-    engine = get_engine()
-    q = text("""
-        WITH latest AS (
-            SELECT p.ticker, MAX(p.date) AS last_date
-            FROM prices p
-            WHERE p.ticker IN :tickers
-            GROUP BY p.ticker
-        )
-        SELECT
-            l.ticker,
-            c.name,
-            p.close AS last_close,
-            l.last_date
-        FROM latest l
-        JOIN prices p
-          ON p.ticker = l.ticker
-         AND p.date = l.last_date
-        LEFT JOIN companies c
-          ON c.ticker = l.ticker
-        ORDER BY l.ticker
-    """).bindparams(bindparam("tickers", expanding=True))
-
-    with engine.connect() as conn:
-        return pd.read_sql(q, conn, params={"tickers": tickers})
-
-# ----------------------------------------------------------
-# Stock-fund analytics (BUY_SHARES / SELL_SHARES only)
-# ----------------------------------------------------------
-def calc_cashflows_stockfund(events: pd.DataFrame) -> dict:
-    if events is None or events.empty:
-        return {"fees_total": 0.0, "deposits_net": 0.0, "trade_cashflow": 0.0}
-
-    e = events.copy()
-    e["event_type"] = e["event_type"].astype(str).str.upper()
-    e["cash_delta"] = pd.to_numeric(e["cash_delta"], errors="coerce").fillna(0.0)
-    e["fees"] = pd.to_numeric(e["fees"], errors="coerce").fillna(0.0)
-
-    fees_total = float(e["fees"].sum())
-
-    dep_mask = e["event_type"].isin(["DEPOSIT", "CASH_DEPOSIT", "CONTRIBUTION"])
-    wdr_mask = e["event_type"].isin(["WITHDRAW", "WITHDRAWAL", "CASH_WITHDRAWAL", "DISTRIBUTION"])
-    deposits_net = float(e.loc[dep_mask, "cash_delta"].sum() + e.loc[wdr_mask, "cash_delta"].sum())
-
-    trade_mask = e["event_type"].isin(["BUY_SHARES", "SELL_SHARES"])
-    trade_cashflow = float(e.loc[trade_mask, "cash_delta"].sum())
-
-    return {"fees_total": fees_total, "deposits_net": deposits_net, "trade_cashflow": trade_cashflow}
-
-def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
-    if events is None or events.empty:
-        return pd.DataFrame(
-            columns=[
-                "ticker", "shares", "cost_basis", "avg_cost",
-                "realized_pl", "realized_cost", "realized_proceeds", "realized_pct",
-            ]
-        )
-
-    e = events.copy()
-    e["event_type"] = e["event_type"].astype(str).str.upper()
-    e["ticker"] = e["ticker"].fillna("").astype(str).str.upper().str.strip()
-    e = e[(e["ticker"] != "")]
-    e = e[e["event_type"].isin(["BUY_SHARES", "SELL_SHARES"])].copy()
-
-    e["event_time"] = pd.to_datetime(e["event_time"], errors="coerce")
-    e = e.sort_values(["ticker", "event_time", "event_id"], ascending=True)
-
-    e["quantity"] = pd.to_numeric(e["quantity"], errors="coerce").fillna(0.0)
-    e["price"] = pd.to_numeric(e["price"], errors="coerce")
-    e["fees"] = pd.to_numeric(e["fees"], errors="coerce").fillna(0.0)
-    e["cash_delta"] = pd.to_numeric(e["cash_delta"], errors="coerce")
-
-    # Infer price if missing: abs(cash_delta)/qty
-    missing_price = e["price"].isna() | (e["price"] <= 0)
-    can_infer = missing_price & e["cash_delta"].notna() & (e["quantity"] > 0)
-    e.loc[can_infer, "price"] = (e.loc[can_infer, "cash_delta"].abs() / e.loc[can_infer, "quantity"])
-    e["price"] = e["price"].fillna(0.0)
-
-    out = []
-    for ticker, g in e.groupby("ticker", sort=False):
-        shares = 0.0
-        basis = 0.0
-
-        realized_pl = 0.0
-        realized_cost = 0.0
-        realized_proceeds = 0.0
-
-        for _, r in g.iterrows():
-            qty = float(r["quantity"] or 0.0)
-            px = float(r["price"] or 0.0)
-            fee = float(r["fees"] or 0.0)
-
-            if qty <= 0:
-                continue
-
-            if r["event_type"] == "BUY_SHARES":
-                shares += qty
-                basis += (qty * px) + fee
-
-            elif r["event_type"] == "SELL_SHARES":
-                if shares <= 0:
-                    shares = 0.0
-                    basis = 0.0
-                    continue
-
-                sell_qty = min(qty, shares)
-                avg_cost = (basis / shares) if shares > 0 else 0.0
-                cost_removed = sell_qty * avg_cost
-
-                # Net proceeds: prefer cash_delta (already net), else compute
-                if pd.notna(r["cash_delta"]):
-                    proceeds_net = float(r["cash_delta"])
-                else:
-                    proceeds_net = (sell_qty * px) - fee
-
-                realized_pl += (proceeds_net - cost_removed)
-                realized_cost += cost_removed
-                realized_proceeds += proceeds_net
-
-                shares -= sell_qty
-                basis -= cost_removed
-
-                if shares < 1e-9:
-                    shares = 0.0
-                    basis = 0.0
-
-        avg_cost = (basis / shares) if shares > 0 else 0.0
-        realized_pct = (realized_pl / realized_cost) if realized_cost > 0 else 0.0
-
-        out.append(
-            {
-                "ticker": ticker,
-                "shares": shares,
-                "cost_basis": basis,
-                "avg_cost": avg_cost,
-                "realized_pl": realized_pl,
-                "realized_cost": realized_cost,
-                "realized_proceeds": realized_proceeds,
-                "realized_pct": realized_pct,
-            }
-        )
-
-    df = pd.DataFrame(out)
-    df = df[(abs(df["shares"]) > 1e-9) | (abs(df["realized_proceeds"]) > 1e-9) | (abs(df["realized_pl"]) > 1e-9)].copy()
-    return df
-
-# ----------------------------------------------------------
-# Header card (stock-only)
-# ----------------------------------------------------------
-def render_header_stockfund(
-    portfolio_code: str,
-    portfolio_name: str,
-    start_date: date,
-    starting_cash: float,
-    latest_nav_row: dict | None,
-    events_count: int,
-    fees_total: float,
-    deposits_net: float,
-    trade_cashflow: float,
-):
-    nav_date = latest_nav_row.get("nav_date") if latest_nav_row else None
-    nav_val = float(latest_nav_row.get("nav")) if latest_nav_row and latest_nav_row.get("nav") is not None else None
-    nav_cash = float(latest_nav_row.get("cash")) if latest_nav_row and latest_nav_row.get("cash") is not None else None
-    nav_eq = float(latest_nav_row.get("equity_value")) if latest_nav_row and latest_nav_row.get("equity_value") is not None else None
-
-    nav_gain = (nav_val - float(starting_cash)) if (nav_val is not None and starting_cash is not None) else None
-    nav_gain_pct = (nav_gain / float(starting_cash)) if (nav_gain is not None and starting_cash and starting_cash > 0) else None
-
-    net_invested = float(starting_cash or 0.0) + float(deposits_net or 0.0)
-    gain_vs_invested = (nav_val - net_invested) if (nav_val is not None) else None
-    gain_vs_invested_pct = (gain_vs_invested / net_invested) if (gain_vs_invested is not None and net_invested > 0) else None
-
-    with st.container(border=True):
-        top_l, top_r = st.columns([1.6, 1.0], vertical_alignment="top")
-
-        with top_l:
-            st.markdown(
-                f"### {portfolio_code} — {portfolio_name}\n"
-                f"Start **{start_date}** · Starting cash **{fmt_money0(starting_cash)}** · Events **{events_count}**\n\n"
-                f"Latest NAV date: **{nav_date if nav_date else '—'}**"
-            )
-
-        with top_r:
-            st.caption("NAV = cash + equity (EOD)\n\nTrades = BUY_SHARES / SELL_SHARES")
-
-        r1 = st.columns(4)
-        with r1[0]:
-            st.metric(
-                "Latest NAV",
-                fmt_money(nav_val) if nav_val is not None else "—",
-                f"{fmt_money(nav_gain)} · {fmt_pct_ratio(nav_gain_pct)}" if nav_gain is not None else None,
-            )
-        with r1[1]:
-            st.metric("NAV Cash", fmt_money(nav_cash) if nav_cash is not None else "—")
-        with r1[2]:
-            st.metric("NAV Equity", fmt_money(nav_eq) if nav_eq is not None else "—")
-        with r1[3]:
-            st.metric("Net deposits", fmt_money(deposits_net))
-
-        r2 = st.columns(3)
-        with r2[0]:
-            st.metric("Fees", fmt_money(fees_total))
-        with r2[1]:
-            st.metric("Trade cashflow", fmt_money(trade_cashflow))
-        with r2[2]:
-            st.metric(
-                "Gain vs invested",
-                fmt_money(gain_vs_invested) if gain_vs_invested is not None else "—",
-                fmt_pct_ratio(gain_vs_invested_pct) if gain_vs_invested_pct is not None else None,
-            )
-
-        st.caption("Source of truth: portfolios + portfolio_events + portfolio_nav_daily")
 
 # ----------------------------------------------------------
 # Main
@@ -374,7 +36,6 @@ def main():
 
     default_code = "YR3G"
 
-    # Default start date = portfolio start_date if present
     p0 = load_portfolio_by_code(default_code)
     db_start = None
     if not p0.empty and pd.notna(p0.iloc[0]["start_date"]):
@@ -397,23 +58,27 @@ def main():
     portfolio_id = int(p.iloc[0]["portfolio_id"])
     portfolio_name = str(p.iloc[0]["name"])
     starting_cash = float(p.iloc[0]["starting_cash"])
-    portfolio_start = p.iloc[0]["start_date"]
+    portfolio_start = pd.to_datetime(p.iloc[0]["start_date"]).date() if pd.notna(p.iloc[0]["start_date"]) else start_date
 
     st.caption(
         f"Portfolio: **{portfolio_code} — {portfolio_name}** (portfolio_id={portfolio_id}) · "
-        f"Start date in DB: {portfolio_start}"
+        f"Start date in DB: {p.iloc[0]['start_date']}"
     )
+
+    nav_all = load_nav_series_between(portfolio_id=portfolio_id, start_date=portfolio_start)
+    if not nav_all.empty:
+        nav_all["nav_date"] = pd.to_datetime(nav_all["nav_date"]).dt.date
+    latest_nav_row = nav_all.iloc[-1].to_dict() if not nav_all.empty else None
 
     nav = load_nav_series(portfolio_id=portfolio_id, start_date=start_date)
     if not nav.empty:
         nav["nav_date"] = pd.to_datetime(nav["nav_date"]).dt.date
-    latest_nav_row = nav.iloc[-1].to_dict() if not nav.empty else None
 
-    events = load_events(portfolio_id=portfolio_id, start_date=start_date)
+    events = load_events_stockfund(portfolio_id=portfolio_id, start_date=start_date)
     if not events.empty:
         events["event_time"] = pd.to_datetime(events["event_time"])
 
-    if nav.empty and events.empty:
+    if (nav_all.empty and nav.empty) and events.empty:
         st.info("No NAV or ledger events found for this date window yet.")
         return
 
@@ -433,6 +98,10 @@ def main():
         deposits_net=deposits_net,
         trade_cashflow=trade_cashflow,
     )
+
+    # 2026 block right after header
+    st.divider()
+    render_year_summary_blocks(nav_all=nav_all, portfolio_start_date=portfolio_start, years=[2026])
 
     st.divider()
 
@@ -519,7 +188,6 @@ def main():
     if closed_pos.empty:
         st.caption("No closed positions with realized activity yet.")
     else:
-        # Attach names for nicer output (no prices needed)
         tickers = closed_pos["ticker"].astype(str).str.upper().tolist()
         names = load_latest_prices_and_names(tickers)[["ticker", "name"]].drop_duplicates()
 
@@ -538,19 +206,16 @@ def main():
         show["realized_pct"] = show["realized_pct"].apply(fmt_pct_ratio)
 
         st.dataframe(
-            show[
-                ["ticker", "name", "realized_proceeds", "realized_cost", "realized_pl", "realized_pct"]
-            ].sort_values("realized_pl", ascending=False),
+            show[["ticker", "name", "realized_proceeds", "realized_cost", "realized_pl", "realized_pct"]]
+            .sort_values("realized_pl", ascending=False),
             hide_index=True,
             use_container_width=True,
         )
 
-    # Totals block (open + closed)
     total_realized = float(pnl["realized_pl"].sum()) if not pnl.empty else 0.0
     total_unrealized = 0.0
     holdings_mv = 0.0
     if not open_pos.empty:
-        # recompute from open_pos + prices (cheap + safe)
         tickers = open_pos["ticker"].astype(str).str.upper().tolist()
         px = load_latest_prices_and_names(tickers)
         tmp = open_pos.merge(px, on="ticker", how="left")
@@ -609,9 +274,8 @@ def main():
         ev["cash_delta"] = ev["cash_delta"].apply(fmt_money)
 
         st.dataframe(
-            ev[
-                ["event_time", "event_type", "ticker", "quantity", "price", "fees", "cash_delta", "notes"]
-            ].sort_values("event_time", ascending=False),
+            ev[["event_time", "event_type", "ticker", "quantity", "price", "fees", "cash_delta", "notes"]]
+            .sort_values("event_time", ascending=False),
             hide_index=True,
             use_container_width=True,
         )
@@ -626,10 +290,10 @@ def main():
                 mime="text/csv",
             )
     with c2:
-        if not nav.empty:
+        if not nav_all.empty:
             st.download_button(
                 "Download NAV CSV",
-                nav.to_csv(index=False).encode("utf-8"),
+                nav_all.to_csv(index=False).encode("utf-8"),
                 file_name=f"{portfolio_code.lower()}_nav.csv",
                 mime="text/csv",
             )
