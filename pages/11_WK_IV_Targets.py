@@ -568,10 +568,14 @@ def main():
 
     st.subheader(f"🧮 Found {len(df)} targets (Wheel Mode: {wheel_mode})")
 
+        # ----------------------------------------------------------
+    # Table columns (move all wheel* columns to the far right)
+    # ----------------------------------------------------------
     columns = [
+        # Wheel flags (moved to far right)
         "wheel_flag",
-        "wheel_fit",
-        "wheel_reason",
+        
+        # Core identity / filters
         "ticker",
         "stars",
         "latest_price",
@@ -581,22 +585,35 @@ def main():
         "expiry",
         "dte",
         "contract_count",
+
+        # Put side
         "put_20d_strike",
         "put_20d_delta",
         "put_20d_premium_fmt",
         "put_20d_premium_pct_fmt",
+
+        # Call side
         "call_20d_strike",
         "call_20d_delta",
         "call_20d_premium_fmt",
         "call_20d_premium_pct_fmt",
+
+        # “Action” side (depends on Wheel Mode)
         "action_strategy",
         "action_strike",
         "action_delta",
         "action_premium_fmt",
         "action_premium_pct_fmt",
+
+        # Other flags
         "put_itm_flag",
         "call_itm_flag",
+
+        # Wheel info (moved to far right)
+        "wheel_fit",
+        "wheel_reason",
     ]
+
 
     st.dataframe(df[columns], hide_index=True, use_container_width=True)
 
