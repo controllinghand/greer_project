@@ -1,4 +1,4 @@
-# 12_YRI.py
+# 12_YRSI.py
 import streamlit as st
 import pandas as pd
 from datetime import date
@@ -18,23 +18,24 @@ from portfolio_common import (
     fmt_pct_ratio,
 )
 
-st.set_page_config(page_title="YRI Results", layout="wide")
+st.set_page_config(page_title="YRSI Results", layout="wide")
 
 # ----------------------------------------------------------
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("📣 YRI Results (You Rock Income Fund)")
+    st.title("⭐📣 YRSI Results (You Rock Star Income Fund)")
 
     st.markdown(
         """
-        Read-only community page for YRI.  
+        Read-only community page for YRSI.  
         Uses **only**: portfolios, portfolio_events, portfolio_nav_daily.
         """
     )
 
-    default_code = "YRI"
+    default_code = "YRSI"
 
+    # Prefer DB start_date if present; otherwise default to 2026-01-01
     p0 = load_portfolio_by_code(default_code)
     db_start = None
     if not p0.empty and pd.notna(p0.iloc[0]["start_date"]):
@@ -42,7 +43,8 @@ def main():
             db_start = pd.to_datetime(p0.iloc[0]["start_date"]).date()
         except Exception:
             db_start = None
-    default_start_date = db_start or date(2025, 12, 1)
+
+    default_start_date = db_start or date(2026, 1, 1)
 
     with st.sidebar:
         st.header("Controls")
@@ -88,7 +90,11 @@ def main():
     if not events.empty:
         fees_total = float(pd.to_numeric(events["fees"], errors="coerce").fillna(0.0).sum())
         mask_credits = events["event_type"].astype(str).str.upper().isin(["SELL_CSP", "SELL_CC"])
-        credits_gross = float(pd.to_numeric(events.loc[mask_credits, "cash_delta"], errors="coerce").fillna(0.0).sum())
+        credits_gross = float(
+            pd.to_numeric(events.loc[mask_credits, "cash_delta"], errors="coerce")
+            .fillna(0.0)
+            .sum()
+        )
 
     csp_collateral, cc_collateral = calc_collateral_from_events(events)
 
