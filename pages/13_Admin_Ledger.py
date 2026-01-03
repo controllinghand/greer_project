@@ -1,12 +1,17 @@
 # 13_Admin_Ledger.py
 # ----------------------------------------------------------
-# Private Admin Ledger page
+# Private Admin Ledger page (BEST UX)
 # - Manual entry into existing tables:
-#     portfolios(portfolio_id, code, name, start_date, starting_cash)
-#     portfolio_events(event_id, portfolio_id, event_time, event_type, ticker,
-#                      quantity, price, fees, option_type, strike, expiry, cash_delta, notes)
-#     portfolio_nav_daily(...)  (not written here yet)
+#     portfolios(...)
+#     portfolio_events(...)
 # - Admin-only via env var: YRC_ADMIN=1
+#
+# UX goals:
+# - You NEVER type negative shares again
+# - Shares/contracts inputs are always positive
+# - Event type determines direction automatically
+# - Auto-calc cash_delta for common events (override allowed)
+# - Only show fields relevant to the selected event type
 # ----------------------------------------------------------
 
 import os
@@ -44,6 +49,110 @@ def fmt_money0(x):
 
 def safe_upper(s: str) -> str:
     return (s or "").strip().upper()
+
+def safe_float(x, default=0.0) -> float:
+    try:
+        if x is None:
+            return float(default)
+        return float(x)
+    except Exception:
+        return float(default)
+
+# ----------------------------------------------------------
+# Event sets
+# ----------------------------------------------------------
+EVENT_TYPES = [
+    "DEPOSIT",
+    "WITHDRAWAL",
+    "SELL_CSP",
+    "ASSIGN_PUT",
+    "SELL_CC",
+    "CALL_AWAY",
+    "BUY_SHARES",
+    "SELL_SHARES",
+    "DIVIDEND",
+    "ADJUSTMENT",
+]
+
+OPTION_EVENTS = {"SELL_CSP", "SELL_CC"}
+SHARE_EVENTS = {"BUY_SHARES", "SELL_SHARES", "ASSIGN_PUT", "CALL_AWAY"}
+CASH_ONLY_EVENTS = {"DEPOSIT", "WITHDRAWAL", "DIVIDEND", "ADJUSTMENT"}
+
+# ----------------------------------------------------------
+# Direction rules (SIGN-PROOF)
+# - Shares/contracts inputs are ALWAYS positive in UI
+# - We apply correct signs for quantity + cash_delta by event_type
+# ----------------------------------------------------------
+def signed_share_qty(event_type: str, shares_abs: float) -> float:
+    """
+    Convert positive share input into signed quantity stored in DB.
+    """
+    et = (event_type or "").strip().upper()
+    s = abs(safe_float(shares_abs, 0.0))
+    if et in ("BUY_SHARES", "ASSIGN_PUT"):
+        return +s
+    if et in ("SELL_SHARES", "CALL_AWAY"):
+        return -s
+    return s
+
+def signed_contract_qty(event_type: str, contracts_abs: float) -> float:
+    """
+    Contracts are generally stored positive for SELL_CSP/SELL_CC in your system.
+    Keep as positive to preserve your existing convention.
+    """
+    et = (event_type or "").strip().upper()
+    c = abs(safe_float(contracts_abs, 0.0))
+    if et in ("SELL_CSP", "SELL_CC"):
+        return +c
+    return c
+
+def calc_cash_delta(event_type: str, qty_signed: float, price: float, fees: float) -> float:
+    """
+    Basic conventions:
+    - SELL_CSP / SELL_CC: +contracts*100*option_price - fees
+    - ASSIGN_PUT:         -(abs(shares)*stock_price + fees)
+    - CALL_AWAY:          +(abs(shares)*stock_price - fees)
+    - BUY_SHARES:         -(abs(shares)*stock_price + fees)
+    - SELL_SHARES:        +(abs(shares)*stock_price - fees)
+    - DEPOSIT/WITHDRAWAL: use amount as price input (amount field)
+    - DIVIDEND:           +(amount - fees)
+    - ADJUSTMENT:         manual
+    """
+    et = (event_type or "").strip().upper()
+    p = safe_float(price, 0.0)
+    f = safe_float(fees, 0.0)
+
+    if et in ("SELL_CSP", "SELL_CC"):
+        contracts = abs(safe_float(qty_signed, 0.0))
+        return contracts * 100.0 * p - f
+
+    if et == "ASSIGN_PUT":
+        shares = abs(safe_float(qty_signed, 0.0))
+        return -(shares * p + f)
+
+    if et == "CALL_AWAY":
+        shares = abs(safe_float(qty_signed, 0.0))
+        return shares * p - f
+
+    if et == "BUY_SHARES":
+        shares = abs(safe_float(qty_signed, 0.0))
+        return -(shares * p + f)
+
+    if et == "SELL_SHARES":
+        shares = abs(safe_float(qty_signed, 0.0))
+        return shares * p - f
+
+    if et == "DEPOSIT":
+        return p
+
+    if et == "WITHDRAWAL":
+        return -p
+
+    if et == "DIVIDEND":
+        return p - f
+
+    # ADJUSTMENT or anything else: default 0 (manual)
+    return 0.0
 
 # ----------------------------------------------------------
 # DB: Load portfolios
@@ -84,7 +193,7 @@ def upsert_portfolio(code: str, name: str, start_date: dt_date, starting_cash: f
     return int(pid)
 
 # ----------------------------------------------------------
-# DB: Insert event into portfolio_events (matches your schema)
+# DB: Insert event
 # ----------------------------------------------------------
 def insert_event(payload: dict) -> None:
     engine = get_engine()
@@ -152,24 +261,8 @@ def load_recent_events(portfolio_id: int, limit: int = 50) -> pd.DataFrame:
         return pd.read_sql(q, conn, params={"portfolio_id": portfolio_id, "limit": limit})
 
 # ----------------------------------------------------------
-# Simple event set (we can expand later)
-# Note: quantity is flexible:
-# - shares: +100, -100, etc
-# - option contracts: 1, 7, etc (you decide convention)
+# Main
 # ----------------------------------------------------------
-EVENT_TYPES = [
-    "DEPOSIT",
-    "WITHDRAWAL",
-    "SELL_CSP",
-    "ASSIGN_PUT",
-    "SELL_CC",
-    "CALL_AWAY",
-    "BUY_SHARES",
-    "SELL_SHARES",
-    "DIVIDEND",
-    "ADJUSTMENT",
-]
-
 def main():
     st.title("🔒 Admin Ledger (Manual Entry)")
 
@@ -205,7 +298,6 @@ def main():
 
         new_code = st.text_input("Code", value="YRI").strip().upper()
         new_name = st.text_input("Name", value="You Rock Income Fund").strip()
-        # IMPORTANT: use dt_date (aliased) to avoid shadowing bugs
         new_start = st.date_input("Start date", value=dt_date(2025, 12, 1))
         new_cash = st.number_input("Starting cash", value=100_000.0, step=5_000.0)
 
@@ -246,102 +338,160 @@ def main():
     # ----------------------------------------------------------
     st.subheader("✍️ Add ledger event")
 
-    left, right = st.columns([1.15, 1.0], gap="large")
+    left, right = st.columns([1.25, 1.0], gap="large")
 
     with left:
         event_type = st.selectbox("Event type", EVENT_TYPES, index=0)
+        et_u = (event_type or "").strip().upper()
 
-        # --- Event time inputs (Streamlit does NOT have datetime_input)
-        event_date = st.date_input("Event date", value=dt_date.today(), key="event_date")
-        event_clock = st.time_input("Event time", value=datetime.now().time(), key="event_time_clock")
+        # Event time inputs
+        c1, c2 = st.columns(2)
+        with c1:
+            event_date = st.date_input("Event date", value=dt_date.today(), key="event_date")
+        with c2:
+            event_clock = st.time_input("Event time", value=datetime.now().time(), key="event_time_clock")
         event_time = datetime.combine(event_date, event_clock)
 
-        ticker = safe_upper(st.text_input("Ticker (optional)", value=""))
-        fees = st.number_input("Fees", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+        st.divider()
+
+        # ----------------------------------------------------------
+        # Dynamic input panels by event type
+        # ----------------------------------------------------------
+        ticker = ""
+        qty_signed = 0.0
+        price = 0.0
+        fees = 0.0
+        option_type = None
+        strike = None
+        expiry = None
+
         notes = st.text_input("Notes (optional)", value="")
 
-        # core fields in your schema
-        quantity = st.number_input("Quantity (shares or contracts)", value=0.0, step=1.0, format="%.2f")
-        price = st.number_input("Price (stock or option)", value=0.0, step=0.01, format="%.2f")
+        # Fees shown for most things
+        fees = st.number_input("Fees", min_value=0.0, value=0.0, step=0.01, format="%.2f")
 
-        opt_col1, opt_col2, opt_col3 = st.columns(3)
-        with opt_col1:
-            option_type = st.selectbox("Option type (if any)", ["", "put", "call"], index=0)
-        with opt_col2:
-            strike = st.number_input("Strike (if any)", value=0.0, step=0.50, format="%.2f")
-        with opt_col3:
-            # keep a valid date here; we’ll only store it if option_type is set
-            expiry = st.date_input("Expiry (if any)", value=dt_date.today(), key="expiry")
+        if et_u in CASH_ONLY_EVENTS:
+            # Cash-only UX: user types amount once
+            amount_label = "Amount"
+            if et_u == "DEPOSIT":
+                amount_label = "Deposit amount"
+            elif et_u == "WITHDRAWAL":
+                amount_label = "Withdrawal amount"
+            elif et_u == "DIVIDEND":
+                amount_label = "Dividend amount"
+            elif et_u == "ADJUSTMENT":
+                amount_label = "Adjustment amount (use + / - via cash_delta)"
 
-        st.caption("Tip: Leave option fields blank/0 for non-option events. We’ll validate lightly for now.")
+            amount = st.number_input(amount_label, value=0.0, step=100.0, format="%.2f")
 
-        # ----------------------------------------------------------
-        # Cash delta logic (you can override)
-        # ----------------------------------------------------------
+            # For cash-only, store amount in price (keeps schema simple)
+            price = float(amount)
+            qty_signed = 0.0
+            ticker = ""
+
+        elif et_u in OPTION_EVENTS:
+            # Options UX: contracts always positive, auto option_type, auto premium cash_delta
+            ticker = safe_upper(st.text_input("Ticker", value=""))
+
+            contracts = st.number_input("Contracts (always positive)", min_value=0.0, value=1.0, step=1.0, format="%.0f")
+            opt_price = st.number_input("Option price (premium)", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+
+            if et_u == "SELL_CSP":
+                option_type = "put"
+            elif et_u == "SELL_CC":
+                option_type = "call"
+
+            strike = st.number_input("Strike", min_value=0.0, value=0.0, step=0.50, format="%.2f")
+            expiry = st.date_input("Expiry", value=dt_date.today(), key="expiry_opt")
+
+            qty_signed = signed_contract_qty(et_u, contracts)
+            price = float(opt_price)
+
+            st.caption("Contracts are stored as a positive count. Premium cash_delta is auto-calculated if enabled below.")
+
+        elif et_u in SHARE_EVENTS:
+            # Shares UX: shares always positive, we enforce sign automatically
+            ticker = safe_upper(st.text_input("Ticker", value=""))
+
+            shares = st.number_input("Shares (always positive)", min_value=0.0, value=100.0, step=1.0, format="%.0f")
+            stock_price = st.number_input("Stock price", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+
+            qty_signed = signed_share_qty(et_u, shares)
+            price = float(stock_price)
+
+            # Nice UX hint
+            if et_u == "ASSIGN_PUT":
+                st.info("ASSIGN_PUT will be saved as a positive share quantity (adds shares).")
+            if et_u == "CALL_AWAY":
+                st.info("CALL_AWAY will be saved as a negative share quantity (removes shares).")
+
+        else:
+            st.warning("Unknown event type configuration.")
+
         st.divider()
-        st.markdown("**Cash delta** (required): positive = cash in, negative = cash out")
+        st.markdown("### 💰 Cash delta")
 
-        auto_calc = st.checkbox("Auto-calc cash_delta (basic)", value=True)
+        auto_calc = st.checkbox("Auto-calc cash_delta", value=True)
 
-        cash_delta_default = 0.0
-        if auto_calc:
-            # Very simple conventions:
-            # - SELL_CSP / SELL_CC: cash in = quantity*100*price - fees (assumes quantity=contracts)
-            # - BUY_SHARES: cash out = quantity*price + fees (assumes quantity=shares)
-            # - SELL_SHARES: cash in = quantity*price - fees
-            # - DEPOSIT / WITHDRAWAL: use "price" as amount (so you can just type the amount once)
-            if event_type in ("SELL_CSP", "SELL_CC"):
-                cash_delta_default = float(quantity) * 100.0 * float(price) - float(fees)
-            elif event_type == "BUY_SHARES":
-                cash_delta_default = -(float(quantity) * float(price) + float(fees))
-            elif event_type == "SELL_SHARES":
-                cash_delta_default = float(quantity) * float(price) - float(fees)
-            elif event_type == "DEPOSIT":
-                cash_delta_default = float(price)
-            elif event_type == "WITHDRAWAL":
-                cash_delta_default = -float(price)
-            elif event_type == "DIVIDEND":
-                cash_delta_default = float(price) - float(fees)
-            else:
-                # ASSIGN_PUT / CALL_AWAY / ADJUSTMENT etc: manual
-                cash_delta_default = 0.0
-
+        auto_cash = calc_cash_delta(et_u, qty_signed, price, fees) if auto_calc else 0.0
         cash_delta = st.number_input(
-            "cash_delta",
-            value=float(cash_delta_default),
+            "cash_delta (override allowed)",
+            value=float(auto_cash),
             step=1.0,
             format="%.2f",
-            help="Final cash impact. Override if needed (recommended for assignments/call-away)."
+            help="Positive = cash in, Negative = cash out. Auto-calculated for common events."
         )
 
-        # Minimal validation + save
-        if st.button("✅ Save event"):
-            if cash_delta is None:
-                st.error("cash_delta is required.")
-                st.stop()
+        # ----------------------------------------------------------
+        # Validation + Save
+        # ----------------------------------------------------------
+        st.divider()
+        st.markdown("### ✅ Review")
 
-            ot = (option_type or "").strip().lower()
-            if ot not in ("", "put", "call"):
-                st.error("option_type must be blank, put, or call.")
-                st.stop()
+        # Quick validation rules
+        errors = []
 
-            payload = {
-                "portfolio_id": int(selected_pid),
-                "event_time": event_time,
-                "event_type": (event_type or "").strip(),
-                "ticker": ticker if ticker else None,
-                "quantity": float(quantity) if quantity is not None else None,
-                "price": float(price) if price is not None else None,
-                "fees": float(fees) if fees is not None else 0.0,
-                "option_type": ot if ot else None,
-                "strike": float(strike) if (strike is not None and float(strike) > 0) else None,
-                "expiry": expiry if ot else None,
-                "cash_delta": float(cash_delta),
-                "notes": notes if notes else None,
-            }
+        if et_u in (OPTION_EVENTS | SHARE_EVENTS) and not ticker:
+            errors.append("Ticker is required for this event type.")
 
+        if et_u in SHARE_EVENTS and safe_float(price) <= 0:
+            errors.append("Stock price must be > 0 for share events.")
+
+        if et_u in OPTION_EVENTS:
+            if safe_float(price) <= 0:
+                errors.append("Option price (premium) must be > 0 for option sells.")
+            if strike is None or safe_float(strike) <= 0:
+                errors.append("Strike must be > 0 for option sells.")
+            if expiry is None:
+                errors.append("Expiry is required for option sells.")
+
+        if et_u == "ADJUSTMENT" and cash_delta == 0:
+            st.warning("ADJUSTMENT with cash_delta = 0 will have no impact (that may be intended).")
+
+        # Show computed payload preview (super helpful)
+        preview = {
+            "portfolio_id": int(selected_pid),
+            "event_time": event_time,
+            "event_type": et_u,
+            "ticker": ticker if ticker else None,
+            "quantity": float(qty_signed) if qty_signed is not None else None,
+            "price": float(price) if price is not None else None,
+            "fees": float(fees) if fees is not None else 0.0,
+            "option_type": option_type if option_type else None,
+            "strike": float(strike) if (strike is not None and safe_float(strike) > 0) else None,
+            "expiry": expiry if option_type else None,
+            "cash_delta": float(cash_delta),
+            "notes": notes if notes else None,
+        }
+        st.code(preview, language="python")
+
+        if errors:
+            for e in errors:
+                st.error(e)
+
+        if st.button("✅ Save event", disabled=bool(errors)):
             try:
-                insert_event(payload)
+                insert_event(preview)
                 st.success("Saved event to portfolio_events.")
                 st.cache_data.clear()
                 st.rerun()
@@ -359,7 +509,8 @@ def main():
         else:
             ev = events.copy()
             ev["event_time"] = pd.to_datetime(ev["event_time"])
-            ev["expiry"] = pd.to_datetime(ev["expiry"]).dt.date
+            if "expiry" in ev.columns:
+                ev["expiry"] = pd.to_datetime(ev["expiry"]).dt.date
 
             for c in ["price", "fees", "strike", "cash_delta"]:
                 if c in ev.columns:
@@ -368,6 +519,7 @@ def main():
             st.dataframe(
                 ev[
                     [
+                        "event_id",
                         "event_time",
                         "event_type",
                         "ticker",
@@ -385,7 +537,7 @@ def main():
                 use_container_width=True,
             )
 
-            st.caption("If you need to delete a bad entry, you can delete by event_id in SQL (we can add a delete button later).")
+            st.caption("Tip: We can add edit/delete buttons next (safe-mode with confirmations).")
 
 if __name__ == "__main__":
     main()
