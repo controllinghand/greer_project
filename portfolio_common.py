@@ -1,4 +1,5 @@
 # portfolio_common.py
+
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text, bindparam
@@ -75,8 +76,13 @@ def load_nav_series(portfolio_id: int, start_date: date) -> pd.DataFrame:
         )
 
 @st.cache_data(ttl=300)
-def load_nav_series_between(portfolio_id: int, start_date: date, end_date: date | None = None) -> pd.DataFrame:
+def load_nav_series_between(
+    portfolio_id: int,
+    start_date: date,
+    end_date: date | None = None
+) -> pd.DataFrame:
     engine = get_engine()
+
     if end_date is None:
         q = text("""
             SELECT nav_date, cash, equity_value, nav
@@ -418,7 +424,145 @@ def render_header_stockfund(
         st.caption("Source of truth: portfolios + portfolio_events + portfolio_nav_daily")
 
 # ----------------------------------------------------------
-# Year summary blocks (YTD + Inception + 2026)
+# Time-Weighted Return (TWR) helpers
+# - Use for funds with external cash flows (e.g., private fund)
+# ----------------------------------------------------------
+EXTERNAL_CASHFLOW_TYPES_DEFAULT = {
+    "DEPOSIT", "CASH_DEPOSIT", "CONTRIBUTION",
+    "WITHDRAW", "WITHDRAWAL", "CASH_WITHDRAWAL", "DISTRIBUTION",
+}
+
+def _calc_twr_series(
+    nav_all: pd.DataFrame,
+    events_all: pd.DataFrame,
+    external_types: set[str] | None = None,
+) -> pd.DataFrame:
+    """
+    Build a daily Time-Weighted Return (TWR) series from EOD NAV and external cash flows.
+
+    Daily return convention:
+      r(D) = (NAV(D) - CF(D)) / NAV(D-1) - 1
+
+    CF(D) is the net external flow on day D (deposits positive, withdrawals negative).
+    """
+    external_types = external_types or EXTERNAL_CASHFLOW_TYPES_DEFAULT
+
+    if nav_all is None or nav_all.empty:
+        return pd.DataFrame(columns=["nav_date", "nav", "cf", "r", "twr_factor"])
+
+    nav = nav_all.copy()
+    nav["nav_date"] = pd.to_datetime(nav["nav_date"], errors="coerce").dt.date
+    nav["nav"] = pd.to_numeric(nav["nav"], errors="coerce")
+    nav = nav.dropna(subset=["nav_date", "nav"]).sort_values("nav_date").copy()
+
+    if nav.empty:
+        return pd.DataFrame(columns=["nav_date", "nav", "cf", "r", "twr_factor"])
+
+    # External cash flows by date
+    cf_by_day = pd.DataFrame(columns=["nav_date", "cf"])
+    if events_all is not None and not events_all.empty:
+        e = events_all.copy()
+        e["event_time"] = pd.to_datetime(e["event_time"], errors="coerce")
+        e = e.dropna(subset=["event_time"]).copy()
+        e["event_type"] = e["event_type"].astype(str).str.upper()
+        e["cash_delta"] = pd.to_numeric(e["cash_delta"], errors="coerce").fillna(0.0)
+        e["event_date"] = e["event_time"].dt.date
+
+        ext = e[e["event_type"].isin(set(external_types))].copy()
+        if not ext.empty:
+            cf_by_day = (
+                ext.groupby("event_date", as_index=False)["cash_delta"]
+                .sum()
+                .rename(columns={"event_date": "nav_date", "cash_delta": "cf"})
+            )
+
+    out = nav.merge(cf_by_day, on="nav_date", how="left")
+    out["cf"] = pd.to_numeric(out["cf"], errors="coerce").fillna(0.0)
+
+    # Prior-day NAV
+    out["nav_prev"] = out["nav"].shift(1)
+
+    # Daily return
+    out["r"] = 0.0
+    valid = out["nav_prev"].notna() & (out["nav_prev"] != 0)
+    out.loc[valid, "r"] = (out.loc[valid, "nav"] - out.loc[valid, "cf"]) / out.loc[valid, "nav_prev"] - 1.0
+
+    # Cumulative TWR factor
+    out["twr_factor"] = (1.0 + out["r"]).cumprod()
+
+    return out[["nav_date", "nav", "cf", "r", "twr_factor"]].copy()
+
+
+def _twr_perf(
+    nav_all: pd.DataFrame,
+    events_all: pd.DataFrame,
+    start_dt: date,
+    end_dt: date | None = None,
+    external_types: set[str] | None = None,
+) -> dict:
+    """
+    Windowed performance using Time-Weighted Return (TWR).
+    Returns a dict similar to _nav_perf but uses TWR instead of naive NAV change.
+    """
+    twr = _calc_twr_series(nav_all, events_all, external_types=external_types)
+    if twr.empty:
+        return {"ok": False}
+
+    df = twr.copy().sort_values("nav_date")
+
+    if end_dt is not None:
+        df = df[df["nav_date"] <= end_dt]
+    if df.empty:
+        return {"ok": False}
+
+    df_window = df[df["nav_date"] >= start_dt]
+    if df_window.empty:
+        return {"ok": False}
+
+    start_day = df_window.iloc[0]["nav_date"]
+    prev_rows = df[df["nav_date"] < start_day]
+
+    prev_factor = 1.0
+    if not prev_rows.empty:
+        prev_factor = float(prev_rows.iloc[-1]["twr_factor"] or 1.0)
+
+    end_factor = float(df_window.iloc[-1]["twr_factor"] or 1.0)
+    window_twr = (end_factor / prev_factor) - 1.0 if prev_factor != 0 else None
+
+    start_nav = float(df_window.iloc[0]["nav"])
+    end_nav = float(df_window.iloc[-1]["nav"])
+    # Net external cash during the window
+    cash_flow_net = 0.0
+    if events_all is not None and not events_all.empty:
+        e = events_all.copy()
+        e["event_time"] = pd.to_datetime(e["event_time"], errors="coerce")
+        e = e.dropna(subset=["event_time"])
+        e["event_type"] = e["event_type"].astype(str).str.upper()
+        e["cash_delta"] = pd.to_numeric(e["cash_delta"], errors="coerce").fillna(0.0)
+        e["event_date"] = e["event_time"].dt.date
+
+        mask = (
+            (e["event_type"].isin(EXTERNAL_CASHFLOW_TYPES_DEFAULT)) &
+            (e["event_date"] >= start_dt) &
+            ((end_dt is None) | (e["event_date"] <= end_dt))
+        )
+
+        cash_flow_net = float(e.loc[mask, "cash_delta"].sum())
+
+    return {
+        "ok": True,
+        "start_date": df_window.iloc[0]["nav_date"],
+        "end_date": df_window.iloc[-1]["nav_date"],
+        "start_nav": start_nav,
+        "end_nav": end_nav,
+        "cash_flow_net": cash_flow_net,
+        "chg": (end_nav - start_nav - cash_flow_net),  # ← strategy P&L
+        "pct": window_twr,
+    }
+
+
+# ----------------------------------------------------------
+# Year summary blocks (YTD + Inception + explicit years)
 # ----------------------------------------------------------
 def _nav_perf(nav_all: pd.DataFrame, start_dt: date, end_dt: date | None = None) -> dict:
     """
@@ -464,10 +608,13 @@ def _nav_perf(nav_all: pd.DataFrame, start_dt: date, end_dt: date | None = None)
         "pct": pct,
     }
 
+
 def render_year_summary_blocks(
     nav_all: pd.DataFrame,
     portfolio_start_date: date,
     years: list[int] | None = None,
+    events_all: pd.DataFrame | None = None,
+    use_twr: bool = False,
 ):
     """
     Renders:
@@ -480,8 +627,12 @@ def render_year_summary_blocks(
     today = date.today()
     ytd_start = date(today.year, 1, 1)
 
-    ytd = _nav_perf(nav_all, ytd_start, None)
-    inc = _nav_perf(nav_all, portfolio_start_date, None)
+    if use_twr and events_all is not None:
+        ytd = _twr_perf(nav_all, events_all, ytd_start, None)
+        inc = _twr_perf(nav_all, events_all, portfolio_start_date, None)
+    else:
+        ytd = _nav_perf(nav_all, ytd_start, None)
+        inc = _nav_perf(nav_all, portfolio_start_date, None)
 
     with st.container(border=True):
         st.markdown("### 📊 Performance summary")
@@ -512,11 +663,14 @@ def render_year_summary_blocks(
                 if inc.get("ok") else "—"
             )
 
-    # Explicit year blocks (e.g., 2026) — requested to show right after header, so page places this there.
     for yr in years:
         yr_start = date(int(yr), 1, 1)
         yr_end = date(int(yr), 12, 31)
-        perf = _nav_perf(nav_all, yr_start, yr_end)
+
+        if use_twr and events_all is not None:
+            perf = _twr_perf(nav_all, events_all, yr_start, yr_end)
+        else:
+            perf = _nav_perf(nav_all, yr_start, yr_end)
 
         with st.container(border=True):
             st.markdown(f"### 🗓️ {yr} performance")
@@ -526,7 +680,7 @@ def render_year_summary_blocks(
             with b:
                 st.metric("End NAV", fmt_money(perf["end_nav"]) if perf.get("ok") else "—")
             with c:
-                st.metric("Change", fmt_money(perf["chg"]) if perf.get("ok") else "—")
+                st.metric("Strategy P&L", fmt_money(perf["chg"]) if perf.get("ok") else "—")
             with d:
                 st.metric("Return", fmt_pct_ratio(perf["pct"]) if perf.get("ok") else "—")
 

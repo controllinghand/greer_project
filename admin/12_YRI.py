@@ -185,11 +185,16 @@ def main():
     # Year summary
     # ----------------------------------------------------------
     st.divider()
+    events_all = load_events_optionsfund(portfolio_id=portfolio_id, start_date=portfolio_start)
+
     render_year_summary_blocks(
         nav_all=nav_all,
         portfolio_start_date=portfolio_start,
-        years=[2026]
+        years=[2026],
+        events_all=events_all,
+        use_twr=(portfolio_code == "YRI"),
     )
+
 
     # ----------------------------------------------------------
     # NAV chart
