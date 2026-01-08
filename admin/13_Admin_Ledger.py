@@ -26,7 +26,14 @@ from datetime import datetime, date as dt_date
 # ----------------------------------------------------------
 IS_ADMIN = os.getenv("YRC_ADMIN", "0") == "1"
 
-st.set_page_config(page_title="Admin Ledger", layout="wide")
+if not IS_ADMIN:
+    # Optional: hide details; just stop.
+    st.error("This page is admin-only.")
+    st.stop()
+
+# Remove this line when using st.navigation:
+# st.set_page_config(page_title="Admin Ledger", layout="wide")
+
 
 # ----------------------------------------------------------
 # Helpers
