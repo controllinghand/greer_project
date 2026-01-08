@@ -947,8 +947,8 @@ pages = {
 
 if IS_ADMIN:
     pages["Admin"] = [
-        # Move the file out of pages/ to prevent auto-discovery
         st.Page("admin/13_Admin_Ledger.py", title="Admin Ledger", icon="🔒"),
+        st.Page("admin/12_YRI.py", title="YRI (Private)", icon="📣"),
     ]
 
 pg = st.navigation(pages, position="sidebar")
