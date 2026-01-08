@@ -28,7 +28,7 @@ def load_backtest_results():
 # ----------------------------------------------------------
 # Page UI
 # ----------------------------------------------------------
-st.set_page_config(page_title="Greer Backtest Results", layout="wide")
+# st.set_page_config(page_title="Greer Backtest Results", layout="wide")
 st.title("📈 Greer Opportunity Backtest Results")
 
 df = load_backtest_results()

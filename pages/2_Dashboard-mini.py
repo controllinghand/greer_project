@@ -5,7 +5,7 @@ import streamlit as st
 import pandas as pd
 from db import get_engine
 
-st.set_page_config(page_title="Mini Dashboard — Ticker Grid", layout="wide")
+# st.set_page_config(page_title="Mini Dashboard — Ticker Grid", layout="wide")
 
 @st.cache_data(ttl=600)
 def load_data():

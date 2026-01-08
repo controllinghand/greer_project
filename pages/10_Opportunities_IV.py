@@ -6,7 +6,7 @@ from sqlalchemy import text
 from db import get_engine  # ✅ Centralized DB connection
 
 # Page config — update tab title
-st.set_page_config(page_title="⭐ Opportunities with IV", layout="wide")
+# st.set_page_config(page_title="⭐ Opportunities with IV", layout="wide")
 
 # --------------------------------------------------
 # Insert custom CSS for styled table

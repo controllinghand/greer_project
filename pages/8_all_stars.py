@@ -7,7 +7,7 @@ from db import get_engine
 # ----------------------------------------------------------
 # Page config
 # ----------------------------------------------------------
-st.set_page_config(page_title="Greer 3-Star Companies", layout="wide")
+# st.set_page_config(page_title="Greer 3-Star Companies", layout="wide")
 st.markdown("<h1>⭐ All 3-Star Companies</h1>", unsafe_allow_html=True)
 
 # ----------------------------------------------------------

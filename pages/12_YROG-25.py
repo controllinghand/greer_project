@@ -19,7 +19,7 @@ from portfolio_common import (
     fmt_pct_ratio,
 )
 
-st.set_page_config(page_title="YROG Results", layout="wide")
+# st.set_page_config(page_title="YROG Results", layout="wide")
 
 # ----------------------------------------------------------
 # Main

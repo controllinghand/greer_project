@@ -12,7 +12,7 @@ from db import get_engine  # ✅ centralized DB access
 # ----------------------------------------------------------
 # Page config
 # ----------------------------------------------------------
-st.set_page_config(page_title="Add Company", layout="centered")
+# st.set_page_config(page_title="Add Company", layout="centered")
 st.title("➕ Add Company")
 
 # ----------------------------------------------------------

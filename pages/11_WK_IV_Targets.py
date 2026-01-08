@@ -14,7 +14,7 @@ from datetime import date, timedelta
 # ----------------------------------------------------------
 IS_ADMIN = os.getenv("YRC_ADMIN", "0") == "1"
 
-st.set_page_config(page_title="Weekly IV Targets", layout="wide")
+# st.set_page_config(page_title="Weekly IV Targets", layout="wide")
 
 # ----------------------------------------------------------
 # Convert numeric star rating into a pretty "⭐⭐⭐" string

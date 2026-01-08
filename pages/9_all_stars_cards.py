@@ -3,7 +3,7 @@ import pandas as pd
 from db import get_engine
 
 # Page config + custom CSS for cards
-st.set_page_config(page_title="Greer 3-Star Companies", layout="wide")
+# st.set_page_config(page_title="Greer 3-Star Companies", layout="wide")
 
 st.markdown("""
 <style>

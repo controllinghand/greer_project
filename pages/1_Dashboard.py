@@ -5,7 +5,7 @@ import numpy as np
 from db import get_engine
 
 # Page config
-st.set_page_config(page_title="Company Dashboard", layout="wide")
+# st.set_page_config(page_title="Company Dashboard", layout="wide")
 
 st.markdown("""
 <style>
