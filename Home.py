@@ -934,6 +934,7 @@ pages = {
         st.Page("pages/11_YRSI-26.py", title="YRSI-26", icon="💵"),
         st.Page("pages/12_YR3G-25.py", title="YR3G-25", icon="🚀"),
         st.Page("pages/12_YROG-25.py", title="YROG-25", icon="📈"),
+        st.Page("pages/12_YRQ-26.py", title="YRQ-26", icon="📐"),
     ],
     "Tools": [
         st.Page("pages/10_Opportunities_IV.py", title="Opportunities (IV)", icon="🎯"),
