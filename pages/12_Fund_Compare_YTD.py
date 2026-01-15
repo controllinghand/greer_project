@@ -10,6 +10,48 @@ from db import get_engine
 st.set_page_config(page_title="Fund Comparison (YTD)", layout="wide")
 
 # ----------------------------------------------------------
+# UI Style Overrides — Multiselect chips (force non-red)
+# ----------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    /* Base chip */
+    span[data-baseweb="tag"] {
+        background-color: #E3F4F4 !important;
+        color: #0F4C5C !important;
+        border-radius: 6px !important;
+        font-weight: 600 !important;
+    }
+
+    /* Hover state */
+    span[data-baseweb="tag"]:hover {
+        background-color: #D6E8FA !important;
+        color: #1F4E79 !important;
+    }
+
+    /* Active / focused state */
+    span[data-baseweb="tag"]:focus,
+    span[data-baseweb="tag"]:active {
+        background-color: #D6E8FA !important;
+        color: #1F4E79 !important;
+    }
+
+    /* Remove (X) icon */
+    span[data-baseweb="tag"] svg {
+        fill: #1F4E79 !important;
+    }
+
+    /* Defensive: override any red accent fallback */
+    div[role="listbox"] span {
+        background-color: #E6F0FA !important;
+        color: #1F4E79 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ----------------------------------------------------------
 # Formatters
 # ----------------------------------------------------------
 def fmt_money(x):
@@ -82,6 +124,66 @@ def load_ytd_start_end(portfolio_id: int, y0: date, asof: date) -> dict | None:
     return dict(row)
 
 # ----------------------------------------------------------
+# Load NAV series for chart
+# ----------------------------------------------------------
+@st.cache_data(ttl=3600)
+def load_nav_series(portfolio_id: int, d0: date, d1: date) -> pd.DataFrame:
+    sql = """
+        SELECT nav_date::date AS nav_date, nav
+        FROM portfolio_nav_daily
+        WHERE portfolio_id = :pid
+          AND nav_date >= :d0
+          AND nav_date <= :d1
+          AND nav IS NOT NULL
+        ORDER BY nav_date
+    """
+    with get_engine().connect() as conn:
+        return pd.read_sql(text(sql), conn, params={"pid": portfolio_id, "d0": d0, "d1": d1})
+
+# ----------------------------------------------------------
+# Build YTD NAV chart (indexed to 100) for selected funds
+# ----------------------------------------------------------
+def build_nav_index_chart(pmeta: pd.DataFrame, year: int, asof: date, selected_codes: list[str]) -> pd.DataFrame:
+    y0 = date(year, 1, 1)
+
+    code_to_pid = dict(zip(pmeta["code"].astype(str), pmeta["portfolio_id"].astype(int)))
+
+    frames = []
+    for code in selected_codes:
+        pid = code_to_pid.get(code)
+        if not pid:
+            continue
+
+        navdf = load_nav_series(pid, y0, asof)
+        if navdf.empty:
+            continue
+
+        navdf = navdf.dropna(subset=["nav"]).copy()
+        if navdf.empty:
+            continue
+
+        base = float(navdf.iloc[0]["nav"])
+        if base == 0:
+            continue
+
+        navdf["Code"] = code
+        navdf["NAV_Index"] = (navdf["nav"].astype(float) / base) * 100.0
+        frames.append(navdf[["nav_date", "Code", "NAV_Index"]])
+
+    if not frames:
+        return pd.DataFrame()
+
+    all_df = pd.concat(frames, ignore_index=True)
+
+    # Pivot for st.line_chart
+    chart_df = (
+        all_df.pivot(index="nav_date", columns="Code", values="NAV_Index")
+        .sort_index()
+    )
+
+    return chart_df
+
+# ----------------------------------------------------------
 # Compute table for selected funds
 # ----------------------------------------------------------
 def compute_comparison(pmeta: pd.DataFrame, year: int, asof: date, selected_codes: list[str]) -> pd.DataFrame:
@@ -125,7 +227,6 @@ def compute_comparison(pmeta: pd.DataFrame, year: int, asof: date, selected_code
 # ----------------------------------------------------------
 # Styling vs benchmark
 # ----------------------------------------------------------
-# NOTE: Do NOT type this as pd.io.formats.style.Styler (breaks on some pandas versions)
 def style_table(df: pd.DataFrame, bench_code: str):
     if df.empty:
         return df.style
@@ -141,11 +242,9 @@ def style_table(df: pd.DataFrame, bench_code: str):
 
         styles = [""] * len(row.index)
 
-        # Benchmark row: no highlight
         if code == bench_code:
             return styles
 
-        # Only color if we have valid alpha
         if bench_ret is None or alpha is None or pd.isna(alpha):
             return styles
 
@@ -154,7 +253,6 @@ def style_table(df: pd.DataFrame, bench_code: str):
 
         alpha_style = green if alpha > 0 else red if alpha < 0 else ""
 
-        # Apply to both Alpha and YTD Return columns
         for col in ["YTD Return", "Alpha vs Benchmark"]:
             if col in row.index:
                 idx = list(row.index).index(col)
@@ -164,7 +262,6 @@ def style_table(df: pd.DataFrame, bench_code: str):
 
     sty = df.style.apply(row_style, axis=1)
 
-    # format
     sty = sty.format(
         {
             "Start NAV": fmt_money,
@@ -213,11 +310,14 @@ def main():
         st.warning("Select at least one fund.")
         return
 
-    # Ensure benchmark is included in comparison (so Alpha is meaningful)
+    # Ensure benchmark is included for table alpha AND chart overlay
     if bench_code not in selected_codes:
         st.info(f"Benchmark **{bench_code}** was added to the comparison so Alpha can be calculated.")
         selected_codes = list(dict.fromkeys(selected_codes + [bench_code]))
 
+    # ----------------------------------------------------------
+    # Table
+    # ----------------------------------------------------------
     df = compute_comparison(pmeta, year=year, asof=asof, selected_codes=selected_codes)
     if df.empty:
         st.info("No NAV data found for the selected funds in this window.")
@@ -231,7 +331,6 @@ def main():
 
     df["Alpha vs Benchmark"] = (df["YTD Return"] - bench_ret) if bench_ret is not None else None
 
-    # display order
     cols = [
         "Code",
         "Name",
@@ -271,5 +370,20 @@ def main():
                 for _, r in underperform.iterrows():
                     st.write(f"**{r['Code']}** — {fmt_pct(r['YTD Return'])} (α {fmt_pct(r['Alpha vs Benchmark'])})")
 
+    # ----------------------------------------------------------
+    # NAV Line Chart (Indexed)
+    # ----------------------------------------------------------
+    st.subheader("📈 NAV Path (YTD) — Indexed to 100")
+    st.caption("All funds start at 100 on the first available trading day. This makes performance comparable across funds.")
+
+    chart_df = build_nav_index_chart(pmeta, year=year, asof=asof, selected_codes=selected_codes) 
+    if chart_df.empty:
+        st.info("No NAV series found for the selected funds in this window.")
+    else:
+        st.line_chart(chart_df)
+
+    st.divider()
+
 if __name__ == "__main__":
     main()
+
