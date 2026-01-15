@@ -2,6 +2,7 @@
 
 import streamlit as st
 import pandas as pd
+import altair as alt
 from sqlalchemy import text
 from datetime import date
 
@@ -141,9 +142,17 @@ def load_nav_series(portfolio_id: int, d0: date, d1: date) -> pd.DataFrame:
         return pd.read_sql(text(sql), conn, params={"pid": portfolio_id, "d0": d0, "d1": d1})
 
 # ----------------------------------------------------------
-# Build YTD NAV chart (indexed to 100) for selected funds
+# Build YTD NAV chart (Altair)
+# - Indexed to 100
+# - Benchmark line thicker/darker
 # ----------------------------------------------------------
-def build_nav_index_chart(pmeta: pd.DataFrame, year: int, asof: date, selected_codes: list[str]) -> pd.DataFrame:
+def build_nav_index_chart_altair(
+    pmeta: pd.DataFrame,
+    year: int,
+    asof: date,
+    selected_codes: list[str],
+    bench_code: str,
+):
     y0 = date(year, 1, 1)
 
     code_to_pid = dict(zip(pmeta["code"].astype(str), pmeta["portfolio_id"].astype(int)))
@@ -171,17 +180,55 @@ def build_nav_index_chart(pmeta: pd.DataFrame, year: int, asof: date, selected_c
         frames.append(navdf[["nav_date", "Code", "NAV_Index"]])
 
     if not frames:
-        return pd.DataFrame()
+        return None
 
-    all_df = pd.concat(frames, ignore_index=True)
+    df = pd.concat(frames, ignore_index=True)
 
-    # Pivot for st.line_chart
-    chart_df = (
-        all_df.pivot(index="nav_date", columns="Code", values="NAV_Index")
-        .sort_index()
+    # Split benchmark vs others
+    df_funds = df[df["Code"] != bench_code]
+    df_bench = df[df["Code"] == bench_code]
+
+    base = alt.Chart(df_funds).encode(
+        x=alt.X("nav_date:T", title="Date"),
+        y=alt.Y("NAV_Index:Q", title="NAV (Indexed, start = 100)"),
+        tooltip=[
+            alt.Tooltip("Code:N", title="Fund"),
+            alt.Tooltip("nav_date:T", title="Date"),
+            alt.Tooltip("NAV_Index:Q", format=".2f"),
+        ],
     )
 
-    return chart_df
+    funds_layer = base.mark_line().encode(
+        color=alt.Color(
+            "Code:N",
+            legend=alt.Legend(title="Funds"),
+            scale=alt.Scale(scheme="blues"),
+        )
+    )
+
+    bench_layer = (
+        alt.Chart(df_bench)
+        .mark_line(strokeWidth=4)
+        .encode(
+            x="nav_date:T",
+            y="NAV_Index:Q",
+            color=alt.value("#2B2B2B"),  # dark gray
+            tooltip=[
+                alt.Tooltip("Code:N", title="Benchmark"),
+                alt.Tooltip("nav_date:T", title="Date"),
+                alt.Tooltip("NAV_Index:Q", format=".2f"),
+            ],
+        )
+    )
+
+    chart = (
+        (funds_layer + bench_layer)
+        .properties(height=360)
+        .interactive()
+    )
+
+    return chart
+
 
 # ----------------------------------------------------------
 # Compute table for selected funds
@@ -371,18 +418,28 @@ def main():
                     st.write(f"**{r['Code']}** — {fmt_pct(r['YTD Return'])} (α {fmt_pct(r['Alpha vs Benchmark'])})")
 
     # ----------------------------------------------------------
-    # NAV Line Chart (Indexed)
+    # NAV Line Chart (Indexed, Altair)
     # ----------------------------------------------------------
+    st.divider()
     st.subheader("📈 NAV Path (YTD) — Indexed to 100")
-    st.caption("All funds start at 100 on the first available trading day. This makes performance comparable across funds.")
+    st.caption(
+        "All funds start at 100 on the first available trading day. "
+        "Benchmark is shown as a thicker, darker line."
+    )
 
-    chart_df = build_nav_index_chart(pmeta, year=year, asof=asof, selected_codes=selected_codes) 
-    if chart_df.empty:
+    chart = build_nav_index_chart_altair(
+        pmeta=pmeta,
+        year=year,
+        asof=asof,
+        selected_codes=selected_codes,
+        bench_code=bench_code,
+    )
+
+    if chart is None:
         st.info("No NAV series found for the selected funds in this window.")
     else:
-        st.line_chart(chart_df)
+        st.altair_chart(chart, use_container_width=True)
 
-    st.divider()
 
 if __name__ == "__main__":
     main()
