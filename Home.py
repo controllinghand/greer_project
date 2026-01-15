@@ -930,6 +930,7 @@ pages = {
         st.Page("pages/2_Dashboard-mini.py", title="Dashboard Mini", icon="🧩"),
     ],
     "Portfolios": [
+        st.Page("pages/12_Fund_Compare_YTD.py", title="Fund Compare (YTD)", icon="🆚"),
         st.Page("pages/11_YRI-26.py", title="YRI-26", icon="📣"),
         st.Page("pages/11_YRSI-26.py", title="YRSI-26", icon="💵"),
         st.Page("pages/12_YR3G-25.py", title="YR3G-25", icon="🚀"),
