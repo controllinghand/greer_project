@@ -142,6 +142,154 @@ def load_nav_series(portfolio_id: int, d0: date, d1: date) -> pd.DataFrame:
         return pd.read_sql(text(sql), conn, params={"pid": portfolio_id, "d0": d0, "d1": d1})
 
 # ----------------------------------------------------------
+# Chart helpers
+# ----------------------------------------------------------
+def fund_group(code: str, bench_code: str) -> str:
+    c = (code or "").upper()
+    if c.startswith(bench_code.upper().split("-")[0]):  # e.g., YRQ from YRQ-26
+        return "Benchmark"
+    if c.endswith("I"):  # YRI, YRSI
+        return "Income"
+    if c.endswith("G"):  # YROG, YR3G
+        return "Growth"
+    return "Other"
+
+def build_nav_chart_altair(
+    pmeta: pd.DataFrame,
+    year: int,
+    asof: date,
+    selected_codes: list[str],
+    bench_code: str,
+    show_benchmark: bool = True,
+    chart_mode: str = "Indexed",  # "Indexed" or "Raw"
+):
+    y0 = date(year, 1, 1)
+    code_to_pid = dict(zip(pmeta["code"].astype(str), pmeta["portfolio_id"].astype(int)))
+
+    frames = []
+    for code in selected_codes:
+        pid = code_to_pid.get(code)
+        if not pid:
+            continue
+
+        navdf = load_nav_series(pid, y0, asof)
+        if navdf.empty:
+            continue
+
+        navdf = navdf.dropna(subset=["nav"]).copy()
+        if navdf.empty:
+            continue
+
+        navdf["Code"] = code
+        navdf["Group"] = fund_group(code, bench_code)
+
+        base = float(navdf.iloc[0]["nav"])
+        navdf["NAV_Raw"] = navdf["nav"].astype(float)
+
+        if chart_mode == "Indexed":
+            if base == 0:
+                continue
+            navdf["NAV_Value"] = (navdf["NAV_Raw"] / base) * 100.0
+        else:
+            navdf["NAV_Value"] = navdf["NAV_Raw"]
+
+        frames.append(navdf[["nav_date", "Code", "Group", "NAV_Value"]])
+
+    if not frames:
+        return None
+
+    df = pd.concat(frames, ignore_index=True)
+
+    # Optionally hide benchmark
+    if not show_benchmark:
+        df = df[df["Group"] != "Benchmark"].copy()
+        if df.empty:
+            return None
+
+    y_title = "NAV (Indexed, start = 100)" if chart_mode == "Indexed" else "NAV ($)"
+
+    # Color by GROUP to match your chip meaning (Income blue, Growth green, Benchmark gray)
+    color_scale = alt.Scale(
+        domain=["Income", "Growth", "Benchmark", "Other"],
+        range=["#1F4E79", "#1E6B3A", "#2B2B2B", "#6B7280"],
+    )
+
+    # Base line chart (one line per Code, colored by Group)
+    lines = (
+        alt.Chart(df)
+        .mark_line()
+        .encode(
+            x=alt.X("nav_date:T", title="Date"),
+            y=alt.Y("NAV_Value:Q", title=y_title),
+            color=alt.Color("Group:N", scale=color_scale, legend=alt.Legend(title="Type")),
+            detail="Code:N",
+            tooltip=[
+                alt.Tooltip("Code:N", title="Fund"),
+                alt.Tooltip("Group:N", title="Type"),
+                alt.Tooltip("nav_date:T", title="Date"),
+                alt.Tooltip("NAV_Value:Q", title=y_title, format=".2f"),
+            ],
+        )
+    )
+
+    # Make benchmark thicker/darker (overlay layer)
+    bench_layer = alt.Chart(df[df["Group"] == "Benchmark"]).mark_line(strokeWidth=4).encode(
+        x="nav_date:T",
+        y="NAV_Value:Q",
+        color=alt.value("#2B2B2B"),
+        detail="Code:N",
+        tooltip=[
+            alt.Tooltip("Code:N", title="Benchmark"),
+            alt.Tooltip("nav_date:T", title="Date"),
+            alt.Tooltip("NAV_Value:Q", title=y_title, format=".2f"),
+        ],
+    )
+
+    # ---- End-of-line labels (YTD %) ----
+    # Compute last point per Code
+    last_points = (
+        df.sort_values("nav_date")
+          .groupby(["Code", "Group"], as_index=False)
+          .tail(1)
+          .copy()
+    )
+
+    # Compute YTD% from first point per Code
+    first_points = (
+        df.sort_values("nav_date")
+          .groupby(["Code"], as_index=False)
+          .head(1)[["Code", "NAV_Value"]]
+          .rename(columns={"NAV_Value": "first_val"})
+    )
+
+    last_points = last_points.merge(first_points, on="Code", how="left")
+    # For Indexed mode: first_val is ~100; for Raw: it's starting NAV
+    last_points["ytd_pct"] = (last_points["NAV_Value"] / last_points["first_val"] - 1.0) * 100.0
+    last_points["label"] = last_points.apply(
+        lambda r: f"{r['Code']}  {r['ytd_pct']:+.2f}%",
+        axis=1
+    )
+
+    labels = (
+        alt.Chart(last_points)
+        .mark_text(align="left", dx=6, fontSize=12)
+        .encode(
+            x="nav_date:T",
+            y="NAV_Value:Q",
+            text="label:N",
+            color=alt.Color("Group:N", scale=color_scale, legend=None),
+        )
+    )
+
+    # Final chart
+    if show_benchmark and not df[df["Group"] == "Benchmark"].empty:
+        chart = (lines + bench_layer + labels).properties(height=380).interactive()
+    else:
+        chart = (lines + labels).properties(height=380).interactive()
+
+    return chart
+
+# ----------------------------------------------------------
 # Build YTD NAV chart (Altair)
 # - Indexed to 100
 # - Benchmark line thicker/darker
@@ -418,27 +566,37 @@ def main():
                     st.write(f"**{r['Code']}** — {fmt_pct(r['YTD Return'])} (α {fmt_pct(r['Alpha vs Benchmark'])})")
 
     # ----------------------------------------------------------
-    # NAV Line Chart (Indexed, Altair)
+    # NAV Chart Controls
     # ----------------------------------------------------------
     st.divider()
-    st.subheader("📈 NAV Path (YTD) — Indexed to 100")
+    st.subheader("📈 NAV Path (YTD)")
+
+    cc1, cc2 = st.columns([1, 1])
+    with cc1:
+        chart_mode = st.radio("Chart Mode", ["Indexed", "Raw"], index=0, horizontal=True)
+    with cc2:
+        show_benchmark = st.checkbox("Show Benchmark Overlay", value=True)
+
     st.caption(
-        "All funds start at 100 on the first available trading day. "
-        "Benchmark is shown as a thicker, darker line."
+        "Indexed mode starts every fund at 100 on its first trading day of the year. "
+        "Income funds are blue, Growth funds are green, and the Benchmark is thick/dark gray."
     )
 
-    chart = build_nav_index_chart_altair(
+    chart = build_nav_chart_altair(
         pmeta=pmeta,
         year=year,
         asof=asof,
         selected_codes=selected_codes,
         bench_code=bench_code,
+        show_benchmark=show_benchmark,
+        chart_mode=chart_mode,
     )
 
     if chart is None:
         st.info("No NAV series found for the selected funds in this window.")
     else:
         st.altair_chart(chart, use_container_width=True)
+
 
 
 if __name__ == "__main__":
