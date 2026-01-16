@@ -1,48 +1,21 @@
 # Home.py
-import os
 import streamlit as st
 
 # ----------------------------------------------------------
-# Admin gate
-# ----------------------------------------------------------
-IS_ADMIN = os.getenv("YRC_ADMIN", "0") == "1"
-
-# ----------------------------------------------------------
-# Page config (keep here, once)
-# ----------------------------------------------------------
-st.set_page_config(page_title="Greer Value Search", layout="wide")
-
-# ----------------------------------------------------------
 # HOME UI
-# - Paste your entire current Home.py content (everything AFTER set_page_config)
-#   into this function.
+# - This module is imported by pages/0_Home.py
+# - DO NOT call st.set_page_config() here
+# - DO NOT run navigation at import-time
 # ----------------------------------------------------------
 def render_home():
-    # ----------------------------
-    # PASTE YOUR EXISTING HOME.PY HERE
-    # ----------------------------
-    # Everything you currently have starting from:
-    #   st.markdown("""<style>...
-    # all the way down to the bottom of the file.
-    #
-    # IMPORTANT:
-    # - Do NOT call st.set_page_config inside here (already called above)
-    # - Your st.page_link("pages/add_company.py", ...) will still work
-    # ----------------------------
     # Home.py
     import streamlit as st
     import pandas as pd
     import numpy as np
     import matplotlib.pyplot as plt
-    from html import escape  
     from datetime import date
     from sqlalchemy import text
     from db import get_engine  # ✅ Centralized DB connection
-
-    # ----------------------------------------------------------
-    # Page Configuration and Global CSS
-    # ----------------------------------------------------------
-    # st.set_page_config(page_title="Greer Value Search", layout="wide")
 
     st.markdown("""
     <style>
@@ -272,8 +245,6 @@ def render_home():
             unsafe_allow_html=True
         )
 
-
-
     def render_gfv_badge(gfv_row: pd.Series):
         # Pull values
         today_price = gfv_row.get("close_price")
@@ -294,12 +265,11 @@ def render_home():
 
         badge_color = {"gold": "#D4AF37", "green": "#22c55e", "red": "#ef4444"}.get(status, "#9ca3af")
 
-        # helper near money()/pct()
-        def yield_pp_str(y):  # y is in percent points, e.g., 4.4
-            return f"{float(y):.1f}%" if is_num(y) else "—"
-
         def is_num(x):
             return (x is not None) and isinstance(x, (int, float, np.floating)) and not pd.isna(x)
+
+        def yield_pp_str(y):
+            return f"{float(y):.1f}%" if is_num(y) else "—"
 
         def money(x):
             return f"${float(x):,.2f}" if is_num(x) else "—"
@@ -307,37 +277,22 @@ def render_home():
         def pct(x):
             return f"{float(x)*100:.1f}%" if is_num(x) else "—"
 
-        def cap_note(used, raw):
-            """Return e.g. ' (capped from 22.3%)' only if raw is present and differs."""
-            if is_num(used) and is_num(raw) and abs(float(used) - float(raw)) > 1e-9:
-                return f" (capped from {pct(raw)})"
-            return ""
-
-        # AAA Y display (it’s a yield, not money)
-        Y_str = f"{float(Y):.2f}%" if is_num(Y) else "—"
-
-        # --- Tooltip builder ---
         fcfps = gfv_row.get("fcf_per_share")
         eps = gfv_row.get("eps")
 
-        # Reasons for unavailability
         reason_dcf = ""
         if dcf_val is None:
-            if isinstance(fcfps, (int, float, np.floating)) and not pd.isna(fcfps) and fcfps <= 0:
+            if is_num(fcfps) and float(fcfps) <= 0:
                 reason_dcf = " (unavailable: negative FCF/share)"
             else:
                 reason_dcf = " (unavailable)"
 
         reason_graham = ""
         if graham_val is None:
-            if isinstance(eps, (int, float, np.floating)) and not pd.isna(eps) and eps <= 0:
+            if is_num(eps) and float(eps) <= 0:
                 reason_graham = " (unavailable: negative EPS)"
             else:
                 reason_graham = " (unavailable)"
-
-        # Growth raw vs capped
-        g_fcf_raw = gfv_row.get("growth_rate_fcf_raw")
-        g_eps_raw = gfv_row.get("growth_rate_eps_raw")
 
         def growth_str(capped, raw):
             if not is_num(capped):
@@ -349,7 +304,6 @@ def render_home():
         g_fcf_str = growth_str(g_fcf, g_fcf_raw)
         g_eps_str = growth_str(g_eps, g_eps_raw)
 
-        # Add header if incomplete
         header_line = "⚠️ Incomplete signal: one or both models unavailable." if status == "gray" else None
 
         tooltip_lines = []
@@ -363,7 +317,7 @@ def render_home():
             f"Graham FV: {money(graham_val)}{reason_graham}  |  EPS: {money(eps)} | EPS growth: {g_eps_str}  |  AAA Y: {yield_pp_str(Y)}",
         ]
 
-        from html import escape  # keep local import to avoid top-level duplication
+        from html import escape
         tooltip_attr = escape("\n".join(tooltip_lines), quote=True).replace("\n", "&#10;")
 
         st.markdown(f"""
@@ -383,7 +337,6 @@ def render_home():
           </span>
         </div>
         """, unsafe_allow_html=True)
-
 
     # ----------------------------------------------------------
     # Detail Renderers
@@ -428,8 +381,8 @@ def render_home():
         )
 
         # Small radar chart in top-left corner
-        col1, col2 = st.columns([1, 3])  # Adjusted column widths: 1 for radar, 3 for empty space
-        with col1:  # Moved radar chart to col1 (left side)
+        col1, col2 = st.columns([1, 3])
+        with col1:
             labels = ["Book", "FCF", "Margin", "Revenue", "Income", "Shares"]
             values = [
                 df["book_pct"].iloc[0] or 0,
@@ -468,7 +421,6 @@ def render_home():
         )
         if hist.empty:
             st.warning("No Greer Value data for the last 180 days. Falling back to greer_scores.")
-            # Fallback to greer_scores
             hist = pd.read_sql(
                 """
                 SELECT g.report_date AS date, g.greer_score, g.above_50_count, p.close
@@ -486,8 +438,10 @@ def render_home():
                 st.warning("No Greer Value data available for the last 180 days.")
                 return
 
-        # Price and score ribbon chart
-        st.markdown(f"<h3 style='margin:20px 0 10px;'>📈 {ticker.upper()} – Greer Value Score Map (180 trading days)</h3>", unsafe_allow_html=True)
+        st.markdown(
+            f"<h3 style='margin:20px 0 10px;'>📈 {ticker.upper()} – Greer Value Score Map (180 trading days)</h3>",
+            unsafe_allow_html=True
+        )
         fig, (ax_price, ax_ribbon) = plt.subplots(
             2, 1, sharex=True, figsize=(9, 5), gridspec_kw={"height_ratios": [4, 0.4]}
         )
@@ -495,13 +449,11 @@ def render_home():
         ax_price.set_ylabel("Close")
         ax_price.set_title(f"{ticker.upper()} – Greer Value Score Map (180 trading days)")
 
-        # Create masks for each score category
         exceptional_mask = (hist["above_50_count"] == 6)
         strong_mask = (hist["greer_score"] >= 50) & (hist["above_50_count"] != 6)
         weak_mask = (hist["greer_score"] < 50) & (hist["greer_score"].notnull())
         none_mask = hist["greer_score"].isnull()
 
-        # Apply colors based on classify_greer
         ax_ribbon.fill_between(hist["date"], 0, 1, where=exceptional_mask, color="#D4AF37", alpha=0.7, label="Exceptional")
         ax_ribbon.fill_between(hist["date"], 0, 1, where=strong_mask, color="#4CAF50", alpha=0.7, label="Strong")
         ax_ribbon.fill_between(hist["date"], 0, 1, where=weak_mask, color="#F44336", alpha=0.7, label="Weak")
@@ -512,7 +464,6 @@ def render_home():
         ax_ribbon.set_xlabel("Date")
         st.pyplot(fig)
 
-        # Score distribution stats
         total = len(hist)
         counts = {
             "Exceptional": exceptional_mask.sum(),
@@ -529,13 +480,12 @@ def render_home():
         with st.expander("ℹ️ Greer Value grade legend"):
             st.markdown(
                 """
-                - **Exceptional**: Above 50% in all six components (Above_50_count = 6)  
-                - **Strong**: Greer Score ≥ 50%  
-                - **Weak**: Greer Score < 50%  
+                - **Exceptional**: Above 50% in all six components (Above_50_count = 6)
+                - **Strong**: Greer Score ≥ 50%
+                - **Weak**: Greer Score < 50%
                 - **None**: No score available
                 """
             )
-    # Replace the existing render_yield_details function with this updated version
 
     def render_yield_details(ticker, engine):
         snap = pd.read_sql(
@@ -557,11 +507,11 @@ def render_home():
         st.markdown("### 📊 Greer Value Yield Snapshot")
         st.markdown(
             f"""
-            - **EPS Yield:** {row['eps_yield']:.2f}% vs Avg {row['avg_eps_yield']:.2f}%  
-            - **FCF Yield:** {row['fcf_yield']:.2f}% vs Avg {row['avg_fcf_yield']:.2f}%  
-            - **Revenue Yield:** {row['revenue_yield']:.2f}% vs Avg {row['avg_revenue_yield']:.2f}%  
-            - **Book Yield:** {row['book_yield']:.2f}% vs Avg {row['avg_book_yield']:.2f}%  
-            - **Total Yield:** {row['tvpct']:.2f}% vs TVAVG {row['tvavg']:.2f}%  
+            - **EPS Yield:** {row['eps_yield']:.2f}% vs Avg {row['avg_eps_yield']:.2f}%
+            - **FCF Yield:** {row['fcf_yield']:.2f}% vs Avg {row['avg_fcf_yield']:.2f}%
+            - **Revenue Yield:** {row['revenue_yield']:.2f}% vs Avg {row['avg_revenue_yield']:.2f}%
+            - **Book Yield:** {row['book_yield']:.2f}% vs Avg {row['avg_book_yield']:.2f}%
+            - **Total Yield:** {row['tvpct']:.2f}% vs TVAVG {row['tvavg']:.2f}%
             - **Score:** {int(row['score'])}/4
             """
         )
@@ -579,7 +529,6 @@ def render_home():
             unsafe_allow_html=True
         )
 
-        # Fetch 180 days data for chart
         df = pd.read_sql(
             """
             SELECT y.date, y.score, p.close
@@ -607,11 +556,11 @@ def render_home():
         ax_price.set_title(f"{ticker.upper()} – Yield Score Map (180 trading days)")
 
         colors = {
-            4: "#D4AF37",  # gold
-            3: "#4CAF50",  # green
-            2: "#2196F3",  # blue
-            1: "#2196F3",  # blue
-            0: "#F44336",  # red
+            4: "#D4AF37",
+            3: "#4CAF50",
+            2: "#2196F3",
+            1: "#2196F3",
+            0: "#F44336",
         }
         for score_val, color in colors.items():
             mask = df["score"] == score_val
@@ -622,7 +571,6 @@ def render_home():
         ax_ribbon.set_xlabel("Date")
         st.pyplot(fig)
 
-        # Yield score distribution stats
         total = len(df)
         counts = df['score'].value_counts().sort_index(ascending=False)
         stats_lines = []
@@ -635,9 +583,9 @@ def render_home():
         with st.expander("ℹ️ Yield grade legend"):
             st.markdown(
                 """
-                - **Exceptional Value**: All four yields above historical average  
-                - **Undervalued**: 3 of 4 above average  
-                - **Fairly Valued**: 1–2 above average  
+                - **Exceptional Value**: All four yields above historical average
+                - **Undervalued**: 3 of 4 above average
+                - **Fairly Valued**: 1–2 above average
                 - **Overvalued**: 0 above average
                 """
             )
@@ -752,7 +700,9 @@ def render_home():
         ax_ribbon.fill_between(date_index, 0, 1, where=bull_open, color="#4CAF50", alpha=.7)
         ax_ribbon.fill_between(date_index, 0, 1, where=bear_open, color="#F44336", alpha=.7)
         ax_ribbon.fill_between(date_index, 0, 1, where=mitigated, color="#BDBDBD", alpha=.7)
-        ax_ribbon.set_yticks([]); ax_ribbon.set_ylim(0,1); ax_ribbon.set_xlabel("Date")
+        ax_ribbon.set_yticks([])
+        ax_ribbon.set_ylim(0, 1)
+        ax_ribbon.set_xlabel("Date")
         st.pyplot(fig)
 
         gaps['days_open'] = (pd.Timestamp('now') - gaps['date']).dt.days.where(~gaps['mitigated'])
@@ -765,7 +715,6 @@ def render_home():
     # ----------------------------------------------------------
     # Main UI (Greer Value Search)
     # ----------------------------------------------------------
-    # At top of main UI
     st.markdown('<div class="greer-header">Greer Value Search</div>', unsafe_allow_html=True)
 
     qp = st.query_params
@@ -778,24 +727,19 @@ def render_home():
     else:
         url_ticker = ""
 
-    # Always render the text input; prefill with URL ticker if present
     user_ticker = st.text_input(
         "Search",
         placeholder="Enter ticker (e.g., AAPL)",
         key="ticker_input",
         label_visibility="collapsed",
-        value=url_ticker  # prepopulate if URL provided
+        value=url_ticker
     )
 
-    # Determine which ticker to use:
     ticker = user_ticker.strip().upper() if user_ticker else None
 
-
-    # Start rendering if a ticker is entered
     if ticker:
         ticker = ticker.upper().strip()
         engine = get_engine()
-
 
         first_trade = fetch_first_trade_date(ticker)
         snap = get_latest_snapshot(ticker)
@@ -807,153 +751,110 @@ def render_home():
 
             st.error(f"Ticker '{ticker}' not found in latest snapshot.")
 
-            # Offer to add the company (links to pages/add_company.py and pre-fills the ticker)
-            # Prefer st.page_link (Streamlit 1.33+) — it works even if page file is renamed or ordered.
-            # Pass ticker via query param so the Add page pre-fills it
             st.session_state["pending_add_ticker"] = ticker
             st.query_params["ticker"] = ticker
-            st.page_link("pages/add_company.py", label="Would you like to add this company? Click here.", icon="➕", use_container_width=True)
 
-            # Also expose a button that switches directly (for older Streamlit versions that support switch_page)
-            #col_a, col_b = st.columns([1, 3])
-            #with col_a:
-            #    if st.button("Add this company", key="add_company_btn", use_container_width=True):
-            #        # Store for cross-page prefill
-            #        st.session_state["pending_add_ticker"] = ticker
-            #        # Pass ticker via query param so the Add page pre-fills it
-            #        st.query_params["ticker"] = ticker
-            #        try:
-            #            st.switch_page("pages/add_company.py")
-            #        except Exception:
-            #            # Fallback: show a link if switch_page isn't available
-            #            st.info("Open the **Add Company** page from the left sidebar. Ticker pre-filled.")
-        
-        else:
-            row = snap.iloc[0]
+            from app_nav import build_pages
+            _, PAGE_MAP = build_pages()
 
-            # --- Five columns: Company card + 4 metric cards ---
-            col_company, col_gv, col_yield, col_bz, col_fvg = st.columns([2, 1, 1, 1, 1])
+            st.page_link(
+                PAGE_MAP["Add Company"],
+                label="Would you like to add this company? Click here.",
+                icon="➕",
+                use_container_width=True
+            )
+            return
 
-            # Company info
-            with col_company:
-                render_company_card(ticker)
+        row = snap.iloc[0]
 
-                # GFV pill under the company card
-                gfv_df = get_latest_gfv(ticker)
-                if not gfv_df.empty:
-                    render_gfv_badge(gfv_df.iloc[0])
-                else:
-                    st.info("No Greer Fair Value yet for this ticker.")
+        col_company, col_gv, col_yield, col_bz, col_fvg = st.columns([2, 1, 1, 1, 1])
 
+        with col_company:
+            render_company_card(ticker)
 
-            # Greer Value card
-            gv_score = row.get("greer_value_score")
-            grade, gv_bg, gv_txt = classify_greer(gv_score, row.get("above_50_count"))
-            gv_main = "—" if gv_score is None else f"{gv_score:.2f}%"
-            gv_sub = grade if gv_score is not None else "—"
-            with col_gv:
-                render_metric_card("Greer Value", gv_main, gv_sub, gv_bg, gv_txt)
-                if st.button("🔍 Show Details", key="gv_details"):
-                    st.session_state["view"] = "GV"
-
-            # Yield card
-            ys_score = row.get("greer_yield_score")
-            ys_score = int(ys_score) if pd.notnull(ys_score) else None
-            y_grade, y_bg, y_txt = classify_yield(ys_score)
-            y_main = "—" if ys_score is None else f"{ys_score}/4"
-            y_sub = y_grade if ys_score is not None else "—"
-            with col_yield:
-                render_metric_card("Yield Score", y_main, y_sub, y_bg, y_txt)
-                if st.button("🔍 Show Details", key="gy_details"):
-                    st.session_state["view"] = "GY"
-                if ys_score is None:
-                    cutoff = date.today().replace(month=12, day=31, year=date.today().year - 1)
-                    if first_trade and first_trade > cutoff:
-                        st.info(f"📈 First traded on {first_trade} — too new for historical yields.")
-                    else:
-                        st.warning("⛔ No historical yield data available for this ticker.")
-
-            # BuyZone card
-            in_bz = bool(row.get("buyzone_flag", False))
-            bz_bg = "#4CAF50" if in_bz else "#E0E0E0"
-            bz_txt = "white" if in_bz else "black"
-            if in_bz:
-                bz_main = "Triggered"
-                bz_sub = f"since {pd.to_datetime(row.get('bz_start_date')).strftime('%Y-%m-%d')}" if row.get('bz_start_date') else ""
+            gfv_df = get_latest_gfv(ticker)
+            if not gfv_df.empty:
+                render_gfv_badge(gfv_df.iloc[0])
             else:
-                bz_main = "No Signal"
-                bz_sub = f"left {pd.to_datetime(row.get('bz_end_date')).strftime('%Y-%m-%d')}" if row.get('bz_end_date') else ""
-            with col_bz:
-                render_metric_card("BuyZone", bz_main, bz_sub, bz_bg, bz_txt)
-                if st.button("🔍 Show Details", key="bz_details"):
-                    st.session_state["view"] = "BZ"
+                st.info("No Greer Fair Value yet for this ticker.")
 
-            # FVG card
-            fvg_dir = row.get("fvg_last_direction")
-            fvg_date = pd.to_datetime(row.get("fvg_last_date")).strftime('%Y-%m-%d') if row.get('fvg_last_date') else "—"
-            fvg_bg = "#4CAF50" if fvg_dir == "bullish" else "#F44336" if fvg_dir == "bearish" else "#90CAF9"
-            fvg_txt = "white"
-            fvg_main = (fvg_dir or "No Gap").capitalize()
-            fvg_sub = f"last {fvg_date}"
-            with col_fvg:
-                render_metric_card("Fair Value Gap", fvg_main, fvg_sub, fvg_bg, fvg_txt)
-                if st.button("🔍 Show Details", key="fvg_details"):
-                    st.session_state["view"] = "FVG"
+        gv_score = row.get("greer_value_score")
+        grade, gv_bg, gv_txt = classify_greer(gv_score, row.get("above_50_count"))
+        gv_main = "—" if gv_score is None else f"{gv_score:.2f}%"
+        gv_sub = grade if gv_score is not None else "—"
+        with col_gv:
+            render_metric_card("Greer Value", gv_main, gv_sub, gv_bg, gv_txt)
+            if st.button("🔍 Show Details", key="gv_details"):
+                st.session_state["view"] = "GV"
 
-            # View logic from query param or session
-            query_view = st.query_params.get("view")
-            if query_view:
-                st.session_state["view"] = query_view
+        ys_score = row.get("greer_yield_score")
+        ys_score = int(ys_score) if pd.notnull(ys_score) else None
+        y_grade, y_bg, y_txt = classify_yield(ys_score)
+        y_main = "—" if ys_score is None else f"{ys_score}/4"
+        y_sub = y_grade if ys_score is not None else "—"
+        with col_yield:
+            render_metric_card("Yield Score", y_main, y_sub, y_bg, y_txt)
+            if st.button("🔍 Show Details", key="gy_details"):
+                st.session_state["view"] = "GY"
+            if ys_score is None:
+                cutoff = date.today().replace(month=12, day=31, year=date.today().year - 1)
+                if first_trade and first_trade > cutoff:
+                    st.info(f"📈 First traded on {first_trade} — too new for historical yields.")
+                else:
+                    st.warning("⛔ No historical yield data available for this ticker.")
 
-            view = st.session_state.get("view")
-            if view:
-                st.markdown("---")
-                if view == "GV":
-                    render_gv_details(ticker, engine)
-                elif view == "GY":
-                    render_yield_details(ticker, engine)
-                elif view == "BZ":
-                    render_buyzone_details(ticker, engine)
-                elif view == "FVG":
-                    render_fvg_details(ticker, engine)
-    pass
+        in_bz = bool(row.get("buyzone_flag", False))
+        bz_bg = "#4CAF50" if in_bz else "#E0E0E0"
+        bz_txt = "white" if in_bz else "black"
+        if in_bz:
+            bz_main = "Triggered"
+            bz_sub = f"since {pd.to_datetime(row.get('bz_start_date')).strftime('%Y-%m-%d')}" if row.get('bz_start_date') else ""
+        else:
+            bz_main = "No Signal"
+            bz_sub = f"left {pd.to_datetime(row.get('bz_end_date')).strftime('%Y-%m-%d')}" if row.get('bz_end_date') else ""
+        with col_bz:
+            render_metric_card("BuyZone", bz_main, bz_sub, bz_bg, bz_txt)
+            if st.button("🔍 Show Details", key="bz_details"):
+                st.session_state["view"] = "BZ"
+
+        fvg_dir = row.get("fvg_last_direction")
+        fvg_date = pd.to_datetime(row.get("fvg_last_date")).strftime('%Y-%m-%d') if row.get('fvg_last_date') else "—"
+        fvg_bg = "#4CAF50" if fvg_dir == "bullish" else "#F44336" if fvg_dir == "bearish" else "#90CAF9"
+        fvg_txt = "white"
+        fvg_main = (fvg_dir or "No Gap").capitalize()
+        fvg_sub = f"last {fvg_date}"
+        with col_fvg:
+            render_metric_card("Fair Value Gap", fvg_main, fvg_sub, fvg_bg, fvg_txt)
+            if st.button("🔍 Show Details", key="fvg_details"):
+                st.session_state["view"] = "FVG"
+
+        query_view = st.query_params.get("view")
+        if query_view:
+            st.session_state["view"] = query_view
+
+        view = st.session_state.get("view")
+        if view:
+            st.markdown("---")
+            if view == "GV":
+                render_gv_details(ticker, engine)
+            elif view == "GY":
+                render_yield_details(ticker, engine)
+            elif view == "BZ":
+                render_buyzone_details(ticker, engine)
+            elif view == "FVG":
+                render_fvg_details(ticker, engine)
 
 
 # ----------------------------------------------------------
-# Navigation (dynamic sidebar)
-# - Admin page is NOT registered unless IS_ADMIN
+# App entrypoint
+# - Only run navigation when this file is executed directly:
+#   streamlit run Home.py
+# - When imported (by pages/0_Home.py), nothing executes.
 # ----------------------------------------------------------
-pages = {
-    "Dashboards": [
-        st.Page(render_home, title="Greer Value Search", icon="🔎", default=True),
-        st.Page("pages/1_Dashboard.py", title="Dashboard", icon="📊"),
-        st.Page("pages/2_Dashboard-mini.py", title="Dashboard Mini", icon="🧩"),
-    ],
-    "Portfolios": [
-        st.Page("pages/12_Fund_Compare_YTD.py", title="Fund Compare (YTD)", icon="🆚"),
-        st.Page("pages/11_YRI-26.py", title="YRI-26", icon="📣"),
-        st.Page("pages/11_YRSI-26.py", title="YRSI-26", icon="💵"),
-        st.Page("pages/12_YR3G-25.py", title="YR3G-25", icon="🚀"),
-        st.Page("pages/12_YROG-25.py", title="YROG-25", icon="📈"),
-        st.Page("pages/12_YRQ-26.py", title="YRQ-26", icon="📐"),
-    ],
-    "Tools": [
-        st.Page("pages/10_Opportunities_IV.py", title="Opportunities (IV)", icon="🎯"),
-        st.Page("pages/11_WK_IV_Targets.py", title="Weekly IV Targets", icon="🧲"),
-        st.Page("pages/6_Backtesting.py", title="Backtesting", icon="🧪"),
-        st.Page("pages/add_company.py", title="Add Company", icon="➕"),
-        st.Page("pages/8_all_stars.py", title="All Stars", icon="⭐"),
-        st.Page("pages/9_all_stars_cards.py", title="All Stars Cards", icon="🪪"),
-    ],
-}
+def main():
+    from app_nav import build_pages
+    all_pages, _PAGE_MAP = build_pages()
+    st.navigation(all_pages, position="sidebar").run()
 
-if IS_ADMIN:
-    pages["Admin"] = [
-        st.Page("admin/13_Admin_Ledger.py", title="Admin Ledger", icon="🔒"),
-        st.Page("admin/12_YRI.py", title="YRI (Private)", icon="📣"),
-    ]
-
-pg = st.navigation(pages, position="sidebar")
-pg.run()
-
-
+if __name__ == "__main__":
+    main()

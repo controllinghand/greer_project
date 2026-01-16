@@ -382,7 +382,11 @@ if st.button(btn_label, type="primary", use_container_width=True):
         # Clear transient seed after success (optional)
         st.session_state.pop("pending_add_ticker", None)
 
-        st.page_link("Home.py", label="⬅️ Back to Home", use_container_width=True)
+        from app_nav import build_pages
+        _, PAGE_MAP = build_pages()
+
+        st.page_link(PAGE_MAP["Home"], label="⬅️ Back to Home", use_container_width=True)
+
 
     except Exception as e:
         st.error(f"❌ Failed to add company: {e}")
