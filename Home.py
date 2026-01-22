@@ -127,6 +127,51 @@ def render_home():
         )
         return df
 
+    # ----------------------------------------------------------
+    # NEW: Star transition dates (became 3⭐ / fell out)
+    # ----------------------------------------------------------
+    @st.cache_data(ttl=600)
+    def get_star_transition_dates(ticker: str):
+        """
+        Returns:
+          - became_3star_date: first date the ticker crossed into >=3 since star tracking began
+          - fell_out_3star_date: most recent date ticker crossed from >=3 to <3
+          - tracking_start_date: first date we started storing greer_star_rating in company_snapshot
+        """
+        engine = get_engine()
+        df = pd.read_sql(
+            """
+            WITH tracking AS (
+              SELECT MIN(snapshot_date)::date AS tracking_start_date
+              FROM public.company_snapshot
+              WHERE greer_star_rating IS NOT NULL
+            ),
+            s AS (
+              SELECT
+                cs.snapshot_date::date AS d,
+                cs.greer_star_rating,
+                LAG(cs.greer_star_rating) OVER (ORDER BY cs.snapshot_date) AS prev_star
+              FROM public.company_snapshot cs
+              WHERE cs.ticker = %(t)s
+                AND cs.greer_star_rating IS NOT NULL
+            )
+            SELECT
+              MIN(d) FILTER (
+                WHERE greer_star_rating >= 3
+                  AND (prev_star < 3 OR prev_star IS NULL)
+              ) AS became_3star_date,
+              MAX(d) FILTER (
+                WHERE greer_star_rating < 3
+                  AND prev_star >= 3
+              ) AS fell_out_3star_date,
+              (SELECT tracking_start_date FROM tracking) AS tracking_start_date
+            FROM s;
+            """,
+            engine,
+            params={"t": ticker},
+        )
+        return df
+
     @st.cache_data(ttl=300)
     def get_latest_gfv(ticker: str, _cache_buster=None):
         """
@@ -219,6 +264,22 @@ def render_home():
         else:
             star_html = ""
 
+        # ----------------------------------------------------------
+        # NEW: Became 3⭐ date (from company_snapshot)
+        # ----------------------------------------------------------
+        became_line = ""
+        trans = get_star_transition_dates(ticker)
+        if not trans.empty:
+            became = trans.loc[0, "became_3star_date"]
+            tracking_start = trans.loc[0, "tracking_start_date"]
+
+            if pd.notnull(became):
+                became_line = f"<div class='company-meta'><b>Became 3⭐:</b> {pd.to_datetime(became).date()}</div>"
+            else:
+                if stars >= 3 and pd.notnull(tracking_start):
+                    ts = pd.to_datetime(tracking_start).date()
+                    became_line = f"<div class='company-meta'><b>Became 3⭐:</b> (already 3⭐ when tracking began {ts})</div>"
+
         st.html(
             f"""
             <div class="company-card" style="color: rgb(49, 51, 63);">
@@ -228,6 +289,7 @@ def render_home():
                 <div class="company-meta"><b>Industry:</b> {industry}</div>
                 {delisted_line}
                 {star_html}
+                {became_line}
             </div>
             """
         )

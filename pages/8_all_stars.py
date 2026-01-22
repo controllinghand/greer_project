@@ -2,6 +2,7 @@
 
 import streamlit as st
 import pandas as pd
+from datetime import date
 from db import get_engine
 
 # ----------------------------------------------------------
@@ -85,6 +86,65 @@ def fetch_latest_buyzone(tickers):
     )
 
 # ----------------------------------------------------------
+# NEW: star transition dates from company_snapshot
+# ----------------------------------------------------------
+@st.cache_data(ttl=600)
+def fetch_star_transitions(tickers):
+    """
+    Computes:
+      - became_3star_date: first date a ticker crosses into >=3 since tracking began
+      - fell_out_3star_date: most recent date a ticker crosses from >=3 to <3
+      - tracking_start_date: first snapshot_date where greer_star_rating is present (global)
+    """
+    engine = get_engine()
+    if not tickers:
+        return pd.DataFrame()
+
+    placeholders = ", ".join(["%s"] * len(tickers))
+
+    return pd.read_sql(
+        f"""
+        WITH tracking AS (
+          SELECT MIN(snapshot_date)::date AS tracking_start_date
+          FROM public.company_snapshot
+          WHERE greer_star_rating IS NOT NULL
+        ),
+        s AS (
+          SELECT
+            cs.ticker,
+            cs.snapshot_date::date AS d,
+            cs.greer_star_rating,
+            LAG(cs.greer_star_rating) OVER (PARTITION BY cs.ticker ORDER BY cs.snapshot_date) AS prev_star
+          FROM public.company_snapshot cs
+          WHERE cs.greer_star_rating IS NOT NULL
+            AND cs.ticker IN ({placeholders})
+        ),
+        agg AS (
+          SELECT
+            ticker,
+            MIN(d) FILTER (
+              WHERE greer_star_rating >= 3
+                AND (prev_star < 3 OR prev_star IS NULL)
+            ) AS became_3star_date,
+            MAX(d) FILTER (
+              WHERE greer_star_rating < 3
+                AND prev_star >= 3
+            ) AS fell_out_3star_date
+          FROM s
+          GROUP BY ticker
+        )
+        SELECT
+          a.ticker,
+          a.became_3star_date,
+          a.fell_out_3star_date,
+          (SELECT tracking_start_date FROM tracking) AS tracking_start_date
+        FROM agg a;
+        """,
+        engine,
+        params=tuple(tickers),
+    )
+
+# ----------------------------------------------------------
 # Load data
 # ----------------------------------------------------------
 stars_df = fetch_3star_companies()
@@ -96,6 +156,7 @@ tickers = stars_df["ticker"].tolist()
 snap_df = fetch_latest_snapshot(tickers)
 gfv_df = fetch_latest_gfv(tickers)
 bz_df = fetch_latest_buyzone(tickers)
+tr_df = fetch_star_transitions(tickers)
 
 # ----------------------------------------------------------
 # Merge
@@ -103,6 +164,7 @@ bz_df = fetch_latest_buyzone(tickers)
 df = stars_df.merge(snap_df, how="left", on="ticker")
 df = df.merge(gfv_df, how="left", on="ticker")
 df = df.merge(bz_df, how="left", on="ticker")
+df = df.merge(tr_df, how="left", on="ticker")
 
 # Normalize flags
 for col in ["in_buyzone", "in_sellzone"]:
@@ -111,11 +173,24 @@ for col in ["in_buyzone", "in_sellzone"]:
     df[col] = df[col].fillna(False).astype(bool)
 
 # ----------------------------------------------------------
-# Top summary metrics
+# Show tracking start info (helps explain blanks early on)
 # ----------------------------------------------------------
-total_count = len(df)
-buyzone_count = int(df["in_buyzone"].sum())
-sellzone_count = int(df["in_sellzone"].sum())
+tracking_start = None
+if "tracking_start_date" in df.columns and df["tracking_start_date"].notna().any():
+    tracking_start = pd.to_datetime(df["tracking_start_date"].dropna().iloc[0]).date()
+    st.caption(f"⭐ Star tracking started on **{tracking_start.isoformat()}** (company_snapshot.greer_star_rating)")
+
+# Days in 3⭐ (only if became date exists)
+today = date.today()
+df["days_in_3star"] = pd.to_datetime(df["became_3star_date"], errors="coerce").dt.date
+df["days_in_3star"] = df["days_in_3star"].apply(lambda d: (today - d).days if d else None)
+
+# ----------------------------------------------------------
+# Top summary metrics (use unique tickers just in case)
+# ----------------------------------------------------------
+total_count = df["ticker"].nunique()
+buyzone_count = df.loc[df["in_buyzone"], "ticker"].nunique()
+sellzone_count = df.loc[df["in_sellzone"], "ticker"].nunique()
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("⭐ Total 3-Star+ Companies", f"{total_count:,}")
@@ -162,6 +237,14 @@ def make_link(t):
 def badge(v: bool) -> str:
     return "✅" if v else ""
 
+def fmt_date(x):
+    if pd.isna(x) or x is None:
+        return ""
+    try:
+        return pd.to_datetime(x).date().isoformat()
+    except Exception:
+        return str(x)
+
 # ----------------------------------------------------------
 # Render
 # ----------------------------------------------------------
@@ -169,6 +252,9 @@ if show_table:
     tbl = df[[
         "ticker", "name", "sector", "industry", "exchange",
         "greer_star_rating",
+        "became_3star_date",
+        "days_in_3star",
+        "fell_out_3star_date",
         "in_buyzone",
         "in_sellzone",
         "greer_value_score",
@@ -184,6 +270,9 @@ if show_table:
         "industry": "Industry",
         "exchange": "Exchange",
         "greer_star_rating": "Stars",
+        "became_3star_date": "Became 3⭐ Date",
+        "days_in_3star": "Days in 3⭐",
+        "fell_out_3star_date": "Fell Out Date",
         "in_buyzone": "BuyZone",
         "in_sellzone": "SellZone",
         "greer_value_score": "Greer Value %",
@@ -197,6 +286,8 @@ if show_table:
     tbl["Ticker"] = tbl["Ticker"].apply(make_link)
     tbl["BuyZone"] = tbl["BuyZone"].apply(badge)
     tbl["SellZone"] = tbl["SellZone"].apply(badge)
+    tbl["Became 3⭐ Date"] = tbl["Became 3⭐ Date"].apply(fmt_date)
+    tbl["Fell Out Date"] = tbl["Fell Out Date"].apply(fmt_date)
 
     st.markdown(tbl.to_html(escape=False, index=False), unsafe_allow_html=True)
 
@@ -219,12 +310,20 @@ else:
             else "⚪ Neutral"
         )
 
+        became = fmt_date(row.get("became_3star_date"))
+        days_in = row.get("days_in_3star")
+        days_in_txt = f"{int(days_in)} days" if pd.notna(days_in) else ""
+        fell = fmt_date(row.get("fell_out_3star_date"))
+
         st.markdown(
             f"## ⭐ <a href='/?ticker={ticker}' target='_self'>{ticker}</a> — {name}  {'★'*stars}  &nbsp;&nbsp; {zone}",
             unsafe_allow_html=True,
         )
 
         st.write({
+            "Became 3⭐ Date": became,
+            "Days in 3⭐": days_in_txt,
+            "Fell Out Date": fell,
             "Sector": row.get("sector"),
             "Industry": row.get("industry"),
             "Exchange": row.get("exchange"),

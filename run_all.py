@@ -84,7 +84,7 @@ logger.info("Opportunity periods rebuild successful")
 # ----------------------------------------------------------
 print("\n📜 Rebuilding Greer GFV opportunity periods …")
 logger.info("Running greer_opportunity_gfv_periods.py")
-gfv_opp_result = subprocess.run(["python", "greer_opportunity_gfv_periods.py"])
+gfv_opp_result = subprocess.run(["python", "greer_opportunity_gfv_periods.py", "--refresh-mv"])
 if gfv_opp_result.returncode != 0:
     print("❌ Failed to rebuild GFV opportunity periods")
     logger.error("Failed to rebuild GFV opportunity periods")
