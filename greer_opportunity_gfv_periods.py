@@ -43,92 +43,95 @@ def backfill_snapshot(conn, start_date: str, reload: bool):
         conn.execute(text("TRUNCATE public.company_snapshot;"))
 
     # NOTE: includes greer_star_rating via companies
-    conn.execute(text(f"""
-    INSERT INTO public.company_snapshot (
-      snapshot_date, ticker,
-      greer_value_score, greer_yield_score,
-      buyzone_flag, fvg_last_direction,
-      close, gfv_price,
-      greer_star_rating
+    conn.execute(
+        text("""
+        INSERT INTO public.company_snapshot (
+          snapshot_date, ticker,
+          greer_value_score, greer_yield_score,
+          buyzone_flag, fvg_last_direction,
+          close, gfv_price,
+          greer_star_rating
+        )
+        WITH daily AS (
+          SELECT
+            p.ticker,
+            p.date::timestamp AS snapshot_date,
+            p.close,
+
+            (SELECT gs.greer_score
+               FROM public.greer_scores gs
+              WHERE gs.ticker = p.ticker
+                AND gs.report_date <= p.date
+              ORDER BY gs.report_date DESC
+              LIMIT 1
+            ) AS greer_value_score,
+
+            (SELECT yd.score
+               FROM public.greer_yields_daily yd
+              WHERE yd.ticker = p.ticker
+                AND yd.date <= p.date
+              ORDER BY yd.date DESC
+              LIMIT 1
+            ) AS greer_yield_score,
+
+            COALESCE((
+              SELECT gbd.in_buyzone
+                FROM public.greer_buyzone_daily gbd
+               WHERE gbd.ticker = p.ticker
+                 AND gbd.date <= p.date
+               ORDER BY gbd.date DESC
+               LIMIT 1
+            ), FALSE) AS buyzone_flag,
+
+            (SELECT fvg.direction
+               FROM public.fair_value_gaps fvg
+              WHERE fvg.ticker = p.ticker
+                AND fvg.date <= p.date
+                AND fvg.mitigated = false
+              ORDER BY fvg.date DESC
+              LIMIT 1
+            ) AS fvg_last_direction,
+
+            (SELECT gfd.gfv_price
+               FROM public.greer_fair_value_daily gfd
+              WHERE gfd.ticker = p.ticker
+                AND gfd.date <= p.date
+              ORDER BY gfd.date DESC
+              LIMIT 1
+            ) AS gfv_price,
+
+            (SELECT c.greer_star_rating
+               FROM public.companies c
+              WHERE c.ticker = p.ticker
+              LIMIT 1
+            ) AS greer_star_rating
+
+          FROM public.prices p
+          WHERE p.date >= :start_date::date
+        )
+        SELECT
+          snapshot_date,
+          ticker,
+          greer_value_score,
+          greer_yield_score,
+          buyzone_flag,
+          fvg_last_direction,
+          close,
+          gfv_price,
+          greer_star_rating
+        FROM daily
+        ON CONFLICT (ticker, snapshot_date) DO UPDATE
+          SET
+            greer_value_score  = EXCLUDED.greer_value_score,
+            greer_yield_score  = EXCLUDED.greer_yield_score,
+            buyzone_flag       = EXCLUDED.buyzone_flag,
+            fvg_last_direction = EXCLUDED.fvg_last_direction,
+            close              = EXCLUDED.close,
+            gfv_price          = EXCLUDED.gfv_price,
+            greer_star_rating  = EXCLUDED.greer_star_rating;
+        """),
+        {"start_date": start_date},
     )
-    WITH daily AS (
-      SELECT
-        p.ticker,
-        p.date::timestamp AS snapshot_date,
-        p.close,
-
-        (SELECT gs.greer_score
-           FROM public.greer_scores gs
-          WHERE gs.ticker = p.ticker
-            AND gs.report_date <= p.date
-          ORDER BY gs.report_date DESC
-          LIMIT 1
-        ) AS greer_value_score,
-
-        (SELECT yd.score
-           FROM public.greer_yields_daily yd
-          WHERE yd.ticker = p.ticker
-            AND yd.date <= p.date
-          ORDER BY yd.date DESC
-          LIMIT 1
-        ) AS greer_yield_score,
-
-        COALESCE((
-          SELECT gbd.in_buyzone
-            FROM public.greer_buyzone_daily gbd
-           WHERE gbd.ticker = p.ticker
-             AND gbd.date <= p.date
-           ORDER BY gbd.date DESC
-           LIMIT 1
-        ), FALSE) AS buyzone_flag,
-
-        (SELECT fvg.direction
-           FROM public.fair_value_gaps fvg
-          WHERE fvg.ticker = p.ticker
-            AND fvg.date <= p.date
-            AND fvg.mitigated = false
-          ORDER BY fvg.date DESC
-          LIMIT 1
-        ) AS fvg_last_direction,
-
-        (SELECT gfd.gfv_price
-           FROM public.greer_fair_value_daily gfd
-          WHERE gfd.ticker = p.ticker
-            AND gfd.date <= p.date
-          ORDER BY gfd.date DESC
-          LIMIT 1
-        ) AS gfv_price,
-
-        (SELECT c.greer_star_rating
-           FROM public.companies c
-          WHERE c.ticker = p.ticker
-          LIMIT 1
-        ) AS greer_star_rating
-
-      FROM public.prices p
-      WHERE p.date >= :start_date::date
-    )
-    SELECT
-      snapshot_date,
-      ticker,
-      greer_value_score,
-      greer_yield_score,
-      buyzone_flag,
-      fvg_last_direction,
-      close,
-      gfv_price,
-      greer_star_rating
-    FROM daily
-    ON CONFLICT (ticker, snapshot_date) DO UPDATE
-      SET
-        greer_value_score  = EXCLUDED.greer_value_score,
-        greer_yield_score  = EXCLUDED.greer_yield_score,
-        buyzone_flag       = EXCLUDED.buyzone_flag,
-        fvg_last_direction = EXCLUDED.fvg_last_direction,
-        close              = EXCLUDED.close,
-        gfv_price          = EXCLUDED.gfv_price,
-        greer_star_rating  = EXCLUDED.greer_star_rating;
-    """), {"start_date": start_date}))
 
     logger.info("🗃️ company_snapshot backfill complete (start_date=%s, reload=%s)", start_date, reload)
 
@@ -195,10 +198,20 @@ def parse_args():
     return p.parse_args()
 
 if __name__ == "__main__":
-    try:
-        refresh_mv()
-        rebuild_periods()
-        logging.info("✅ greer_opportunity_gfv_periods module complete")
-    except Exception as e:
-        logging.error(f"Script execution failed: {e}")
+    args = parse_args()
 
+    try:
+        with engine.begin() as conn:
+            if args.refresh_mv:
+                refresh_mv(conn)
+
+            if args.backfill_snapshot:
+                backfill_snapshot(conn, start_date=args.start_date, reload=args.reload)
+
+            rebuild_periods(conn)
+
+        logger.info("✅ greer_opportunity_gfv_periods module complete")
+
+    except Exception as e:
+        logger.exception("❌ Script execution failed: %s", e)
+        raise

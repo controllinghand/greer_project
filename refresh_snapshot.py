@@ -22,12 +22,6 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------------
 # SQL
 # ----------------------------------------------------------
-# NOTE:
-# - Inserts exactly ONE row per ticker per day (snapshot_date = date_trunc('day', now()))
-# - Uses "last known <= today" logic for each metric
-# - Pulls close from prices (latest close <= today)
-# - Pulls gfv_price from greer_fair_value_daily (latest <= today)
-# - Pulls stars from companies (current stars)
 INSERT_TODAY_SNAPSHOT_SQL = """
 INSERT INTO public.company_snapshot (
   snapshot_date,
@@ -120,6 +114,13 @@ SET
 
 REFRESH_MATVIEW_SQL = "REFRESH MATERIALIZED VIEW CONCURRENTLY public.latest_company_snapshot;"
 
+COUNT_UNIVERSE_SQL = "SELECT COUNT(*) FROM public.companies WHERE delisted = false;"
+COUNT_TODAY_SNAPSHOT_SQL = """
+SELECT COUNT(*)
+FROM public.company_snapshot
+WHERE snapshot_date::date = CURRENT_DATE;
+"""
+
 # ----------------------------------------------------------
 # Main
 # ----------------------------------------------------------
@@ -127,20 +128,33 @@ print("🔄 Writing today’s company_snapshot + refreshing latest_company_snaps
 logger.info("Starting refresh_snapshot.py")
 
 engine = get_engine()
+
 try:
-  with engine.begin() as conn:
-      # 1) Make sure matview is fresh for the website pages
-      conn.execute(text(REFRESH_MATVIEW_SQL))
-      logger.info("latest_company_snapshot refreshed")
+    # Log universe size (helps sanity-check)
+    with engine.connect() as conn:
+        universe_count = conn.execute(text(COUNT_UNIVERSE_SQL)).scalar()
+        logger.info("Universe (non-delisted) tickers: %s", universe_count)
 
-      # 2) Write today's snapshot (history-safe)
-      conn.execute(text(INSERT_TODAY_SNAPSHOT_SQL))
-      logger.info("company_snapshot upserted for today")
+    # 1) Upsert today's snapshot (transaction OK)
+    with engine.begin() as conn:
+        conn.execute(text(INSERT_TODAY_SNAPSHOT_SQL))
+        logger.info("company_snapshot upsert executed for today")
 
-  print("✅ Daily snapshot written + latest_company_snapshot refreshed")
-  logger.info("refresh_snapshot.py completed successfully")
+    # Log how many rows exist for today after the upsert
+    with engine.connect() as conn:
+        today_count = conn.execute(text(COUNT_TODAY_SNAPSHOT_SQL)).scalar()
+        logger.info("company_snapshot rows for today: %s", today_count)
+
+    # 2) Refresh MV concurrently (must be autocommit / no txn)
+    with engine.connect() as conn:
+        conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+        conn.execute(text(REFRESH_MATVIEW_SQL))
+        logger.info("latest_company_snapshot refreshed (CONCURRENTLY)")
+
+    print("✅ Daily snapshot written + latest_company_snapshot refreshed")
+    logger.info("refresh_snapshot.py completed successfully")
 
 except Exception as e:
-  print(f"❌ Error in refresh_snapshot.py: {e}")
-  logger.exception("Error in refresh_snapshot.py")
-  raise
+    print(f"❌ Error in refresh_snapshot.py: {e}")
+    logger.exception("Error in refresh_snapshot.py")
+    raise
