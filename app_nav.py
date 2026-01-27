@@ -14,7 +14,7 @@ def build_pages():
         ],
         "Portfolios": [
             st.Page("pages/12_Fund_Compare_YTD.py", title="Fund Compare (YTD)", icon="🆚"),
-            st.Page("pages/11_YRQI-26.py", title="YRQI-26", icon = "⚡")
+            st.Page("pages/11_YRQI-26.py", title="YRQI-26", icon = "⚡"),
             st.Page("pages/11_YRI-26.py", title="YRI-26", icon="📣"),
             st.Page("pages/11_YRSI-26.py", title="YRSI-26", icon="💵"),
             st.Page("pages/12_YR3G-25.py", title="YR3G-25", icon="🚀"),
