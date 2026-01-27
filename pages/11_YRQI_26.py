@@ -1,0 +1,286 @@
+# 11_YRQI_26.py
+
+import streamlit as st
+import pandas as pd
+from datetime import date
+
+from portfolio_common import (
+    load_portfolio_by_code,
+    load_nav_series,
+    load_nav_series_between,
+    load_events_optionsfund,
+    load_totals_by_type,
+    load_totals_by_ticker,
+    calc_collateral_from_events,
+    render_header_optionsfund,
+    render_year_summary_blocks,
+    fmt_money,
+    fmt_pct_ratio,
+)
+
+# st.set_page_config(page_title="YRQI-26 Results", layout="wide")
+
+# ----------------------------------------------------------
+# Main
+# ----------------------------------------------------------
+def main():
+    st.title("💰 YRQI-26 Results (QQQ Daily Income Fund)")
+
+    st.markdown(
+        """
+        Read-only community page for **YRQI-26** (QQQ Daily Income).  
+        Strategy baseline: **2-contract model** · Starting NAV target: **$130,000**.  
+        Uses **only**: portfolios, portfolio_events, portfolio_nav_daily.
+        """
+    )
+
+    default_code = "YRQI-26"
+
+    p0 = load_portfolio_by_code(default_code)
+    db_start = None
+    if not p0.empty and pd.notna(p0.iloc[0]["start_date"]):
+        try:
+            db_start = pd.to_datetime(p0.iloc[0]["start_date"]).date()
+        except Exception:
+            db_start = None
+
+    # Default: Jan 1, 2026 unless DB says otherwise
+    default_start_date = db_start or date(2026, 1, 1)
+
+    with st.sidebar:
+        st.header("Controls")
+        portfolio_code = st.text_input("Portfolio code", value=default_code).strip().upper()
+        start_date = st.date_input("Display start date", value=default_start_date)
+
+    p = load_portfolio_by_code(portfolio_code)
+    if p.empty:
+        st.error(f"No portfolio found with code '{portfolio_code}'. Create it in Admin Ledger first.")
+        return
+
+    portfolio_id = int(p.iloc[0]["portfolio_id"])
+    portfolio_name = str(p.iloc[0]["name"])
+    starting_cash = float(p.iloc[0]["starting_cash"])
+    portfolio_start = pd.to_datetime(p.iloc[0]["start_date"]).date() if pd.notna(p.iloc[0]["start_date"]) else start_date
+
+    st.caption(
+        f"Portfolio: **{portfolio_code} — {portfolio_name}** (portfolio_id={portfolio_id}) · "
+        f"Start date in DB: {p.iloc[0]['start_date']}"
+    )
+
+    nav_all = load_nav_series_between(portfolio_id=portfolio_id, start_date=portfolio_start)
+    if not nav_all.empty:
+        nav_all["nav_date"] = pd.to_datetime(nav_all["nav_date"]).dt.date
+    latest_nav_row = nav_all.iloc[-1].to_dict() if not nav_all.empty else None
+
+    nav = load_nav_series(portfolio_id=portfolio_id, start_date=start_date)
+    if not nav.empty:
+        nav["nav_date"] = pd.to_datetime(nav["nav_date"]).dt.date
+
+    events = load_events_optionsfund(portfolio_id=portfolio_id, start_date=start_date)
+    if not events.empty:
+        events["event_time"] = pd.to_datetime(events["event_time"])
+        events["expiry"] = pd.to_datetime(events["expiry"], errors="coerce").dt.date
+
+    if (nav_all.empty and nav.empty) and events.empty:
+        st.info("No NAV or ledger events found for this date window yet.")
+        return
+
+    # Credits (premium inflows) = cash_delta on SELL_CSP/SELL_CC
+    credits_gross = 0.0
+    fees_total = 0.0
+    credits_daily = pd.DataFrame()
+
+    avg_premium_per_trading_day = 0.0
+    avg_premium_per_trading_day_100k = 0.0
+    trading_days_with_premium = 0
+
+    # Annualized premium yield stats
+    premium_ytd = 0.0
+    premium_yield_ytd = 0.0
+    premium_yield_annualized = 0.0
+
+    if not events.empty:
+        fees_total = float(pd.to_numeric(events["fees"], errors="coerce").fillna(0.0).sum())
+
+        mask_credits = events["event_type"].astype(str).str.upper().isin(["SELL_CSP", "SELL_CC"])
+        credits_gross = float(pd.to_numeric(events.loc[mask_credits, "cash_delta"], errors="coerce").fillna(0.0).sum())
+
+        # Daily premium totals (only days where we collected premium)
+        credits = events.loc[mask_credits].copy()
+        if not credits.empty:
+            credits["event_date"] = credits["event_time"].dt.date
+            credits["cash_delta"] = pd.to_numeric(credits["cash_delta"], errors="coerce").fillna(0.0)
+
+            credits_daily = credits.groupby("event_date", as_index=False)["cash_delta"].sum().sort_values("event_date")
+
+            trading_days_with_premium = int(len(credits_daily))
+            if trading_days_with_premium > 0:
+                avg_premium_per_trading_day = float(credits_daily["cash_delta"].mean())
+
+                # Normalize to $100K using starting_cash as baseline
+                if starting_cash and starting_cash > 0:
+                    avg_premium_per_trading_day_100k = avg_premium_per_trading_day * (100000.0 / starting_cash)
+
+                # Premium YTD (within selected window)
+                premium_ytd = float(credits_daily["cash_delta"].sum())
+
+    # Annualized premium yield:
+    # - YTD premium yield: premium_ytd / starting_cash
+    # - Annualize using 252 trading days, scaled from observed trading_days_with_premium
+    if starting_cash and starting_cash > 0:
+        premium_yield_ytd = premium_ytd / starting_cash
+        if trading_days_with_premium > 0:
+            premium_yield_annualized = premium_yield_ytd * (252.0 / trading_days_with_premium)
+
+    csp_collateral, cc_collateral = calc_collateral_from_events(events)
+
+    render_header_optionsfund(
+        portfolio_code=portfolio_code,
+        portfolio_name=portfolio_name,
+        start_date=start_date,
+        starting_cash=starting_cash,
+        latest_nav_row=latest_nav_row,
+        credits_gross=credits_gross,
+        fees_total=fees_total,
+        events_count=int(len(events)) if not events.empty else 0,
+        csp_collateral=csp_collateral,
+        cc_collateral=cc_collateral,
+    )
+
+    # Daily Income stats block
+    st.divider()
+    st.subheader("⚡ Daily Income Stats")
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Trading days w/ premium", f"{trading_days_with_premium:,}")
+    with c2:
+        st.metric("Avg premium / trading day", fmt_money(avg_premium_per_trading_day))
+    with c3:
+        st.metric("Avg premium / trading day (per $100K)", fmt_money(avg_premium_per_trading_day_100k))
+    with c4:
+        st.metric("Annualized premium yield", fmt_pct_ratio(premium_yield_annualized))
+
+    st.caption(
+        "Notes: 'Trading day' means a day where premium was collected via SELL_CSP / SELL_CC. "
+        "Annualized premium yield uses 252 trading days scaled from observed premium days in the selected window."
+    )
+
+    # 2026 block right after header
+    st.divider()
+    render_year_summary_blocks(nav_all=nav_all, portfolio_start_date=portfolio_start, years=[2026])
+
+    st.divider()
+
+    st.subheader("📈 NAV over time")
+    if nav.empty:
+        st.info("No NAV rows found yet. (Run nav.py / nightly cron.)")
+    else:
+        nav_curve = nav.copy()
+        nav_curve["nav"] = pd.to_numeric(nav_curve["nav"], errors="coerce").fillna(0.0)
+        nav_curve = nav_curve.set_index(pd.to_datetime(nav_curve["nav_date"]))
+        st.line_chart(nav_curve["nav"])
+
+    st.divider()
+
+    st.subheader("📉 NAV vs cumulative credits")
+    if nav.empty or events.empty or credits_daily.empty:
+        st.caption("Needs both NAV rows and ledger premium events.")
+    else:
+        credits_daily2 = credits_daily.copy()
+        credits_daily2["cum_credits"] = credits_daily2["cash_delta"].cumsum()
+
+        nav_join = nav.copy()
+        nav_join["nav_date"] = pd.to_datetime(nav_join["nav_date"]).dt.date
+        nav_join["nav"] = pd.to_numeric(nav_join["nav"], errors="coerce").fillna(0.0)
+
+        merged = pd.merge(
+            nav_join[["nav_date", "nav"]],
+            credits_daily2[["event_date", "cum_credits"]],
+            left_on="nav_date",
+            right_on="event_date",
+            how="left",
+        ).sort_values("nav_date")
+
+        merged["cum_credits"] = merged["cum_credits"].ffill().fillna(0.0)
+        merged = merged.set_index(pd.to_datetime(merged["nav_date"]))
+
+        st.line_chart(merged[["nav", "cum_credits"]])
+
+    st.divider()
+
+    st.subheader("🧮 Totals by event type")
+    by_type = load_totals_by_type(portfolio_id=portfolio_id, start_date=start_date)
+    if by_type.empty:
+        st.info("No events found for this window.")
+    else:
+        show = by_type.copy()
+        show["total_fees"] = show["total_fees"].apply(fmt_money)
+        show["total_cash_delta"] = show["total_cash_delta"].apply(fmt_money)
+        st.dataframe(show, hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    st.subheader("🏷️ Totals by ticker")
+    by_ticker = load_totals_by_ticker(portfolio_id=portfolio_id, start_date=start_date)
+    if by_ticker.empty:
+        st.info("No ticker-tagged events found for this window.")
+    else:
+        show = by_ticker.copy()
+        show["total_fees"] = show["total_fees"].apply(fmt_money)
+        show["total_cash_delta"] = show["total_cash_delta"].apply(fmt_money)
+        st.dataframe(show, hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    st.subheader("🧾 Ledger events")
+    if events.empty:
+        st.info("No events logged yet.")
+    else:
+        ev = events.copy()
+        ev["price"] = ev["price"].apply(fmt_money)
+        ev["fees"] = ev["fees"].apply(fmt_money)
+        ev["strike"] = ev["strike"].apply(fmt_money)
+        ev["cash_delta"] = ev["cash_delta"].apply(fmt_money)
+
+        st.dataframe(
+            ev[
+                [
+                    "event_time",
+                    "event_type",
+                    "ticker",
+                    "quantity",
+                    "price",
+                    "option_type",
+                    "strike",
+                    "expiry",
+                    "fees",
+                    "cash_delta",
+                    "notes",
+                ]
+            ].sort_values("event_time", ascending=False),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if not events.empty:
+            st.download_button(
+                "Download events CSV",
+                events.to_csv(index=False).encode("utf-8"),
+                file_name=f"{portfolio_code.lower()}_events.csv",
+                mime="text/csv",
+            )
+    with c2:
+        if not nav_all.empty:
+            st.download_button(
+                "Download NAV CSV",
+                nav_all.to_csv(index=False).encode("utf-8"),
+                file_name=f"{portfolio_code.lower()}_nav.csv",
+                mime="text/csv",
+            )
+
+
+if __name__ == "__main__":
+    main()
