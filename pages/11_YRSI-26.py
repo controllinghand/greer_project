@@ -1,4 +1,4 @@
-# 12_YRSI.py
+# 11_YRSI-26.py
 import streamlit as st
 import pandas as pd
 from datetime import date
@@ -24,7 +24,7 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("⭐📣 YRSI Results (You Rock Star Income Fund)")
+    st.title("⭐📣 YRSI Results (You Rock Star Income Fund est. 2026)")
 
     st.markdown(
         """
@@ -33,7 +33,7 @@ def main():
         """
     )
 
-    default_code = "YRSI"
+    default_code = "YRSI-26"
 
     # Prefer DB start_date if present; otherwise default to 2026-01-01
     p0 = load_portfolio_by_code(default_code)
