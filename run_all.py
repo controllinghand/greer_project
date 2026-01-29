@@ -48,6 +48,7 @@ def run_cmd(cmd):
 # ----------------------------------------------------------
 etl_commands = [
     ["python", "fetch_company_info.py"],
+    ["python", "earnings_loader.py"],
     ["python", "fetch_financials.py"],
     ["python", "price_loader.py"],
     ["python", "fetch_iv_summary.py"],
