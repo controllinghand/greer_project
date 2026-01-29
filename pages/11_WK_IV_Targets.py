@@ -403,16 +403,12 @@ def main():
         hide_red = st.checkbox("Hide ❌ Red flags (recommended)", value=True)
     with f2:
         hide_caution = st.checkbox("Hide ⚠️ Caution (recommended)", value=True)
-    with f3:
-        hide_earnings = st.checkbox("Hide 🚨/⚠️/🟡 earnings risk", value=True)
+    
 
     if hide_red:
         df = df[df["wheel_flag"] != "❌"]
     if hide_caution:
         df = df[df["wheel_flag"] != "⚠️"]
-    if hide_earnings:
-        # Hide anything <= 7 days (including today/negative)
-        df = df[(df["days_to_earnings"].isna()) | (df["days_to_earnings"] > 7)]
 
     if df.empty:
         st.info("Nothing left after hiding flags/earnings risk. Try unchecking one of the filters.")
