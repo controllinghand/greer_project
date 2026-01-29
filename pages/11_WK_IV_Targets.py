@@ -59,7 +59,6 @@ def add_wheel_flags(df: pd.DataFrame, wheel_mode: str) -> pd.DataFrame:
     out["put_delta_abs"] = out["put_20d_delta"].abs()
     out["call_delta_abs"] = out["call_20d_delta"].abs()
 
-    out["delta_mismatch_flag"] =s = False
     out["delta_mismatch_flag"] = False
     out.loc[out["put_delta_abs"].notna(), "delta_mismatch_flag"] |= (out["put_delta_abs"] > 0.35)
     out.loc[out["call_delta_abs"].notna(), "delta_mismatch_flag"] |= (out["call_delta_abs"] > 0.35)
@@ -114,6 +113,7 @@ def add_wheel_flags(df: pd.DataFrame, wheel_mode: str) -> pd.DataFrame:
 # Load Weekly Targets
 # - latest fetch_date per ticker
 # - within that fetch_date, prefer nearest expiry (smallest dte then expiry)
+# Adds: earnings_date, days_to_earnings (from latest_company_earnings)
 # ----------------------------------------------------------
 @st.cache_data(ttl=3600)
 def load_weekly_targets(iv_min_atm: float, market_cap_min: float, min_star_rating: int) -> pd.DataFrame:
@@ -194,12 +194,16 @@ def load_weekly_targets(iv_min_atm: float, market_cap_min: float, min_star_ratin
       r.call_20d_iv,
       r.call_20d_premium,
       r.call_20d_premium_pct,
-      r.call_20d_delta
+      r.call_20d_delta,
+
+      e.earnings_date,
+      e.days_to_earnings
 
     FROM recent_iv r
     JOIN mc ON r.ticker = mc.ticker
     JOIN latest_price lp ON r.ticker = lp.ticker
     LEFT JOIN companies c ON c.ticker = r.ticker
+    LEFT JOIN latest_company_earnings e ON e.ticker = r.ticker
     WHERE
       mc.market_cap >= :market_cap_min
       AND r.iv_atm >= :iv_min_atm
@@ -259,7 +263,7 @@ def main():
     with top4:
         expiry_days = st.slider("Max expiry days from today", 1, 14, 7)
 
-    colA, colB, colC = st.columns([1.35, 1.15, 1.2])
+    colA, colB, colC, colD = st.columns([1.35, 1.15, 1.2, 1.2])
     with colA:
         wheel_mode = st.selectbox("Wheel Mode (what you're preparing for Monday)", ["CASH (Sell CSP)", "SHARES (Sell CC)"])
     with colB:
@@ -272,6 +276,8 @@ def main():
         )
     with colC:
         sort_by = st.selectbox("Sort by", ["Action premium %", "IV ATM", "Stars", "Market Cap", "Ticker"])
+    with colD:
+        earnings_days_hide = st.slider("Hide earnings within X days (0 = off)", 0, 30, 7)
 
     df = load_weekly_targets(iv_min_atm=iv_min_atm, market_cap_min=market_cap_min, min_star_rating=min_star_rating)
 
@@ -292,6 +298,28 @@ def main():
     df["underlying_price"] = pd.to_numeric(df["underlying_price"], errors="coerce").round(2)
     df["iv_atm"] = pd.to_numeric(df["iv_atm"], errors="coerce").round(3)
     df["iv_median"] = pd.to_numeric(df["iv_median"], errors="coerce").round(3)
+
+    # Earnings columns
+    df["earnings_date"] = pd.to_datetime(df["earnings_date"], errors="coerce").dt.date
+    df["days_to_earnings"] = pd.to_numeric(df["days_to_earnings"], errors="coerce").astype("Int64")
+
+    # Simple earnings risk flag
+    def earnings_flag(d: pd.Series) -> str:
+        try:
+            if pd.isna(d):
+                return ""
+            v = int(d)
+            if v <= 0:
+                return "🚨"
+            if v <= 3:
+                return "⚠️"
+            if v <= 7:
+                return "🟡"
+            return "✅"
+        except Exception:
+            return ""
+
+    df["earnings_flag"] = df["days_to_earnings"].apply(earnings_flag)
 
     # Market cap formatting
     df["market_cap_raw"] = pd.to_numeric(df["market_cap"], errors="coerce")
@@ -318,6 +346,11 @@ def main():
     today = date.today()
     max_allowed = today + timedelta(days=expiry_days)
     df = df[df["expiry"] <= max_allowed]
+
+    # NEW: Hide earnings within X days (0 = off)
+    if earnings_days_hide and int(earnings_days_hide) > 0:
+        # Keep rows where days_to_earnings is NULL/unknown OR > threshold
+        df = df[(df["days_to_earnings"].isna()) | (df["days_to_earnings"] > int(earnings_days_hide))]
 
     # ----------------------------------------------------------
     # Wheel mode action columns
@@ -365,19 +398,24 @@ def main():
     # ----------------------------------------------------------
     df = add_wheel_flags(df, wheel_mode=wheel_mode)
 
-    f1, f2 = st.columns([1.1, 1.1])
+    f1, f2, f3 = st.columns([1.1, 1.1, 1.1])
     with f1:
         hide_red = st.checkbox("Hide ❌ Red flags (recommended)", value=True)
     with f2:
         hide_caution = st.checkbox("Hide ⚠️ Caution (recommended)", value=True)
+    with f3:
+        hide_earnings = st.checkbox("Hide 🚨/⚠️/🟡 earnings risk", value=True)
 
     if hide_red:
         df = df[df["wheel_flag"] != "❌"]
     if hide_caution:
         df = df[df["wheel_flag"] != "⚠️"]
+    if hide_earnings:
+        # Hide anything <= 7 days (including today/negative)
+        df = df[(df["days_to_earnings"].isna()) | (df["days_to_earnings"] > 7)]
 
     if df.empty:
-        st.info("Nothing left after hiding red/caution flags. Try unchecking one of the filters.")
+        st.info("Nothing left after hiding flags/earnings risk. Try unchecking one of the filters.")
         return
 
     # Sorting
@@ -431,6 +469,11 @@ def main():
         # Other flags
         "put_itm_flag",
         "call_itm_flag",
+
+        # Earnings (NEW)
+        "earnings_flag",
+        "earnings_date",
+        "days_to_earnings",
 
         # Wheel info (far right)
         "wheel_flag",
