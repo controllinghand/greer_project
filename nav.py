@@ -71,7 +71,7 @@ shares_eod AS (
 
         -- stock-only events: BUY adds, SELL subtracts
         WHEN e.event_type = 'BUY_SHARES'  THEN COALESCE(e.quantity, 0)
-        WHEN e.event_type = 'SELL_SHARES' THEN -COALESCE(e.quantity, 0)
+        WHEN e.event_type = 'SELL_SHARES' THEN COALESCE(e.quantity, 0)
 
         ELSE 0
       END
