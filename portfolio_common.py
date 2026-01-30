@@ -285,8 +285,9 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
     e["cash_delta"] = pd.to_numeric(e["cash_delta"], errors="coerce")
 
     missing_price = e["price"].isna() | (e["price"] <= 0)
-    can_infer = missing_price & e["cash_delta"].notna() & (e["quantity"] > 0)
-    e.loc[can_infer, "price"] = (e.loc[can_infer, "cash_delta"].abs() / e.loc[can_infer, "quantity"])
+    can_infer = missing_price & e["cash_delta"].notna() & (e["quantity"].abs() > 0)
+    e.loc[can_infer, "price"] = (e.loc[can_infer, "cash_delta"].abs() / e.loc[can_infer, "quantity"].abs())
+
     e["price"] = e["price"].fillna(0.0)
 
     out = []
@@ -299,7 +300,8 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
         realized_proceeds = 0.0
 
         for _, r in g.iterrows():
-            qty = float(r["quantity"] or 0.0)
+            qty_raw = float(r["quantity"] or 0.0)
+            qty = abs(qty_raw)
             px = float(r["price"] or 0.0)
             fee = float(r["fees"] or 0.0)
 
