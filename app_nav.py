@@ -34,7 +34,7 @@ def build_pages():
     if is_admin():
         pages["Admin"] = [
             st.Page("admin/13_Admin_Ledger.py", title="Admin Ledger", icon="🔒"),
-            st.Page("admin/12_YRI.py", title="YRI (Private)", icon="📣"),
+            st.Page("admin/12_ROTH-26.py", title="ROTH-26 (Private)", icon="📣"),
         ]
 
     # Optional: page map for st.page_link

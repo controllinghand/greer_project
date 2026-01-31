@@ -1,7 +1,7 @@
-# admin/12_YRI.py
+# admin/12_ROTH-26.py
 # ----------------------------------------------------------
-# Private Admin YRI page (Personal Fund)
-# - Read-only results for YRI
+# Private Admin ROTH-26 page (Personal Roth IRA Fund)
+# - Read-only results for ROTH-26
 # - Admin-only via env var: YRC_ADMIN=1
 # - Uses: portfolios, portfolio_events, portfolio_nav_daily
 # ----------------------------------------------------------
@@ -10,6 +10,9 @@ import os
 import streamlit as st
 import pandas as pd
 from datetime import date
+
+from sqlalchemy import text
+from db import get_engine
 
 from portfolio_common import (
     load_portfolio_by_code,
@@ -34,20 +37,88 @@ if not IS_ADMIN:
     st.error("This page is admin-only.")
     st.stop()
 
+
+# ----------------------------------------------------------
+# Helpers: holdings snapshot (positions from events + latest close)
+# ----------------------------------------------------------
+def load_holdings_snapshot(portfolio_id: int) -> pd.DataFrame:
+    """
+    Compute current holdings using all share-impact events up to now:
+    BUY_SHARES, SELL_SHARES, ASSIGN_PUT, CALL_AWAY.
+
+    Uses latest available close in prices table per ticker.
+
+    Returns columns:
+      ticker, shares, close_used, market_value
+    """
+    engine = get_engine()
+
+    q = text("""
+        WITH pos AS (
+          SELECT
+            UPPER(TRIM(ticker)) AS ticker,
+            SUM(
+              CASE
+                WHEN event_type IN ('BUY_SHARES','SELL_SHARES','ASSIGN_PUT','CALL_AWAY')
+                  THEN COALESCE(quantity,0)
+                ELSE 0
+              END
+            ) AS shares
+          FROM portfolio_events
+          WHERE portfolio_id = :portfolio_id
+            AND ticker IS NOT NULL AND ticker <> ''
+          GROUP BY 1
+          HAVING ABS(SUM(
+              CASE
+                WHEN event_type IN ('BUY_SHARES','SELL_SHARES','ASSIGN_PUT','CALL_AWAY')
+                  THEN COALESCE(quantity,0)
+                ELSE 0
+              END
+          )) > 1e-9
+        ),
+        px AS (
+          SELECT
+            p.ticker,
+            p.shares,
+            (
+              SELECT pr.close
+              FROM prices pr
+              WHERE pr.ticker = p.ticker
+              ORDER BY pr.date DESC
+              LIMIT 1
+            ) AS close_used
+          FROM pos p
+        )
+        SELECT
+          ticker,
+          shares,
+          COALESCE(close_used, 0) AS close_used,
+          (shares * COALESCE(close_used, 0)) AS market_value
+        FROM px
+        ORDER BY market_value DESC;
+    """)
+
+    with engine.connect() as conn:
+        df = pd.read_sql(q, conn, params={"portfolio_id": int(portfolio_id)})
+
+    return df
+
+
 # ----------------------------------------------------------
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("🔒 YRI Results (Private – Personal Fund)")
+    st.title("🔒 ROTH-26 Results (Private – Roth IRA Fund)")
 
     st.markdown(
         """
-        **Admin-only page** for the **YRI (You Rock Income)** personal fund.  
+        **Admin-only page** for the **ROTH-26** personal fund.  
+        Strategy: **QQQ only** (covered calls + cash-secured puts), plus **monthly withdrawals** and an **annual Trad IRA → Roth IRA distribution**.  
         Uses **only**: portfolios, portfolio_events, portfolio_nav_daily.
         """
     )
 
-    default_code = "YRI"
+    default_code = "ROTH-26"
 
     # ----------------------------------------------------------
     # Resolve default start date from DB
@@ -60,13 +131,14 @@ def main():
         except Exception:
             db_start = None
 
-    default_start_date = db_start or date(2025, 12, 1)
+    default_start_date = db_start or date(2026, 2, 1)
 
     # ----------------------------------------------------------
     # Sidebar controls
     # ----------------------------------------------------------
     with st.sidebar:
         st.header("Controls")
+
         portfolio_code = st.text_input(
             "Portfolio code",
             value=default_code
@@ -76,6 +148,8 @@ def main():
             "Display start date",
             value=default_start_date
         )
+
+        st.caption("Tip: NAV rows will appear once nav.py runs on/after the portfolio start date.")
 
     # ----------------------------------------------------------
     # Load portfolio
@@ -182,6 +256,26 @@ def main():
     )
 
     # ----------------------------------------------------------
+    # Current Holdings (recommended for Roth-26 sanity check)
+    # ----------------------------------------------------------
+    st.divider()
+    st.subheader("📦 Current holdings")
+
+    try:
+        holdings = load_holdings_snapshot(portfolio_id)
+    except Exception as e:
+        holdings = pd.DataFrame()
+        st.warning(f"Holdings snapshot failed: {e}")
+
+    if holdings.empty:
+        st.info("No current share holdings detected from ledger events.")
+    else:
+        show = holdings.copy()
+        show["close_used"] = show["close_used"].apply(fmt_money)
+        show["market_value"] = show["market_value"].apply(fmt_money)
+        st.dataframe(show, hide_index=True, use_container_width=True)
+
+    # ----------------------------------------------------------
     # Year summary
     # ----------------------------------------------------------
     st.divider()
@@ -192,9 +286,8 @@ def main():
         portfolio_start_date=portfolio_start,
         years=[2026],
         events_all=events_all,
-        use_twr=(portfolio_code == "YRI"),
+        use_twr=False,  # Roth tracking is more "broker-style"; can switch later if you want
     )
-
 
     # ----------------------------------------------------------
     # NAV chart
