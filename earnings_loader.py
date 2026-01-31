@@ -10,12 +10,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy import text
 import logging
 
-
 # ----------------------------------------------------------
 # DB helpers
 # ----------------------------------------------------------
 from db import get_engine
-
 
 # ----------------------------------------------------------
 # Logging Setup (file only; no console handler)
@@ -33,18 +31,13 @@ file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(fmt)
 logger.addHandler(file_handler)
 
-
 # ----------------------------------------------------------
 # Initialize DB Connection (global engine)
 # ----------------------------------------------------------
 engine = get_engine()
 
-
 # ----------------------------------------------------------
 # Helpers
-# ----------------------------------------------------------
-# ----------------------------------------------------------
-# Function: Parse a --tickers string into a list (comma and/or whitespace)
 # ----------------------------------------------------------
 def parse_tickers_arg(raw: str | None) -> list[str]:
     """
@@ -63,9 +56,6 @@ def parse_tickers_arg(raw: str | None) -> list[str]:
     return out
 
 
-# ----------------------------------------------------------
-# Function: Load tickers from file or companies table, with explicit override list
-# ----------------------------------------------------------
 def load_tickers(file_path: str | None, explicit_tickers: list[str] | None) -> list[str]:
     """
     Priority:
@@ -107,10 +97,11 @@ def load_tickers(file_path: str | None, explicit_tickers: list[str] | None) -> l
     return tickers
 
 
-# ----------------------------------------------------------
-# Function: Convert unix timestamp to UTC date
-# ----------------------------------------------------------
 def _ts_to_utc_date(ts) -> date | None:
+    """
+    Convert epoch seconds to a UTC date.
+    Yahoo often returns epoch seconds (not ms) in yfinance info.
+    """
     try:
         if ts is None:
             return None
@@ -121,24 +112,63 @@ def _ts_to_utc_date(ts) -> date | None:
     return None
 
 
-# ----------------------------------------------------------
-# Function: Compute days to earnings
-# ----------------------------------------------------------
 def _days_to(d: date | None, today: date) -> int | None:
     if d is None:
         return None
     return (d - today).days
 
 
+def _apply_guardrails(
+    earnings_date: date | None,
+    today: date,
+    negative_grace_days: int,
+    lookahead_days: int,
+) -> tuple[date | None, int | None, str | None]:
+    """
+    Apply sanity rules:
+      - allow small negative lag (<= negative_grace_days)
+      - null out anything older than that (stale)
+      - null out anything too far into the future (> lookahead_days)
+    Returns (earnings_date, days_to_earnings, note)
+    """
+    if earnings_date is None:
+        return None, None, None
+
+    dte = _days_to(earnings_date, today)
+    if dte is None:
+        return None, None, None
+
+    # Too negative => stale / not "next earnings"
+    if dte < -abs(int(negative_grace_days)):
+        return None, None, f"stale(dte={dte})"
+
+    # Too far out => probably not a real scheduled earnings (or bad value)
+    if lookahead_days is not None and lookahead_days > 0 and dte > int(lookahead_days):
+        return None, None, f"too_far(dte={dte})"
+
+    return earnings_date, dte, None
+
+
 # ----------------------------------------------------------
-# Function: Fetch next earnings for a ticker via yfinance info timestamps
+# Function: Fetch next earnings for a ticker via yfinance info timestamps (with guardrails)
 # ----------------------------------------------------------
-def fetch_next_earnings(ticker: str, retries: int = 3, delay: int = 2) -> dict:
+def fetch_next_earnings(
+    ticker: str,
+    retries: int = 3,
+    delay: int = 2,
+    negative_grace_days: int = 3,
+    lookahead_days: int = 180,
+) -> dict:
     """
     Uses Yahoo/yfinance info timestamps:
       - earningsTimestampStart
       - earningsTimestampEnd
       - earningsTimestamp (fallback)
+
+    Guardrails:
+      - if days_to_earnings < -negative_grace_days => NULL (stale)
+      - if days_to_earnings > lookahead_days => NULL (too far / probably wrong)
+
     Returns a dict suitable for DB upsert.
     """
     today = date.today()
@@ -156,14 +186,28 @@ def fetch_next_earnings(ticker: str, retries: int = 3, delay: int = 2) -> dict:
             end_date = _ts_to_utc_date(end_ts)
             single_date = _ts_to_utc_date(single_ts)
 
-            earnings_date = start_date or single_date
-            source = None
+            # Prefer start date (most common "next earnings" value when it's correct)
+            raw_earnings_date = start_date or single_date
+
+            # Label the raw source
             if start_date:
-                source = "info(earningsTimestampStart/End)"
+                source = "yahoo(info earningsTimestampStart/End)"
             elif single_date:
-                source = "info(earningsTimestamp)"
+                source = "yahoo(info earningsTimestamp)"
             else:
-                source = None
+                source = "yahoo(info) none"
+
+            # Apply sanity guardrails
+            earnings_date, dte, note = _apply_guardrails(
+                earnings_date=raw_earnings_date,
+                today=today,
+                negative_grace_days=negative_grace_days,
+                lookahead_days=lookahead_days,
+            )
+
+            if note:
+                # Keep source, append note
+                source = f"{source} | {note}"
 
             return {
                 "ticker": ticker,
@@ -172,7 +216,7 @@ def fetch_next_earnings(ticker: str, retries: int = 3, delay: int = 2) -> dict:
                 "earnings_start_ts_utc": int(start_ts) if isinstance(start_ts, (int, float)) else None,
                 "earnings_end_ts_utc": int(end_ts) if isinstance(end_ts, (int, float)) else None,
                 "source": source,
-                "days_to_earnings": _days_to(earnings_date, today),
+                "days_to_earnings": dte,
             }
 
         except Exception as e:
@@ -187,7 +231,7 @@ def fetch_next_earnings(ticker: str, retries: int = 3, delay: int = 2) -> dict:
         "earnings_date": None,
         "earnings_start_ts_utc": None,
         "earnings_end_ts_utc": None,
-        "source": None,
+        "source": "yahoo failed",
         "days_to_earnings": None,
     }
 
@@ -287,7 +331,14 @@ def upsert_company_earnings(rows: list[dict]) -> int:
 # ----------------------------------------------------------
 # Function: Process tickers in parallel and write to DB
 # ----------------------------------------------------------
-def process_tickers(tickers: list[str], max_workers: int = 6, retries: int = 3, delay: int = 2) -> None:
+def process_tickers(
+    tickers: list[str],
+    max_workers: int = 6,
+    retries: int = 3,
+    delay: int = 2,
+    negative_grace_days: int = 3,
+    lookahead_days: int = 180,
+) -> None:
     start_time = time.time()
     today = date.today()
 
@@ -296,17 +347,25 @@ def process_tickers(tickers: list[str], max_workers: int = 6, retries: int = 3, 
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_ticker = {
-            executor.submit(fetch_next_earnings, t, retries, delay): t for t in tickers
+            executor.submit(
+                fetch_next_earnings,
+                t,
+                retries,
+                delay,
+                negative_grace_days,
+                lookahead_days,
+            ): t
+            for t in tickers
         }
+
         for future in as_completed(future_to_ticker):
             ticker = future_to_ticker[future]
             try:
                 row = future.result()
                 if row.get("earnings_date") is None:
                     missing += 1
-                    logger.info(f"{ticker}: no earnings date available (asof={today})")
+                    logger.info(f"{ticker}: no usable earnings date (asof={today}) src={row.get('source')}")
                 rows.append(row)
-
             except Exception as e:
                 logger.error(f"Error processing {ticker}: {e}")
 
@@ -314,11 +373,11 @@ def process_tickers(tickers: list[str], max_workers: int = 6, retries: int = 3, 
 
     elapsed = time.time() - start_time
     print(f"✅ Upserted {n} rows into company_earnings (asof={today})")
-    print(f"⚠️ Missing earnings_date: {missing} / {len(tickers)}")
+    print(f"⚠️ Missing/NULL earnings_date: {missing} / {len(tickers)}")
     print(f"Total processing time: {elapsed:.2f} seconds")
 
     logger.info(f"Upserted {n} rows into company_earnings (asof={today})")
-    logger.info(f"Missing earnings_date: {missing} / {len(tickers)}")
+    logger.info(f"Missing/NULL earnings_date: {missing} / {len(tickers)}")
     logger.info(f"Total processing time: {elapsed:.2f} seconds")
 
 
@@ -334,14 +393,31 @@ if __name__ == "__main__":
         type=str,
         help='Optional comma/space separated list of tickers (e.g., "AAPL,MSFT TSLA")'
     )
+
     parser.add_argument("--workers", type=int, default=6, help="Max parallel workers (default: 6)")
     parser.add_argument("--retries", type=int, default=3, help="Retries per ticker (default: 3)")
     parser.add_argument("--delay", type=int, default=2, help="Retry delay seconds (default: 2)")
+
+    # NEW: guardrails
+    parser.add_argument(
+        "--negative-grace-days",
+        type=int,
+        default=3,
+        help="Allow small negative days_to_earnings (Yahoo lag). Values below -N become NULL. Default: 3",
+    )
+    parser.add_argument(
+        "--lookahead-days",
+        type=int,
+        default=180,
+        help="Max allowed days_to_earnings in the future. Values above N become NULL. Default: 180",
+    )
+
     parser.add_argument(
         "--no-ddl",
         action="store_true",
         help="Skip creating company_earnings table/view (assumes already exists)."
     )
+
     args = parser.parse_args()
 
     explicit_tickers = parse_tickers_arg(args.tickers)
@@ -353,4 +429,11 @@ if __name__ == "__main__":
     if not args.no_ddl:
         ensure_company_earnings_objects()
 
-    process_tickers(tickers, max_workers=args.workers, retries=args.retries, delay=args.delay)
+    process_tickers(
+        tickers,
+        max_workers=args.workers,
+        retries=args.retries,
+        delay=args.delay,
+        negative_grace_days=args.negative_grace_days,
+        lookahead_days=args.lookahead_days,
+    )

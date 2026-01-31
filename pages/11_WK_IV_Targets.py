@@ -1,5 +1,4 @@
 # Wk_IV_Targets.py
-
 import os
 import streamlit as st
 import pandas as pd
@@ -263,9 +262,12 @@ def main():
     with top4:
         expiry_days = st.slider("Max expiry days from today", 1, 14, 7)
 
-    colA, colB, colC, colD = st.columns([1.35, 1.15, 1.2, 1.2])
+    colA, colB, colC, colD, colE = st.columns([1.35, 1.15, 1.2, 1.2, 1.2])
     with colA:
-        wheel_mode = st.selectbox("Wheel Mode (what you're preparing for Monday)", ["CASH (Sell CSP)", "SHARES (Sell CC)"])
+        wheel_mode = st.selectbox(
+            "Wheel Mode (what you're preparing for Monday)",
+            ["CASH (Sell CSP)", "SHARES (Sell CC)"]
+        )
     with colB:
         min_target_premium_pct = st.number_input(
             "Min target premium % (0.01 = 1%)",
@@ -277,9 +279,20 @@ def main():
     with colC:
         sort_by = st.selectbox("Sort by", ["Action premium %", "IV ATM", "Stars", "Market Cap", "Ticker"])
     with colD:
-        earnings_days_hide = st.slider("Hide earnings within X days (0 = off)", 0, 30, 7)
+        earnings_days_hide = st.slider("Hide upcoming earnings within X days (0 = off)", 0, 30, 7)
+    with colE:
+        earnings_recent_hide = st.slider("Hide companies that already reported within the last X days (default 0 = show all)",0, 30, 0)
 
-    df = load_weekly_targets(iv_min_atm=iv_min_atm, market_cap_min=market_cap_min, min_star_rating=min_star_rating)
+
+
+    # ----------------------------------------------------------
+    # Load data (✅ must happen BEFORE df[...] usage)
+    # ----------------------------------------------------------
+    df = load_weekly_targets(
+        iv_min_atm=iv_min_atm,
+        market_cap_min=market_cap_min,
+        min_star_rating=min_star_rating
+    )
 
     if df.empty:
         st.info("No candidates found under market cap / IV / star filters.")
@@ -290,8 +303,8 @@ def main():
     # ----------------------------------------------------------
     df["stars"] = df["greer_star_rating"].apply(stars_display)
 
-    df["expiry"] = pd.to_datetime(df["expiry"]).dt.date
-    df["fetch_date"] = pd.to_datetime(df["fetch_date"]).dt.date
+    df["expiry"] = pd.to_datetime(df["expiry"], errors="coerce").dt.date
+    df["fetch_date"] = pd.to_datetime(df["fetch_date"], errors="coerce").dt.date
     df["contract_count"] = pd.to_numeric(df["contract_count"], errors="coerce").astype("Int64")
 
     df["latest_price"] = pd.to_numeric(df["latest_price"], errors="coerce").round(2)
@@ -302,24 +315,59 @@ def main():
     # Earnings columns
     df["earnings_date"] = pd.to_datetime(df["earnings_date"], errors="coerce").dt.date
     df["days_to_earnings"] = pd.to_numeric(df["days_to_earnings"], errors="coerce").astype("Int64")
+    dte = pd.to_numeric(df["days_to_earnings"], errors="coerce")
+
 
     # Simple earnings risk flag
-    def earnings_flag(d: pd.Series) -> str:
+    def earnings_flag(d) -> str:
+        """
+        Interpret days_to_earnings:
+          - negative => earnings likely already happened
+          - small negative => recently reported
+          - small positive => upcoming soon
+          - None => unknown
+        """
         try:
             if pd.isna(d):
-                return ""
+                return "❓"
             v = int(d)
-            if v <= 0:
-                return "🚨"
+
+            # Recently reported
+            if v < 0:
+                if v >= -3:
+                    return "🟣"  # just reported (last 3 days)
+                return "⚫"      # reported (older)
+
+            # Upcoming
+            if v == 0:
+                return "🚨"      # today
             if v <= 3:
-                return "⚠️"
+                return "🟥"      # very soon
             if v <= 7:
-                return "🟡"
+                return "🟧"      # soon
             return "✅"
         except Exception:
-            return ""
+            return "❓"
+
 
     df["earnings_flag"] = df["days_to_earnings"].apply(earnings_flag)
+
+    # NEW: recent earnings helpers
+    recent_window = int(earnings_recent_hide)
+    df["earnings_recent_flag"] = (
+        (recent_window > 0)
+        & dte.notna()
+        & (dte < 0)
+        & (dte >= -recent_window)
+    )
+
+    upcoming_window = int(earnings_days_hide)
+    df["earnings_upcoming_flag"] = (
+        (upcoming_window > 0)
+        & dte.notna()
+        & (dte >= 0)
+        & (dte <= upcoming_window)
+    )
 
     # Market cap formatting
     df["market_cap_raw"] = pd.to_numeric(df["market_cap"], errors="coerce")
@@ -341,16 +389,32 @@ def main():
     # ----------------------------------------------------------
     # Filters
     # ----------------------------------------------------------
-    df = df[df["contract_count"] >= 10]
+    df = df[df["contract_count"].fillna(0) >= 10]
 
     today = date.today()
     max_allowed = today + timedelta(days=expiry_days)
     df = df[df["expiry"] <= max_allowed]
 
-    # NEW: Hide earnings within X days (0 = off)
-    if earnings_days_hide and int(earnings_days_hide) > 0:
-        # Keep rows where days_to_earnings is NULL/unknown OR > threshold
-        df = df[(df["days_to_earnings"].isna()) | (df["days_to_earnings"] > int(earnings_days_hide))]
+    # ✅ Recompute after filtering df
+    earn_dte = pd.to_numeric(df["days_to_earnings"], errors="coerce")
+
+    # Hide upcoming earnings within X days (0 = off)
+    # Hide ONLY if 0 <= dte <= window (negative = already reported = always show)
+    if int(earnings_days_hide) > 0:
+        window = int(earnings_days_hide)
+        df = df[dte.isna() | (dte < 0) | (dte > window)]
+
+    # Hide recent earnings reported within X days (0 = off)
+    if int(earnings_recent_hide) > 0:
+        window = int(earnings_recent_hide)
+        # hide if -window <= dte < 0
+        df = df[dte.isna() | (dte >= 0) | (dte < -window)]
+
+
+    if df.empty:
+        st.info("Nothing left after earnings filters. Try widening the windows.")
+        return
+
 
     # ----------------------------------------------------------
     # Wheel mode action columns
@@ -398,7 +462,7 @@ def main():
     # ----------------------------------------------------------
     df = add_wheel_flags(df, wheel_mode=wheel_mode)
 
-    f1, f2, f3 = st.columns([1.1, 1.1, 1.1])
+    f1, f2 = st.columns([1.1, 1.1])
     with f1:
         hide_red = st.checkbox("Hide ❌ Red flags (recommended)", value=True)
     with f2:
@@ -470,6 +534,8 @@ def main():
         "earnings_flag",
         "earnings_date",
         "days_to_earnings",
+        "earnings_recent_flag",
+        "earnings_upcoming_flag",
 
         # Wheel info (far right)
         "wheel_flag",
