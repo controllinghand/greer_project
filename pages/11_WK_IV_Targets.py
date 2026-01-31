@@ -315,7 +315,6 @@ def main():
     # Earnings columns
     df["earnings_date"] = pd.to_datetime(df["earnings_date"], errors="coerce").dt.date
     df["days_to_earnings"] = pd.to_numeric(df["days_to_earnings"], errors="coerce").astype("Int64")
-    dte = pd.to_numeric(df["days_to_earnings"], errors="coerce")
 
 
     # Simple earnings risk flag
@@ -352,22 +351,23 @@ def main():
 
     df["earnings_flag"] = df["days_to_earnings"].apply(earnings_flag)
 
-    # NEW: recent earnings helpers
+    # NEW: recent earnings helpers (index-safe)
     recent_window = int(earnings_recent_hide)
     df["earnings_recent_flag"] = (
         (recent_window > 0)
-        & dte.notna()
-        & (dte < 0)
-        & (dte >= -recent_window)
+        & df["days_to_earnings"].notna()
+        & (df["days_to_earnings"] < 0)
+        & (df["days_to_earnings"] >= -recent_window)
     )
 
     upcoming_window = int(earnings_days_hide)
     df["earnings_upcoming_flag"] = (
         (upcoming_window > 0)
-        & dte.notna()
-        & (dte >= 0)
-        & (dte <= upcoming_window)
+        & df["days_to_earnings"].notna()
+        & (df["days_to_earnings"] >= 0)
+        & (df["days_to_earnings"] < upcoming_window)   # < window (so 0..6 hides when window=7)
     )
+
 
     # Market cap formatting
     df["market_cap_raw"] = pd.to_numeric(df["market_cap"], errors="coerce")
@@ -395,26 +395,30 @@ def main():
     max_allowed = today + timedelta(days=expiry_days)
     df = df[df["expiry"] <= max_allowed]
 
-    # ✅ Recompute after filtering df
-    earn_dte = pd.to_numeric(df["days_to_earnings"], errors="coerce")
-
     # Hide upcoming earnings within X days (0 = off)
     # Hide ONLY if 0 <= dte <= window (negative = already reported = always show)
     if int(earnings_days_hide) > 0:
         window = int(earnings_days_hide)
-        df = df[dte.isna() | (dte < 0) | (dte > window)]
+        df = df[
+            df["days_to_earnings"].isna()
+            | (df["days_to_earnings"] < 0)
+            | (df["days_to_earnings"] > window)
+        ]
 
     # Hide recent earnings reported within X days (0 = off)
     if int(earnings_recent_hide) > 0:
         window = int(earnings_recent_hide)
         # hide if -window <= dte < 0
-        df = df[dte.isna() | (dte >= 0) | (dte < -window)]
+        df = df[
+            df["days_to_earnings"].isna()
+            | (df["days_to_earnings"] >= 0)
+            | (df["days_to_earnings"] < -window)
+        ]
 
 
     if df.empty:
         st.info("Nothing left after earnings filters. Try widening the windows.")
         return
-
 
     # ----------------------------------------------------------
     # Wheel mode action columns
