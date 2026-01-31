@@ -72,6 +72,7 @@ EVENT_TYPES = [
     "DEPOSIT",
     "WITHDRAWAL",
     "SELL_CSP",
+    "BUY_TO_CLOSE",   # ✅ NEW
     "ASSIGN_PUT",
     "SELL_CC",
     "CALL_AWAY",
@@ -81,7 +82,7 @@ EVENT_TYPES = [
     "ADJUSTMENT",
 ]
 
-OPTION_EVENTS = {"SELL_CSP", "SELL_CC"}
+OPTION_EVENTS = {"SELL_CSP", "SELL_CC", "BUY_TO_CLOSE"}  # ✅ NEW
 SHARE_EVENTS = {"BUY_SHARES", "SELL_SHARES", "ASSIGN_PUT", "CALL_AWAY"}
 CASH_ONLY_EVENTS = {"DEPOSIT", "WITHDRAWAL", "DIVIDEND", "ADJUSTMENT"}
 
@@ -104,19 +105,24 @@ def signed_share_qty(event_type: str, shares_abs: float) -> float:
 
 def signed_contract_qty(event_type: str, contracts_abs: float) -> float:
     """
-    Contracts are generally stored positive for SELL_CSP/SELL_CC in your system.
-    Keep as positive to preserve your existing convention.
+    Contracts convention:
+    - SELL_CSP / SELL_CC stored as +contracts (existing convention)
+    - BUY_TO_CLOSE stored as -contracts (reduces open exposure)
     """
     et = (event_type or "").strip().upper()
     c = abs(safe_float(contracts_abs, 0.0))
+
     if et in ("SELL_CSP", "SELL_CC"):
         return +c
+    if et == "BUY_TO_CLOSE":
+        return -c
     return c
 
 def calc_cash_delta(event_type: str, qty_signed: float, price: float, fees: float) -> float:
     """
     Basic conventions:
     - SELL_CSP / SELL_CC: +contracts*100*option_price - fees
+    - BUY_TO_CLOSE:       -(contracts*100*option_price) - fees
     - ASSIGN_PUT:         -(abs(shares)*stock_price + fees)
     - CALL_AWAY:          +(abs(shares)*stock_price - fees)
     - BUY_SHARES:         -(abs(shares)*stock_price + fees)
@@ -132,6 +138,10 @@ def calc_cash_delta(event_type: str, qty_signed: float, price: float, fees: floa
     if et in ("SELL_CSP", "SELL_CC"):
         contracts = abs(safe_float(qty_signed, 0.0))
         return contracts * 100.0 * p - f
+
+    if et == "BUY_TO_CLOSE":
+        contracts = abs(safe_float(qty_signed, 0.0))
+        return -(contracts * 100.0 * p) - f
 
     if et == "ASSIGN_PUT":
         shares = abs(safe_float(qty_signed, 0.0))
@@ -397,16 +407,18 @@ def main():
             ticker = ""
 
         elif et_u in OPTION_EVENTS:
-            # Options UX: contracts always positive, auto option_type, auto premium cash_delta
+            # Options UX: contracts always positive, sign + cash logic by event type
             ticker = safe_upper(st.text_input("Ticker", value=""))
 
             contracts = st.number_input("Contracts (always positive)", min_value=0.0, value=1.0, step=1.0, format="%.0f")
-            opt_price = st.number_input("Option price (premium)", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+            opt_price = st.number_input("Option price", min_value=0.0, value=0.0, step=0.01, format="%.2f")
 
             if et_u == "SELL_CSP":
                 option_type = "put"
             elif et_u == "SELL_CC":
                 option_type = "call"
+            elif et_u == "BUY_TO_CLOSE":
+                option_type = st.selectbox("Option type to close", ["put", "call"], index=0)
 
             strike = st.number_input("Strike", min_value=0.0, value=0.0, step=0.50, format="%.2f")
             expiry = st.date_input("Expiry", value=dt_date.today(), key="expiry_opt")
@@ -414,7 +426,10 @@ def main():
             qty_signed = signed_contract_qty(et_u, contracts)
             price = float(opt_price)
 
-            st.caption("Contracts are stored as a positive count. Premium cash_delta is auto-calculated if enabled below.")
+            if et_u == "BUY_TO_CLOSE":
+                st.caption("BUY_TO_CLOSE is stored as negative contracts. cash_delta is a debit (cash out).")
+            else:
+                st.caption("SELL_* is stored as positive contracts. cash_delta is a credit (cash in).")
 
         elif et_u in SHARE_EVENTS:
             # Shares UX: shares always positive, we enforce sign automatically
@@ -466,11 +481,11 @@ def main():
 
         if et_u in OPTION_EVENTS:
             if safe_float(price) <= 0:
-                errors.append("Option price (premium) must be > 0 for option sells.")
+                errors.append("Option price must be > 0 for option events.")
             if strike is None or safe_float(strike) <= 0:
-                errors.append("Strike must be > 0 for option sells.")
+                errors.append("Strike must be > 0 for option events.")
             if expiry is None:
-                errors.append("Expiry is required for option sells.")
+                errors.append("Expiry is required for option events.")
 
         if et_u == "ADJUSTMENT" and cash_delta == 0:
             st.warning("ADJUSTMENT with cash_delta = 0 will have no impact (that may be intended).")
