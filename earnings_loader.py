@@ -402,7 +402,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--negative-grace-days",
         type=int,
-        default=3,
+        default=365,
         help="Allow small negative days_to_earnings (Yahoo lag). Values below -N become NULL. Default: 3",
     )
     parser.add_argument(
