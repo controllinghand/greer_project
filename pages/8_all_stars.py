@@ -1,4 +1,11 @@
 # 8_all_stars.py
+# ----------------------------------------------------------
+# ⭐ All 3-Star Companies
+# - Uses companies (static metadata)
+# - Uses latest_company_snapshot (fast “latest” indicators: GV/Yield/BuyZone/FVG)
+# - Uses company_snapshot for latest GFV + close (cheap, single table)
+# - Uses company_snapshot for star transition dates (became 3⭐, fell out)
+# ----------------------------------------------------------
 
 import streamlit as st
 import pandas as pd
@@ -21,7 +28,7 @@ def fetch_3star_companies():
         """
         SELECT ticker, name, sector, industry, exchange,
                delisted, delisted_date, greer_star_rating
-        FROM companies
+        FROM public.companies
         WHERE greer_star_rating >= 3
         ORDER BY ticker;
         """,
@@ -29,15 +36,23 @@ def fetch_3star_companies():
     )
 
 @st.cache_data(ttl=600)
-def fetch_latest_snapshot(tickers):
+def fetch_latest_company_snapshot(tickers):
+    """
+    Pulls latest indicator fields for tickers from materialized view:
+      - greer_value_score, above_50_count, greer_yield_score
+      - buyzone_flag (+ bz_start_date/bz_end_date)
+      - fvg_last_date/fvg_last_direction (active/unmitigated from fair_value_gaps)
+      - first_trade_date, is_new_company
+    """
     engine = get_engine()
     if not tickers:
         return pd.DataFrame()
+
     placeholders = ", ".join(["%s"] * len(tickers))
     return pd.read_sql(
         f"""
         SELECT *
-        FROM latest_company_snapshot
+        FROM public.latest_company_snapshot
         WHERE ticker IN ({placeholders})
         """,
         engine,
@@ -45,49 +60,32 @@ def fetch_latest_snapshot(tickers):
     )
 
 @st.cache_data(ttl=600)
-def fetch_latest_gfv(tickers):
+def fetch_latest_gfv_from_company_snapshot(tickers):
+    """
+    Gets the latest close + gfv_price from company_snapshot (per ticker).
+    We compute a simple GFV status on the page (undervalued/overvalued) to avoid
+    hitting greer_fair_value_daily.
+    """
     engine = get_engine()
     if not tickers:
         return pd.DataFrame()
+
     placeholders = ", ".join(["%s"] * len(tickers))
     return pd.read_sql(
         f"""
         SELECT DISTINCT ON (ticker)
                ticker,
-               close_price,
-               gfv_price,
-               gfv_status
-        FROM greer_fair_value_daily
+               snapshot_date::date AS gfv_date,
+               close AS close_price,
+               gfv_price
+        FROM public.company_snapshot
         WHERE ticker IN ({placeholders})
-        ORDER BY ticker, date DESC
+        ORDER BY ticker, snapshot_date DESC;
         """,
         engine,
         params=tuple(tickers),
     )
 
-@st.cache_data(ttl=600)
-def fetch_latest_buyzone(tickers):
-    engine = get_engine()
-    if not tickers:
-        return pd.DataFrame()
-    placeholders = ", ".join(["%s"] * len(tickers))
-    return pd.read_sql(
-        f"""
-        SELECT DISTINCT ON (ticker)
-               ticker,
-               in_buyzone,
-               in_sellzone
-        FROM greer_buyzone_daily
-        WHERE ticker IN ({placeholders})
-        ORDER BY ticker, date DESC
-        """,
-        engine,
-        params=tuple(tickers),
-    )
-
-# ----------------------------------------------------------
-# NEW: star transition dates from company_snapshot
-# ----------------------------------------------------------
 @st.cache_data(ttl=600)
 def fetch_star_transitions(tickers):
     """
@@ -145,6 +143,31 @@ def fetch_star_transitions(tickers):
     )
 
 # ----------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------
+def make_link(t):
+    return f'<a href="/?ticker={t}" target="_self">{t}</a>'
+
+def badge(v: bool) -> str:
+    return "✅" if bool(v) else ""
+
+def fmt_date(x):
+    if pd.isna(x) or x is None:
+        return ""
+    try:
+        return pd.to_datetime(x).date().isoformat()
+    except Exception:
+        return str(x)
+
+def fmt_pct(x):
+    if x is None or pd.isna(x):
+        return ""
+    try:
+        return f"{float(x):.1f}%"
+    except Exception:
+        return str(x)
+
+# ----------------------------------------------------------
 # Load data
 # ----------------------------------------------------------
 stars_df = fetch_3star_companies()
@@ -153,9 +176,9 @@ if stars_df.empty:
     st.stop()
 
 tickers = stars_df["ticker"].tolist()
-snap_df = fetch_latest_snapshot(tickers)
-gfv_df = fetch_latest_gfv(tickers)
-bz_df = fetch_latest_buyzone(tickers)
+
+snap_df = fetch_latest_company_snapshot(tickers)
+gfv_df = fetch_latest_gfv_from_company_snapshot(tickers)
 tr_df = fetch_star_transitions(tickers)
 
 # ----------------------------------------------------------
@@ -163,40 +186,67 @@ tr_df = fetch_star_transitions(tickers)
 # ----------------------------------------------------------
 df = stars_df.merge(snap_df, how="left", on="ticker")
 df = df.merge(gfv_df, how="left", on="ticker")
-df = df.merge(bz_df, how="left", on="ticker")
 df = df.merge(tr_df, how="left", on="ticker")
 
-# Normalize flags
-for col in ["in_buyzone", "in_sellzone"]:
-    if col not in df.columns:
-        df[col] = False
-    df[col] = df[col].fillna(False).astype(bool)
+# ----------------------------------------------------------
+# Normalize / Derived fields
+# ----------------------------------------------------------
+# BuyZone
+if "buyzone_flag" not in df.columns:
+    df["buyzone_flag"] = False
+df["buyzone_flag"] = df["buyzone_flag"].fillna(False).astype(bool)
+
+# FVG (from latest_company_snapshot: active/unmitigated)
+if "fvg_last_direction" not in df.columns:
+    df["fvg_last_direction"] = ""
+df["fvg_last_direction"] = df["fvg_last_direction"].fillna("").astype(str)
+
+if "fvg_last_date" not in df.columns:
+    df["fvg_last_date"] = pd.NaT
+
+df["fvg_bullish"] = df["fvg_last_direction"].str.upper().eq("BULLISH")
+df["fvg_bearish"] = df["fvg_last_direction"].str.upper().eq("BEARISH")
+
+# GFV status (simple, derived)
+df["gfv_status"] = ""
+if "close_price" in df.columns and "gfv_price" in df.columns:
+    close = pd.to_numeric(df["close_price"], errors="coerce")
+    gfv = pd.to_numeric(df["gfv_price"], errors="coerce")
+    ratio = close / gfv
+    # % vs GFV: positive = above GFV, negative = below GFV
+    df["gfv_gap_pct"] = (ratio - 1.0) * 100.0
+
+    df.loc[(close.notna()) & (gfv.notna()) & (close <= gfv), "gfv_status"] = "🟢 Below GFV"
+    df.loc[(close.notna()) & (gfv.notna()) & (close > gfv), "gfv_status"] = "🔴 Above GFV"
+else:
+    df["gfv_gap_pct"] = None
+
+# Days in 3⭐
+today = date.today()
+df["days_in_3star"] = pd.to_datetime(df["became_3star_date"], errors="coerce").dt.date
+df["days_in_3star"] = df["days_in_3star"].apply(lambda d: (today - d).days if d else None)
 
 # ----------------------------------------------------------
-# Show tracking start info (helps explain blanks early on)
+# Show tracking start info
 # ----------------------------------------------------------
 tracking_start = None
 if "tracking_start_date" in df.columns and df["tracking_start_date"].notna().any():
     tracking_start = pd.to_datetime(df["tracking_start_date"].dropna().iloc[0]).date()
     st.caption(f"⭐ Star tracking started on **{tracking_start.isoformat()}** (company_snapshot.greer_star_rating)")
 
-# Days in 3⭐ (only if became date exists)
-today = date.today()
-df["days_in_3star"] = pd.to_datetime(df["became_3star_date"], errors="coerce").dt.date
-df["days_in_3star"] = df["days_in_3star"].apply(lambda d: (today - d).days if d else None)
-
 # ----------------------------------------------------------
-# Top summary metrics (use unique tickers just in case)
+# Top summary metrics
 # ----------------------------------------------------------
 total_count = df["ticker"].nunique()
-buyzone_count = df.loc[df["in_buyzone"], "ticker"].nunique()
-sellzone_count = df.loc[df["in_sellzone"], "ticker"].nunique()
+buyzone_count = df.loc[df["buyzone_flag"], "ticker"].nunique()
+bullish_fvg_count = df.loc[df["fvg_bullish"], "ticker"].nunique()
+bearish_fvg_count = df.loc[df["fvg_bearish"], "ticker"].nunique()
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("⭐ Total 3-Star+ Companies", f"{total_count:,}")
 c2.metric("🟢 In BuyZone", f"{buyzone_count:,}")
-c3.metric("🔴 In SellZone", f"{sellzone_count:,}")
-c4.metric("⚪ Neutral", f"{total_count - buyzone_count - sellzone_count:,}")
+c3.metric("🟩 Bullish FVG", f"{bullish_fvg_count:,}")
+c4.metric("🟥 Bearish FVG", f"{bearish_fvg_count:,}")
 
 # ----------------------------------------------------------
 # Filters
@@ -206,7 +256,7 @@ left, mid, right = st.columns([1.2, 1.2, 2.6])
 with left:
     zone_filter = st.selectbox(
         "Filter",
-        ["All", "BuyZone only", "SellZone only"],
+        ["All", "BuyZone only", "Bullish FVG only", "Bearish FVG only"],
         index=0,
     )
 
@@ -220,30 +270,15 @@ if hide_delisted and "delisted" in df.columns:
     df = df[df["delisted"] == False].copy()
 
 if zone_filter == "BuyZone only":
-    df = df[df["in_buyzone"]]
-elif zone_filter == "SellZone only":
-    df = df[df["in_sellzone"]]
+    df = df[df["buyzone_flag"]]
+elif zone_filter == "Bullish FVG only":
+    df = df[df["fvg_bullish"]]
+elif zone_filter == "Bearish FVG only":
+    df = df[df["fvg_bearish"]]
 
 if df.empty:
     st.info("No companies match the current filter.")
     st.stop()
-
-# ----------------------------------------------------------
-# Render helpers
-# ----------------------------------------------------------
-def make_link(t):
-    return f'<a href="/?ticker={t}" target="_self">{t}</a>'
-
-def badge(v: bool) -> str:
-    return "✅" if v else ""
-
-def fmt_date(x):
-    if pd.isna(x) or x is None:
-        return ""
-    try:
-        return pd.to_datetime(x).date().isoformat()
-    except Exception:
-        return str(x)
 
 # ----------------------------------------------------------
 # Render
@@ -255,13 +290,17 @@ if show_table:
         "became_3star_date",
         "days_in_3star",
         "fell_out_3star_date",
-        "in_buyzone",
-        "in_sellzone",
+        "buyzone_flag",
+        "bz_start_date",
+        "bz_end_date",
         "greer_value_score",
         "above_50_count",
         "greer_yield_score",
+        "fvg_last_direction",
+        "fvg_last_date",
         "gfv_price",
         "gfv_status",
+        "gfv_gap_pct",
         "close_price",
     ]].rename(columns={
         "ticker": "Ticker",
@@ -273,21 +312,42 @@ if show_table:
         "became_3star_date": "Became 3⭐ Date",
         "days_in_3star": "Days in 3⭐",
         "fell_out_3star_date": "Fell Out Date",
-        "in_buyzone": "BuyZone",
-        "in_sellzone": "SellZone",
+        "buyzone_flag": "BuyZone",
+        "bz_start_date": "BZ Start",
+        "bz_end_date": "BZ End",
         "greer_value_score": "Greer Value %",
         "above_50_count": "GV Above50 Count",
         "greer_yield_score": "Yield Score",
+        "fvg_last_direction": "FVG Direction",
+        "fvg_last_date": "FVG Date",
         "gfv_price": "Fair Value (GFV)",
         "gfv_status": "GFV Status",
+        "gfv_gap_pct": "Price vs GFV",
         "close_price": "Current Price",
     })
 
+    # Pretty + links
     tbl["Ticker"] = tbl["Ticker"].apply(make_link)
     tbl["BuyZone"] = tbl["BuyZone"].apply(badge)
-    tbl["SellZone"] = tbl["SellZone"].apply(badge)
     tbl["Became 3⭐ Date"] = tbl["Became 3⭐ Date"].apply(fmt_date)
     tbl["Fell Out Date"] = tbl["Fell Out Date"].apply(fmt_date)
+    tbl["BZ Start"] = tbl["BZ Start"].apply(fmt_date)
+    tbl["BZ End"] = tbl["BZ End"].apply(fmt_date)
+    tbl["FVG Date"] = tbl["FVG Date"].apply(fmt_date)
+
+    # Emoji labeling for direction
+    def fmt_dir(x):
+        s = str(x or "").upper()
+        if s == "BULLISH":
+            return "🟩 BULLISH"
+        if s == "BEARISH":
+            return "🟥 BEARISH"
+        return x or ""
+
+    tbl["FVG Direction"] = tbl["FVG Direction"].apply(fmt_dir)
+
+    # % formatting for GFV gap
+    tbl["Price vs GFV"] = tbl["Price vs GFV"].apply(fmt_pct)
 
     st.markdown(tbl.to_html(escape=False, index=False), unsafe_allow_html=True)
 
@@ -304,11 +364,16 @@ else:
         name = row.get("name", "")
         stars = int(row.get("greer_star_rating", 0))
 
-        zone = (
-            "🟢 BuyZone" if row["in_buyzone"]
-            else "🔴 SellZone" if row["in_sellzone"]
-            else "⚪ Neutral"
-        )
+        # Zone + FVG
+        zone = "🟢 BuyZone" if row.get("buyzone_flag") else "⚪ Neutral"
+        fvg_dir = str(row.get("fvg_last_direction", "") or "").upper()
+        fvg_date = fmt_date(row.get("fvg_last_date"))
+        if fvg_dir == "BULLISH":
+            fvg_txt = f"🟩 Bullish ({fvg_date})" if fvg_date else "🟩 Bullish"
+        elif fvg_dir == "BEARISH":
+            fvg_txt = f"🟥 Bearish ({fvg_date})" if fvg_date else "🟥 Bearish"
+        else:
+            fvg_txt = ""
 
         became = fmt_date(row.get("became_3star_date"))
         days_in = row.get("days_in_3star")
@@ -329,8 +394,12 @@ else:
             "Exchange": row.get("exchange"),
             "Greer Value %": row.get("greer_value_score"),
             "Yield Score": row.get("greer_yield_score"),
-            "Fair Value": row.get("gfv_price"),
+            "BuyZone Start": fmt_date(row.get("bz_start_date")),
+            "BuyZone End": fmt_date(row.get("bz_end_date")),
+            "FVG": fvg_txt,
+            "Fair Value (GFV)": row.get("gfv_price"),
             "GFV Status": row.get("gfv_status"),
+            "Price vs GFV": fmt_pct(row.get("gfv_gap_pct")),
             "Current Price": row.get("close_price"),
         })
 
