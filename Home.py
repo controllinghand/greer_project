@@ -241,59 +241,98 @@ def render_home():
             return "Fairly Valued", "#2196F3", "white"
         return "Overvalued", "#F44336", "white"
 
+    import textwrap
+
     def render_company_card(ticker: str):
         info = get_company_info(ticker)
         if info.empty:
             return
+
         r = info.iloc[0]
-        name = r["name"] if pd.notnull(r["name"]) else "—"
-        sector = r["sector"] if pd.notnull(r["sector"]) else "—"
+        name     = r["name"] if pd.notnull(r["name"]) else "—"
+        sector   = r["sector"] if pd.notnull(r["sector"]) else "—"
         industry = r["industry"] if pd.notnull(r["industry"]) else "—"
         exchange = r["exchange"] if pd.notnull(r["exchange"]) else "—"
+
         delisted = bool(r["delisted"]) if pd.notnull(r["delisted"]) else False
         delisted_line = ""
         if delisted and pd.notnull(r["delisted_date"]):
             dd = pd.to_datetime(r["delisted_date"]).date()
             delisted_line = f"<div class='company-meta'><b>Delisted:</b> {dd}</div>"
 
-        stars = int(r.get("greer_star_rating", 0))
+        stars = int(r.get("greer_star_rating", 0) or 0)
+        star_html = ""
         if stars > 0:
-            # render filled vs empty stars (3-star max)
             star_icons = "★" * stars + "☆" * (3 - stars)
-            star_html = f"<div style='font-size:1.3rem; color:#D4AF37; margin-top:4px;'>{star_icons}  {stars} Gold Star{'s' if stars>1 else ''}</div>"
-        else:
-            star_html = ""
+            star_html = (
+                f"<div style='font-size:1.3rem; color:#D4AF37; margin-top:4px;'>"
+                f"{star_icons} &nbsp; {stars} Gold Star{'s' if stars>1 else ''}"
+                f"</div>"
+            )
 
         # ----------------------------------------------------------
-        # NEW: Became 3⭐ date (from company_snapshot)
+        # NEW: Became 3⭐ + Days @ 3⭐ (Active/Exited)
         # ----------------------------------------------------------
         became_line = ""
         trans = get_star_transition_dates(ticker)
+
         if not trans.empty:
             became = trans.loc[0, "became_3star_date"]
+            fell   = trans.loc[0, "fell_out_3star_date"]
             tracking_start = trans.loc[0, "tracking_start_date"]
 
-            if pd.notnull(became):
-                became_line = f"<div class='company-meta'><b>Became 3⭐:</b> {pd.to_datetime(became).date()}</div>"
-            else:
-                if stars >= 3 and pd.notnull(tracking_start):
-                    ts = pd.to_datetime(tracking_start).date()
-                    became_line = f"<div class='company-meta'><b>Became 3⭐:</b> (already 3⭐ when tracking began {ts})</div>"
+            became_d = pd.to_datetime(became).date() if pd.notnull(became) else None
+            fell_d   = pd.to_datetime(fell).date() if pd.notnull(fell) else None
 
-        st.html(
-            f"""
-            <div class="company-card" style="color: rgb(49, 51, 63);">
-                <div class="company-title">{ticker} — {name}</div>
-                <div class="company-meta"><b>Exchange:</b> {exchange}</div>
-                <div class="company-meta"><b>Sector:</b> {sector}</div>
-                <div class="company-meta"><b>Industry:</b> {industry}</div>
-                {delisted_line}
-                {star_html}
-                {became_line}
-            </div>
-            """
-        )
-        return  # skip the old card render and use the new one
+            # If it was already 3⭐ when tracking began, treat tracking_start as "became"
+            if became_d is None and stars >= 3 and pd.notnull(tracking_start):
+                became_d = pd.to_datetime(tracking_start).date()
+
+            if became_d:
+                # Use the latest snapshot date for this ticker as "as of"
+                latest_d = pd.read_sql(
+                    "SELECT MAX(snapshot_date)::date AS d FROM public.company_snapshot WHERE ticker=%(t)s;",
+                    get_engine(),
+                    params={"t": ticker},
+                )
+                asof = (
+                    pd.to_datetime(latest_d.loc[0, "d"]).date()
+                    if not latest_d.empty and pd.notnull(latest_d.loc[0, "d"])
+                    else date.today()
+                )
+
+                # If we have a fall-out date AFTER became date, it’s an exited run
+                if fell_d and fell_d >= became_d:
+                    days_in = (fell_d - became_d).days + 1
+                    became_line = (
+                        f"<div class='company-meta'><b>3⭐ Entered:</b> {became_d} "
+                        f"&nbsp;|&nbsp; <b>Days @ 3⭐:</b> {days_in} "
+                        f"&nbsp;|&nbsp; <b>Status:</b> Exited {fell_d}</div>"
+                    )
+                else:
+                    days_so_far = (asof - became_d).days + 1
+                    became_line = (
+                        f"<div class='company-meta'><b>3⭐ Entered:</b> {became_d} "
+                        f"&nbsp;|&nbsp; <b>Days @ 3⭐:</b> {days_so_far} "
+                        f"&nbsp;|&nbsp; <b>Status:</b> Active</div>"
+                    )
+
+
+        html = textwrap.dedent(f"""\
+        <div class="company-card" style="color: rgb(49, 51, 63);">
+          <div class="company-title">{ticker} — {name}</div>
+          <div class="company-meta"><b>Exchange:</b> {exchange}</div>
+          <div class="company-meta"><b>Sector:</b> {sector}</div>
+          <div class="company-meta"><b>Industry:</b> {industry}</div>
+          {delisted_line}
+          {star_html}
+          {became_line}
+        </div>
+        """)
+
+        st.markdown(html, unsafe_allow_html=True)
+
+
 
     def render_metric_card(label: str, main_html: str, sub_html: str, bg: str, fg: str):
         st.markdown(
