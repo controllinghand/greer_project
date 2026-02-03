@@ -128,14 +128,15 @@ def render_home():
         return df
 
     # ----------------------------------------------------------
-    # NEW: Star transition dates (became 3⭐ / fell out)
+    # Star transition dates (LATEST 3⭐ RUN)
     # ----------------------------------------------------------
     @st.cache_data(ttl=600)
     def get_star_transition_dates(ticker: str):
         """
-        Returns:
-          - became_3star_date: first date the ticker crossed into >=3 since star tracking began
-          - fell_out_3star_date: most recent date ticker crossed from >=3 to <3
+        Returns the latest 3⭐ run summary:
+          - entered_3star_date: most recent date the ticker crossed into >=3
+          - exited_3star_date: first date the ticker crossed from >=3 to <3 AFTER that enter (NULL if still 3⭐)
+          - days_in_3star: inclusive days in that run (only set if exited)
           - tracking_start_date: first date we started storing greer_star_rating in company_snapshot
         """
         engine = get_engine()
@@ -149,28 +150,56 @@ def render_home():
             s AS (
               SELECT
                 cs.snapshot_date::date AS d,
-                cs.greer_star_rating,
-                LAG(cs.greer_star_rating) OVER (ORDER BY cs.snapshot_date) AS prev_star
+                cs.greer_star_rating AS star,
+                LAG(cs.greer_star_rating)  OVER (ORDER BY cs.snapshot_date) AS prev_star,
+                LEAD(cs.greer_star_rating) OVER (ORDER BY cs.snapshot_date) AS next_star
               FROM public.company_snapshot cs
               WHERE cs.ticker = %(t)s
                 AND cs.greer_star_rating IS NOT NULL
+            ),
+            enters AS (
+              SELECT d AS entered_3star_date
+              FROM s
+              WHERE star >= 3 AND (prev_star < 3 OR prev_star IS NULL)
+            ),
+            last_enter AS (
+              SELECT MAX(entered_3star_date) AS entered_3star_date
+              FROM enters
+            ),
+            exits AS (
+              SELECT d AS exited_3star_date
+              FROM s
+              WHERE star < 3 AND prev_star >= 3
+            ),
+            last_exit AS (
+              SELECT MIN(e.exited_3star_date) AS exited_3star_date
+              FROM exits e
+              WHERE e.exited_3star_date > (SELECT entered_3star_date FROM last_enter)
+            ),
+            last_day AS (
+              SELECT MAX(d) AS last_day_3star
+              FROM s
+              WHERE star >= 3
+                AND next_star < 3
+                AND d >= (SELECT entered_3star_date FROM last_enter)
             )
             SELECT
-              MIN(d) FILTER (
-                WHERE greer_star_rating >= 3
-                  AND (prev_star < 3 OR prev_star IS NULL)
-              ) AS became_3star_date,
-              MAX(d) FILTER (
-                WHERE greer_star_rating < 3
-                  AND prev_star >= 3
-              ) AS fell_out_3star_date,
+              (SELECT entered_3star_date FROM last_enter) AS entered_3star_date,
+              (SELECT exited_3star_date FROM last_exit)   AS exited_3star_date,
+              CASE
+                WHEN (SELECT entered_3star_date FROM last_enter) IS NULL THEN NULL
+                WHEN (SELECT exited_3star_date FROM last_exit) IS NOT NULL
+                  THEN ((SELECT last_day_3star FROM last_day) - (SELECT entered_3star_date FROM last_enter) + 1)
+                ELSE NULL
+              END AS days_in_3star,
               (SELECT tracking_start_date FROM tracking) AS tracking_start_date
-            FROM s;
+            ;
             """,
             engine,
             params={"t": ticker},
         )
         return df
+
 
     @st.cache_data(ttl=300)
     def get_latest_gfv(ticker: str, _cache_buster=None):
@@ -271,25 +300,26 @@ def render_home():
             )
 
         # ----------------------------------------------------------
-        # NEW: Became 3⭐ + Days @ 3⭐ (Active/Exited)
+        # 3⭐ Entered + Days @ 3⭐ (Active/Exited) — latest run
         # ----------------------------------------------------------
         became_line = ""
         trans = get_star_transition_dates(ticker)
 
         if not trans.empty:
-            became = trans.loc[0, "became_3star_date"]
-            fell   = trans.loc[0, "fell_out_3star_date"]
+            entered = trans.loc[0, "entered_3star_date"]
+            exited  = trans.loc[0, "exited_3star_date"]
+            days    = trans.loc[0, "days_in_3star"]
             tracking_start = trans.loc[0, "tracking_start_date"]
 
-            became_d = pd.to_datetime(became).date() if pd.notnull(became) else None
-            fell_d   = pd.to_datetime(fell).date() if pd.notnull(fell) else None
+            entered_d = pd.to_datetime(entered).date() if pd.notnull(entered) else None
+            exited_d  = pd.to_datetime(exited).date() if pd.notnull(exited) else None
 
-            # If it was already 3⭐ when tracking began, treat tracking_start as "became"
-            if became_d is None and stars >= 3 and pd.notnull(tracking_start):
-                became_d = pd.to_datetime(tracking_start).date()
+            # If already 3⭐ when tracking began
+            if entered_d is None and stars >= 3 and pd.notnull(tracking_start):
+                entered_d = pd.to_datetime(tracking_start).date()
 
-            if became_d:
-                # Use the latest snapshot date for this ticker as "as of"
+            if entered_d:
+                # asof uses latest snapshot date for this ticker
                 latest_d = pd.read_sql(
                     "SELECT MAX(snapshot_date)::date AS d FROM public.company_snapshot WHERE ticker=%(t)s;",
                     get_engine(),
@@ -301,21 +331,21 @@ def render_home():
                     else date.today()
                 )
 
-                # If we have a fall-out date AFTER became date, it’s an exited run
-                if fell_d and fell_d >= became_d:
-                    days_in = (fell_d - became_d).days + 1
+                if exited_d:
+                    days_in = int(days) if pd.notnull(days) else (exited_d - entered_d).days + 1
                     became_line = (
-                        f"<div class='company-meta'><b>3⭐ Entered:</b> {became_d} "
+                        f"<div class='company-meta'><b>3⭐ Entered:</b> {entered_d} "
                         f"&nbsp;|&nbsp; <b>Days @ 3⭐:</b> {days_in} "
-                        f"&nbsp;|&nbsp; <b>Status:</b> Exited {fell_d}</div>"
+                        f"&nbsp;|&nbsp; <b>Status:</b> Exited {exited_d}</div>"
                     )
                 else:
-                    days_so_far = (asof - became_d).days + 1
+                    days_so_far = (asof - entered_d).days + 1
                     became_line = (
-                        f"<div class='company-meta'><b>3⭐ Entered:</b> {became_d} "
+                        f"<div class='company-meta'><b>3⭐ Entered:</b> {entered_d} "
                         f"&nbsp;|&nbsp; <b>Days @ 3⭐:</b> {days_so_far} "
                         f"&nbsp;|&nbsp; <b>Status:</b> Active</div>"
                     )
+
 
 
         html = textwrap.dedent(f"""\
