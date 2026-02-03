@@ -76,14 +76,24 @@ def main():
     if not nav.empty:
         nav["nav_date"] = pd.to_datetime(nav["nav_date"]).dt.date
 
+    
+
+    # Windowed events (for credits, charts, tables)
     events = load_events_optionsfund(portfolio_id=portfolio_id, start_date=start_date)
     if not events.empty:
-        events["event_time"] = pd.to_datetime(events["event_time"])
+        events["event_time"] = pd.to_datetime(events["event_time"], errors="coerce")
         events["expiry"] = pd.to_datetime(events["expiry"], errors="coerce").dt.date
+
+    # All events since portfolio start (for holdings so they don't disappear when start_date changes)
+    events_all = load_events_optionsfund(portfolio_id=portfolio_id, start_date=portfolio_start)
+    if not events_all.empty:
+        events_all["event_time"] = pd.to_datetime(events_all["event_time"], errors="coerce")
+        events_all["expiry"] = pd.to_datetime(events_all["expiry"], errors="coerce").dt.date
 
     if (nav_all.empty and nav.empty) and events.empty:
         st.info("No NAV or ledger events found for this date window yet.")
         return
+    
 
     # Credits (premium inflows) = cash_delta on SELL_CSP/SELL_CC
     credits_gross = 0.0
@@ -116,12 +126,14 @@ def main():
     st.divider()
     render_year_summary_blocks(nav_all=nav_all, portfolio_start_date=portfolio_start, years=[2026])
     
-    # Debug
+    # Debug (temporary)
+    share_like = ["BUY_SHARES", "SELL_SHARES", "ASSIGN_PUT", "CALL_AWAY", "ASSIGN_CALL"]
     st.write("DEBUG holdings:")
     st.write("portfolio_id:", portfolio_id)
     st.write("events_all rows:", len(events_all))
-    st.write("share-like rows:", len(events_all[events_all["event_type"].astype(str).str.upper().isin(list(SHARE_BUY_TYPES | SHARE_SELL_TYPES))]))
+    st.write("share-like rows:", len(events_all[events_all["event_type"].astype(str).str.upper().isin(share_like)]))
     st.write("DUOL rows:", len(events_all[events_all["ticker"].astype(str).str.upper() == "DUOL"]))
+
 
     # ----------------------------------------------------------
     # Open Holdings
@@ -129,7 +141,7 @@ def main():
     st.divider()
     st.subheader("📦 Open holdings (assignments)")
 
-    open_eq = calc_open_equity_with_unrealized(events)
+    open_eq = calc_open_equity_with_unrealized(events_all)
 
     if open_eq.empty:
         st.caption("No open share positions detected.")
