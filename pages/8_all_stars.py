@@ -91,7 +91,6 @@ def fetch_star_transitions(tickers):
     """
     Returns per ticker:
       - entered_3star_date: most recent date it crossed into >=3 (latest run entry)
-      - exit_after_enter: first date it crossed from >=3 to <3 AFTER that latest entry (null if active)
       - last_exit_date: most recent exit date overall (kept for history)
       - tracking_start_date: when star tracking began (global)
       - asof_date: latest snapshot date for that ticker (for accurate day counts)
@@ -114,7 +113,10 @@ def fetch_star_transitions(tickers):
             cs.ticker,
             cs.snapshot_date::date AS d,
             cs.greer_star_rating AS star,
-            LAG(cs.greer_star_rating)  OVER (PARTITION BY cs.ticker ORDER BY cs.snapshot_date) AS prev_star
+            LAG(cs.greer_star_rating) OVER (
+              PARTITION BY cs.ticker
+              ORDER BY cs.snapshot_date
+            ) AS prev_star
           FROM public.company_snapshot cs
           WHERE cs.greer_star_rating IS NOT NULL
             AND cs.ticker IN ({placeholders})
@@ -134,13 +136,6 @@ def fetch_star_transitions(tickers):
           FROM s
           WHERE star < 3 AND prev_star >= 3
         ),
-        exit_after_enter AS (
-          SELECT e.ticker, MIN(e.exited) AS exit_after_enter
-          FROM exits e
-          JOIN last_enter le ON le.ticker = e.ticker
-          WHERE e.exited > le.entered_3star_date
-          GROUP BY e.ticker
-        ),
         last_exit AS (
           SELECT ticker, MAX(exited) AS last_exit_date
           FROM exits
@@ -155,18 +150,17 @@ def fetch_star_transitions(tickers):
         SELECT
           le.ticker,
           le.entered_3star_date,
-          ea.exit_after_enter,
           lx.last_exit_date,
           (SELECT tracking_start_date FROM tracking) AS tracking_start_date,
           a.asof_date
         FROM last_enter le
-        LEFT JOIN exit_after_enter ea ON ea.ticker = le.ticker
-        LEFT JOIN last_exit lx       ON lx.ticker = le.ticker
-        LEFT JOIN asof a             ON a.ticker = le.ticker;
+        LEFT JOIN last_exit lx ON lx.ticker = le.ticker
+        LEFT JOIN asof a       ON a.ticker = le.ticker;
         """,
         engine,
-        params=tuple(tickers) + tuple(tickers),  # placeholders used twice
+        params=tuple(tickers) + tuple(tickers),  # placeholders used twice (s + asof)
     )
+
 
 
 # ----------------------------------------------------------
@@ -250,35 +244,20 @@ else:
 
 # Days in 3⭐ (latest run)
 df["entered_3star_date"] = pd.to_datetime(df.get("entered_3star_date"), errors="coerce").dt.date
-df["exit_after_enter"]   = pd.to_datetime(df.get("exit_after_enter"), errors="coerce").dt.date
 df["asof_date"]          = pd.to_datetime(df.get("asof_date"), errors="coerce").dt.date
 
 from datetime import date
-import pandas as pd
+
+today = date.today()
 
 def calc_days(row):
     entered = row.get("entered_3star_date")
-    exited  = row.get("exit_after_enter")
-    asof    = row.get("asof_date")
+    asof = row.get("asof_date") or today
 
-    # entered is required
-    if pd.isna(entered) or entered is None:
+    if not entered:
         return None
 
-    # asof fallback
-    if pd.isna(asof) or asof is None:
-        asof = date.today()
-
-    # if exited is missing, treat as active
-    if pd.isna(exited) or exited is None:
-        return (asof - entered).days + 1
-
-    # exited is real
-    if exited >= entered:
-        return (exited - entered).days + 1
-
-    # weird edge case (shouldn't happen)
-    return None
+    return (asof - entered).days + 1
 
 
 df["days_in_3star"] = df.apply(calc_days, axis=1)
@@ -347,7 +326,6 @@ if show_table:
         "greer_star_rating",
         "entered_3star_date",
         "days_in_3star",
-        "exit_after_enter",
         "last_exit_date",
         "buyzone_flag",
         "bz_start_date",
@@ -369,8 +347,6 @@ if show_table:
         "exchange": "Exchange",
         "greer_star_rating": "Stars",
         "entered_3star_date": "3⭐ Entered",
-        "days_in_3star": "Days in 3⭐",
-        "exit_after_enter": "Exited (current run)",
         "last_exit_date": "Last Exit (history)",
         "buyzone_flag": "BuyZone",
         "bz_start_date": "BZ Start",
@@ -390,7 +366,6 @@ if show_table:
     tbl["Ticker"] = tbl["Ticker"].apply(make_link)
     tbl["BuyZone"] = tbl["BuyZone"].apply(badge)
     tbl["3⭐ Entered"] = tbl["3⭐ Entered"].apply(fmt_date)
-    tbl["Exited (current run)"] = tbl["Exited (current run)"].apply(fmt_date)
     tbl["Last Exit (history)"] = tbl["Last Exit (history)"].apply(fmt_date)
     tbl["BZ Start"] = tbl["BZ Start"].apply(fmt_date)
     tbl["BZ End"] = tbl["BZ End"].apply(fmt_date)
