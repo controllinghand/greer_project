@@ -274,7 +274,12 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
     e["event_type"] = e["event_type"].astype(str).str.upper()
     e["ticker"] = e["ticker"].fillna("").astype(str).str.upper().str.strip()
     e = e[(e["ticker"] != "")]
-    e = e[e["event_type"].isin(["BUY_SHARES", "SELL_SHARES"])].copy()
+    # Treat assignment events as share buys for holdings/cost basis
+    share_buy_types = {"BUY_SHARES", "ASSIGN_PUT"}
+    share_sell_types = {"SELL_SHARES"}  # keep simple for now
+
+    e = e[e["event_type"].isin(share_buy_types | share_sell_types)].copy()
+
 
     e["event_time"] = pd.to_datetime(e["event_time"], errors="coerce")
     e = e.sort_values(["ticker", "event_time", "event_id"], ascending=True)
@@ -354,9 +359,30 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
             }
         )
 
+    # Build final DF (guard: out can be empty → pandas makes df with zero columns)
+    cols = [
+        "ticker", "shares", "cost_basis", "avg_cost",
+        "realized_pl", "realized_cost", "realized_proceeds", "realized_pct",
+    ]
+
+    if not out:
+        return pd.DataFrame(columns=cols)
+
     df = pd.DataFrame(out)
-    df = df[(abs(df["shares"]) > 1e-9) | (abs(df["realized_proceeds"]) > 1e-9) | (abs(df["realized_pl"]) > 1e-9)].copy()
+
+    # Guard: if something weird happens and cols are missing, return typed empty
+    for c in cols:
+        if c not in df.columns:
+            return pd.DataFrame(columns=cols)
+
+    df = df[
+        (df["shares"].abs() > 1e-9) |
+        (df["realized_proceeds"].abs() > 1e-9) |
+        (df["realized_pl"].abs() > 1e-9)
+    ].copy()
+
     return df
+
 
 # ----------------------------------------------------------
 # Options-fund analytics: Open equity holdings (assignments)
