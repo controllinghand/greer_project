@@ -116,6 +116,16 @@ def main():
     st.divider()
     render_year_summary_blocks(nav_all=nav_all, portfolio_start_date=portfolio_start, years=[2026])
     
+    # Debug
+    st.write("DEBUG holdings:")
+    st.write("portfolio_id:", portfolio_id)
+    st.write("events_all rows:", len(events_all))
+    st.write("share-like rows:", len(events_all[events_all["event_type"].astype(str).str.upper().isin(list(SHARE_BUY_TYPES | SHARE_SELL_TYPES))]))
+    st.write("DUOL rows:", len(events_all[events_all["ticker"].astype(str).str.upper() == "DUOL"]))
+
+    # ----------------------------------------------------------
+    # Open Holdings
+    # ---------------------------------------------------------
     st.divider()
     st.subheader("📦 Open holdings (assignments)")
 

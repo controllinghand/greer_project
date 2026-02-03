@@ -239,6 +239,20 @@ def load_latest_prices_and_names(tickers: list[str]) -> pd.DataFrame:
         return pd.read_sql(q, conn, params={"tickers": tickers})
 
 # ----------------------------------------------------------
+# Share-equivalent event types (wheel support)
+# ----------------------------------------------------------
+SHARE_BUY_TYPES = {
+    "BUY_SHARES",
+    "ASSIGN_PUT",      # put assigned → shares acquired
+}
+
+SHARE_SELL_TYPES = {
+    "SELL_SHARES",
+    "CALL_AWAY",       # covered call assigned → shares sold
+    "ASSIGN_CALL",     # (if you ever use this name instead of CALL_AWAY)
+}
+
+# ----------------------------------------------------------
 # Stock-fund analytics (BUY_SHARES / SELL_SHARES only)
 # ----------------------------------------------------------
 def calc_cashflows_stockfund(events: pd.DataFrame) -> dict:
@@ -261,27 +275,36 @@ def calc_cashflows_stockfund(events: pd.DataFrame) -> dict:
 
     return {"fees_total": fees_total, "deposits_net": deposits_net, "trade_cashflow": trade_cashflow}
 
+# ----------------------------------------------------------
+# Calculate Profit and loss
+# ----------------------------------------------------------
 def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
+    # ----------------------------------------------------------
+    # Computes per-ticker avg-cost, realized P/L, and remaining shares
+    # Supports wheel share-equivalents:
+    #   BUY: BUY_SHARES, ASSIGN_PUT
+    #   SELL: SELL_SHARES, CALL_AWAY, ASSIGN_CALL
+    # ----------------------------------------------------------
+    cols = [
+        "ticker", "shares", "cost_basis", "avg_cost",
+        "realized_pl", "realized_cost", "realized_proceeds", "realized_pct",
+    ]
+
     if events is None or events.empty:
-        return pd.DataFrame(
-            columns=[
-                "ticker", "shares", "cost_basis", "avg_cost",
-                "realized_pl", "realized_cost", "realized_proceeds", "realized_pct",
-            ]
-        )
+        return pd.DataFrame(columns=cols)
 
     e = events.copy()
     e["event_type"] = e["event_type"].astype(str).str.upper()
     e["ticker"] = e["ticker"].fillna("").astype(str).str.upper().str.strip()
-    e = e[(e["ticker"] != "")]
-    # Treat assignment events as share buys for holdings/cost basis
-    share_buy_types = {"BUY_SHARES", "ASSIGN_PUT"}
-    share_sell_types = {"SELL_SHARES"}  # keep simple for now
+    e = e[e["ticker"] != ""].copy()
 
-    e = e[e["event_type"].isin(share_buy_types | share_sell_types)].copy()
-
+    # Keep only share-impacting events (including assignments/call-away)
+    e = e[e["event_type"].isin(SHARE_BUY_TYPES | SHARE_SELL_TYPES)].copy()
+    if e.empty:
+        return pd.DataFrame(columns=cols)
 
     e["event_time"] = pd.to_datetime(e["event_time"], errors="coerce")
+    e = e.dropna(subset=["event_time"]).copy()
     e = e.sort_values(["ticker", "event_time", "event_id"], ascending=True)
 
     e["quantity"] = pd.to_numeric(e["quantity"], errors="coerce").fillna(0.0)
@@ -289,10 +312,10 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
     e["fees"] = pd.to_numeric(e["fees"], errors="coerce").fillna(0.0)
     e["cash_delta"] = pd.to_numeric(e["cash_delta"], errors="coerce")
 
+    # Infer missing price from cash_delta where possible
     missing_price = e["price"].isna() | (e["price"] <= 0)
     can_infer = missing_price & e["cash_delta"].notna() & (e["quantity"].abs() > 0)
     e.loc[can_infer, "price"] = (e.loc[can_infer, "cash_delta"].abs() / e.loc[can_infer, "quantity"].abs())
-
     e["price"] = e["price"].fillna(0.0)
 
     out = []
@@ -313,11 +336,16 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
             if qty <= 0:
                 continue
 
-            if r["event_type"] == "BUY_SHARES":
+            et = str(r["event_type"])
+
+            # BUY side (includes ASSIGN_PUT)
+            if et in SHARE_BUY_TYPES:
                 shares += qty
                 basis += (qty * px) + fee
+                continue
 
-            elif r["event_type"] == "SELL_SHARES":
+            # SELL side (includes CALL_AWAY / ASSIGN_CALL)
+            if et in SHARE_SELL_TYPES:
                 if shares <= 0:
                     shares = 0.0
                     basis = 0.0
@@ -327,6 +355,7 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
                 avg_cost = (basis / shares) if shares > 0 else 0.0
                 cost_removed = sell_qty * avg_cost
 
+                # Prefer cash_delta if present (net proceeds). Otherwise infer from price/fee.
                 if pd.notna(r["cash_delta"]):
                     proceeds_net = float(r["cash_delta"])
                 else:
@@ -359,18 +388,12 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
             }
         )
 
-    # Build final DF (guard: out can be empty → pandas makes df with zero columns)
-    cols = [
-        "ticker", "shares", "cost_basis", "avg_cost",
-        "realized_pl", "realized_cost", "realized_proceeds", "realized_pct",
-    ]
-
     if not out:
         return pd.DataFrame(columns=cols)
 
     df = pd.DataFrame(out)
 
-    # Guard: if something weird happens and cols are missing, return typed empty
+    # Ensure expected columns exist
     for c in cols:
         if c not in df.columns:
             return pd.DataFrame(columns=cols)
@@ -382,6 +405,7 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
     ].copy()
 
     return df
+
 
 
 # ----------------------------------------------------------
