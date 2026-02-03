@@ -89,10 +89,12 @@ def fetch_latest_gfv_from_company_snapshot(tickers):
 @st.cache_data(ttl=600)
 def fetch_star_transitions(tickers):
     """
-    Computes:
-      - became_3star_date: first date a ticker crosses into >=3 since tracking began
-      - fell_out_3star_date: most recent date a ticker crosses from >=3 to <3
-      - tracking_start_date: first snapshot_date where greer_star_rating is present (global)
+    Returns per ticker:
+      - entered_3star_date: most recent date it crossed into >=3 (latest run entry)
+      - exit_after_enter: first date it crossed from >=3 to <3 AFTER that latest entry (null if active)
+      - last_exit_date: most recent exit date overall (kept for history)
+      - tracking_start_date: when star tracking began (global)
+      - asof_date: latest snapshot date for that ticker (for accurate day counts)
     """
     engine = get_engine()
     if not tickers:
@@ -111,36 +113,61 @@ def fetch_star_transitions(tickers):
           SELECT
             cs.ticker,
             cs.snapshot_date::date AS d,
-            cs.greer_star_rating,
-            LAG(cs.greer_star_rating) OVER (PARTITION BY cs.ticker ORDER BY cs.snapshot_date) AS prev_star
+            cs.greer_star_rating AS star,
+            LAG(cs.greer_star_rating)  OVER (PARTITION BY cs.ticker ORDER BY cs.snapshot_date) AS prev_star
           FROM public.company_snapshot cs
           WHERE cs.greer_star_rating IS NOT NULL
             AND cs.ticker IN ({placeholders})
         ),
-        agg AS (
-          SELECT
-            ticker,
-            MIN(d) FILTER (
-              WHERE greer_star_rating >= 3
-                AND (prev_star < 3 OR prev_star IS NULL)
-            ) AS became_3star_date,
-            MAX(d) FILTER (
-              WHERE greer_star_rating < 3
-                AND prev_star >= 3
-            ) AS fell_out_3star_date
+        enters AS (
+          SELECT ticker, d AS entered
           FROM s
+          WHERE star >= 3 AND (prev_star < 3 OR prev_star IS NULL)
+        ),
+        last_enter AS (
+          SELECT ticker, MAX(entered) AS entered_3star_date
+          FROM enters
+          GROUP BY ticker
+        ),
+        exits AS (
+          SELECT ticker, d AS exited
+          FROM s
+          WHERE star < 3 AND prev_star >= 3
+        ),
+        exit_after_enter AS (
+          SELECT e.ticker, MIN(e.exited) AS exit_after_enter
+          FROM exits e
+          JOIN last_enter le ON le.ticker = e.ticker
+          WHERE e.exited > le.entered_3star_date
+          GROUP BY e.ticker
+        ),
+        last_exit AS (
+          SELECT ticker, MAX(exited) AS last_exit_date
+          FROM exits
+          GROUP BY ticker
+        ),
+        asof AS (
+          SELECT ticker, MAX(snapshot_date)::date AS asof_date
+          FROM public.company_snapshot
+          WHERE ticker IN ({placeholders})
           GROUP BY ticker
         )
         SELECT
-          a.ticker,
-          a.became_3star_date,
-          a.fell_out_3star_date,
-          (SELECT tracking_start_date FROM tracking) AS tracking_start_date
-        FROM agg a;
+          le.ticker,
+          le.entered_3star_date,
+          ea.exit_after_enter,
+          lx.last_exit_date,
+          (SELECT tracking_start_date FROM tracking) AS tracking_start_date,
+          a.asof_date
+        FROM last_enter le
+        LEFT JOIN exit_after_enter ea ON ea.ticker = le.ticker
+        LEFT JOIN last_exit lx       ON lx.ticker = le.ticker
+        LEFT JOIN asof a             ON a.ticker = le.ticker;
         """,
         engine,
-        params=tuple(tickers),
+        params=tuple(tickers) + tuple(tickers),  # placeholders used twice
     )
+
 
 # ----------------------------------------------------------
 # Helpers
@@ -221,10 +248,41 @@ if "close_price" in df.columns and "gfv_price" in df.columns:
 else:
     df["gfv_gap_pct"] = None
 
-# Days in 3⭐
-today = date.today()
-df["days_in_3star"] = pd.to_datetime(df["became_3star_date"], errors="coerce").dt.date
-df["days_in_3star"] = df["days_in_3star"].apply(lambda d: (today - d).days if d else None)
+# Days in 3⭐ (latest run)
+df["entered_3star_date"] = pd.to_datetime(df.get("entered_3star_date"), errors="coerce").dt.date
+df["exit_after_enter"]   = pd.to_datetime(df.get("exit_after_enter"), errors="coerce").dt.date
+df["asof_date"]          = pd.to_datetime(df.get("asof_date"), errors="coerce").dt.date
+
+from datetime import date
+import pandas as pd
+
+def calc_days(row):
+    entered = row.get("entered_3star_date")
+    exited  = row.get("exit_after_enter")
+    asof    = row.get("asof_date")
+
+    # entered is required
+    if pd.isna(entered) or entered is None:
+        return None
+
+    # asof fallback
+    if pd.isna(asof) or asof is None:
+        asof = date.today()
+
+    # if exited is missing, treat as active
+    if pd.isna(exited) or exited is None:
+        return (asof - entered).days + 1
+
+    # exited is real
+    if exited >= entered:
+        return (exited - entered).days + 1
+
+    # weird edge case (shouldn't happen)
+    return None
+
+
+df["days_in_3star"] = df.apply(calc_days, axis=1)
+
 
 # ----------------------------------------------------------
 # Show tracking start info
@@ -287,9 +345,10 @@ if show_table:
     tbl = df[[
         "ticker", "name", "sector", "industry", "exchange",
         "greer_star_rating",
-        "became_3star_date",
+        "entered_3star_date",
         "days_in_3star",
-        "fell_out_3star_date",
+        "exit_after_enter",
+        "last_exit_date",
         "buyzone_flag",
         "bz_start_date",
         "bz_end_date",
@@ -309,9 +368,10 @@ if show_table:
         "industry": "Industry",
         "exchange": "Exchange",
         "greer_star_rating": "Stars",
-        "became_3star_date": "Became 3⭐ Date",
+        "entered_3star_date": "3⭐ Entered",
         "days_in_3star": "Days in 3⭐",
-        "fell_out_3star_date": "Fell Out Date",
+        "exit_after_enter": "Exited (current run)",
+        "last_exit_date": "Last Exit (history)",
         "buyzone_flag": "BuyZone",
         "bz_start_date": "BZ Start",
         "bz_end_date": "BZ End",
@@ -329,8 +389,9 @@ if show_table:
     # Pretty + links
     tbl["Ticker"] = tbl["Ticker"].apply(make_link)
     tbl["BuyZone"] = tbl["BuyZone"].apply(badge)
-    tbl["Became 3⭐ Date"] = tbl["Became 3⭐ Date"].apply(fmt_date)
-    tbl["Fell Out Date"] = tbl["Fell Out Date"].apply(fmt_date)
+    tbl["3⭐ Entered"] = tbl["3⭐ Entered"].apply(fmt_date)
+    tbl["Exited (current run)"] = tbl["Exited (current run)"].apply(fmt_date)
+    tbl["Last Exit (history)"] = tbl["Last Exit (history)"].apply(fmt_date)
     tbl["BZ Start"] = tbl["BZ Start"].apply(fmt_date)
     tbl["BZ End"] = tbl["BZ End"].apply(fmt_date)
     tbl["FVG Date"] = tbl["FVG Date"].apply(fmt_date)
