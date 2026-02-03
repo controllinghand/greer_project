@@ -359,6 +359,74 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ----------------------------------------------------------
+# Options-fund analytics: Open equity holdings (assignments)
+# - Uses BUY_SHARES / SELL_SHARES to detect current stock
+# - Adds latest close + unrealized P&L
+# ----------------------------------------------------------
+def calc_open_equity_with_unrealized(events: pd.DataFrame) -> pd.DataFrame:
+    """
+    Returns open equity positions with latest close + unrealized P&L.
+    Intended for options-income funds where assignments create stock.
+
+    Output columns:
+      ticker, name, shares, avg_cost, cost_basis, last_close, mkt_value, unrealized_pl, unrealized_pct
+    """
+    if events is None or events.empty:
+        return pd.DataFrame(
+            columns=["ticker","name","shares","avg_cost","cost_basis","last_close","mkt_value","unrealized_pl","unrealized_pct"]
+        )
+
+    # Reuse your canonical avg-cost logic
+    pnl = calc_pnl_avg_cost(events)
+    if pnl is None or pnl.empty:
+        return pd.DataFrame(
+            columns=["ticker","name","shares","avg_cost","cost_basis","last_close","mkt_value","unrealized_pl","unrealized_pct"]
+        )
+
+    # Keep only OPEN positions
+    pnl = pnl.copy()
+    pnl["shares"] = pd.to_numeric(pnl["shares"], errors="coerce").fillna(0.0)
+    pnl = pnl[pnl["shares"].abs() > 1e-9].copy()
+    if pnl.empty:
+        return pd.DataFrame(
+            columns=["ticker","name","shares","avg_cost","cost_basis","last_close","mkt_value","unrealized_pl","unrealized_pct"]
+        )
+
+    tickers = pnl["ticker"].astype(str).str.upper().tolist()
+
+    # Latest prices + names
+    px = load_latest_prices_and_names(tickers)
+    if px is None or px.empty:
+        pnl["name"] = ""
+        pnl["last_close"] = 0.0
+    else:
+        px = px.copy()
+        px["ticker"] = px["ticker"].astype(str).str.upper()
+        px["last_close"] = pd.to_numeric(px["last_close"], errors="coerce").fillna(0.0)
+        px["name"] = px["name"].fillna("").astype(str)
+
+        pnl = pnl.merge(px[["ticker","name","last_close"]], on="ticker", how="left")
+        pnl["name"] = pnl["name"].fillna("").astype(str)
+        pnl["last_close"] = pd.to_numeric(pnl["last_close"], errors="coerce").fillna(0.0)
+
+    pnl["avg_cost"] = pd.to_numeric(pnl["avg_cost"], errors="coerce").fillna(0.0)
+    pnl["cost_basis"] = pd.to_numeric(pnl["cost_basis"], errors="coerce").fillna(0.0)
+
+    pnl["mkt_value"] = pnl["shares"] * pnl["last_close"]
+    pnl["unrealized_pl"] = pnl["mkt_value"] - pnl["cost_basis"]
+    pnl["unrealized_pct"] = pnl.apply(
+        lambda r: (r["unrealized_pl"] / r["cost_basis"]) if r["cost_basis"] else None,
+        axis=1
+    )
+
+    out = pnl[[
+        "ticker","name","shares","avg_cost","cost_basis",
+        "last_close","mkt_value","unrealized_pl","unrealized_pct"
+    ]].copy()
+
+    return out.sort_values("unrealized_pl").reset_index(drop=True)
+
+# ----------------------------------------------------------
 # Header card (stock-only)
 # ----------------------------------------------------------
 def render_header_stockfund(

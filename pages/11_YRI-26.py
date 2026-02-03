@@ -16,6 +16,7 @@ from portfolio_common import (
     fmt_money,
     fmt_money0,
     fmt_pct_ratio,
+    calc_open_equity_with_unrealized,
 )
 
 # st.set_page_config(page_title="YRI-26 Results", layout="wide")
@@ -110,6 +111,44 @@ def main():
     # 2026 block right after header
     st.divider()
     render_year_summary_blocks(nav_all=nav_all, portfolio_start_date=portfolio_start, years=[2026])
+
+    st.divider()
+    st.subheader("📦 Open holdings (assignments)")
+
+    open_eq = calc_open_equity_with_unrealized(events)
+
+    if open_eq.empty:
+        st.caption("No open share positions detected.")
+    else:
+        show = open_eq.copy()
+
+        # Pretty formatting
+        show["shares"] = show["shares"].astype(float)
+        show["avg_cost"] = show["avg_cost"].apply(fmt_money)
+        show["last_close"] = show["last_close"].apply(fmt_money)
+        show["cost_basis"] = show["cost_basis"].apply(fmt_money)
+        show["mkt_value"] = show["mkt_value"].apply(fmt_money)
+        show["unrealized_pl"] = show["unrealized_pl"].apply(fmt_money)
+        show["unrealized_pct"] = show["unrealized_pct"].apply(fmt_pct_ratio)
+
+        st.dataframe(
+            show[["ticker","name","shares","avg_cost","last_close","mkt_value","unrealized_pl","unrealized_pct"]],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        # Reconciliation: credits vs unrealized explains why return is smaller
+        credits_net = float((credits_gross or 0.0) - (fees_total or 0.0))
+        unreal_total = float(pd.to_numeric(open_eq["unrealized_pl"], errors="coerce").fillna(0.0).sum())
+
+        st.caption("Reconciliation (why Credits ≠ Return)")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("Credits (net)", fmt_money(credits_net))
+        with c2:
+            st.metric("Unrealized equity P/L", fmt_money(unreal_total))
+        with c3:
+            st.metric("Credits + Unrealized", fmt_money(credits_net + unreal_total))
 
     st.divider()
 
