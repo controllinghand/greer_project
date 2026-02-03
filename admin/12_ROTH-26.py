@@ -27,7 +27,9 @@ from portfolio_common import (
     fmt_money,
     fmt_money0,
     fmt_pct_ratio,
-    calc_open_equity_with_unrealized,
+    calc_daily_income_stats,
+    render_daily_income_stats_block,
+    render_open_holdings_block,
 )
 
 # ----------------------------------------------------------
@@ -45,7 +47,7 @@ if not IS_ADMIN:
 def load_holdings_snapshot(portfolio_id: int) -> pd.DataFrame:
     """
     Compute current holdings using all share-impact events up to now:
-    BUY_SHARES, SELL_SHARES, ASSIGN_PUT, CALL_AWAY.
+    BUY_SHARES, SELL_SHARES, ASSIGN_PUT, CALL_AWAY, ASSIGN_CALL.
 
     Uses latest available close in prices table per ticker.
 
@@ -60,7 +62,7 @@ def load_holdings_snapshot(portfolio_id: int) -> pd.DataFrame:
             UPPER(TRIM(ticker)) AS ticker,
             SUM(
               CASE
-                WHEN event_type IN ('BUY_SHARES','SELL_SHARES','ASSIGN_PUT','CALL_AWAY')
+                WHEN event_type IN ('BUY_SHARES','SELL_SHARES','ASSIGN_PUT','CALL_AWAY','ASSIGN_CALL')
                   THEN COALESCE(quantity,0)
                 ELSE 0
               END
@@ -71,7 +73,7 @@ def load_holdings_snapshot(portfolio_id: int) -> pd.DataFrame:
           GROUP BY 1
           HAVING ABS(SUM(
               CASE
-                WHEN event_type IN ('BUY_SHARES','SELL_SHARES','ASSIGN_PUT','CALL_AWAY')
+                WHEN event_type IN ('BUY_SHARES','SELL_SHARES','ASSIGN_PUT','CALL_AWAY','ASSIGN_CALL')
                   THEN COALESCE(quantity,0)
                 ELSE 0
               END
@@ -196,23 +198,34 @@ def main():
     if not nav.empty:
         nav["nav_date"] = pd.to_datetime(nav["nav_date"]).dt.date
 
+    # Windowed events (for credits, daily income stats, charts, tables)
     events = load_events_optionsfund(
         portfolio_id=portfolio_id,
         start_date=start_date
     )
     if not events.empty:
-        events["event_time"] = pd.to_datetime(events["event_time"])
+        events["event_time"] = pd.to_datetime(events["event_time"], errors="coerce")
         events["expiry"] = pd.to_datetime(
             events["expiry"],
             errors="coerce"
         ).dt.date
+
+    # All events since portfolio start (for holdings so they don't disappear when start_date changes)
+    events_all = load_events_optionsfund(
+        portfolio_id=portfolio_id,
+        start_date=portfolio_start
+    )
+    if not events_all.empty:
+        events_all["event_time"] = pd.to_datetime(events_all["event_time"], errors="coerce")
+        events_all["expiry"] = pd.to_datetime(events_all["expiry"], errors="coerce").dt.date
 
     if (nav_all.empty and nav.empty) and events.empty:
         st.info("No NAV or ledger events found for this date window yet.")
         return
 
     # ----------------------------------------------------------
-    # Credits, fees, collateral
+    # Credits, fees, collateral (windowed)
+    # NOTE: take ABS so credits are always positive even if stored negative
     # ----------------------------------------------------------
     credits_gross = 0.0
     fees_total = 0.0
@@ -235,6 +248,7 @@ def main():
                 errors="coerce"
             )
             .fillna(0.0)
+            .abs()
             .sum()
         )
 
@@ -280,8 +294,6 @@ def main():
     # Year summary
     # ----------------------------------------------------------
     st.divider()
-    events_all = load_events_optionsfund(portfolio_id=portfolio_id, start_date=portfolio_start)
-
     render_year_summary_blocks(
         nav_all=nav_all,
         portfolio_start_date=portfolio_start,
@@ -289,48 +301,25 @@ def main():
         events_all=events_all,
         use_twr=False,  # Roth tracking is more "broker-style"; can switch later if you want
     )
-    
+
     # ----------------------------------------------------------
-    # Open Holdings
+    # Daily Income Stats ✅ ADDED
+    # - Uses *windowed* events (respects sidebar start_date)
     # ----------------------------------------------------------
     st.divider()
-    st.subheader("📦 Open holdings (assignments)")
+    stats = calc_daily_income_stats(events_window=events, starting_cash=starting_cash)
+    render_daily_income_stats_block(stats)
 
-    open_eq = calc_open_equity_with_unrealized(events)
-
-    if open_eq.empty:
-        st.caption("No open share positions detected.")
-    else:
-        show = open_eq.copy()
-
-        # Pretty formatting
-        show["shares"] = show["shares"].astype(float)
-        show["avg_cost"] = show["avg_cost"].apply(fmt_money)
-        show["last_close"] = show["last_close"].apply(fmt_money)
-        show["cost_basis"] = show["cost_basis"].apply(fmt_money)
-        show["mkt_value"] = show["mkt_value"].apply(fmt_money)
-        show["unrealized_pl"] = show["unrealized_pl"].apply(fmt_money)
-        show["unrealized_pct"] = show["unrealized_pct"].apply(fmt_pct_ratio)
-
-        st.dataframe(
-            show[["ticker","name","shares","avg_cost","last_close","mkt_value","unrealized_pl","unrealized_pct"]],
-            hide_index=True,
-            use_container_width=True,
-        )
-
-        # Reconciliation: credits vs unrealized explains why return is smaller
-        credits_net = float((credits_gross or 0.0) - (fees_total or 0.0))
-        unreal_total = float(pd.to_numeric(open_eq["unrealized_pl"], errors="coerce").fillna(0.0).sum())
-
-        st.caption("Reconciliation (why Credits ≠ Return)")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.metric("Credits (net)", fmt_money(credits_net))
-        with c2:
-            st.metric("Unrealized equity P/L", fmt_money(unreal_total))
-        with c3:
-            st.metric("Credits + Unrealized", fmt_money(credits_net + unreal_total))
-
+    # ----------------------------------------------------------
+    # Open holdings (assignments) + reconciliation ✅ UPDATED
+    # - Uses events_all so holdings don't disappear as start_date changes
+    # ----------------------------------------------------------
+    st.divider()
+    render_open_holdings_block(
+        events_all=events_all,
+        credits_gross=credits_gross,
+        fees_total=fees_total,
+    )
 
     # ----------------------------------------------------------
     # NAV chart
@@ -367,11 +356,11 @@ def main():
             .isin(["SELL_CSP", "SELL_CC"])
         ].copy()
 
-        credits["event_date"] = credits["event_time"].dt.date
+        credits["event_date"] = pd.to_datetime(credits["event_time"], errors="coerce").dt.date
         credits["cash_delta"] = pd.to_numeric(
             credits["cash_delta"],
             errors="coerce"
-        ).fillna(0.0)
+        ).fillna(0.0).abs()
 
         credits_daily = (
             credits

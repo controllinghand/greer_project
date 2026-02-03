@@ -22,8 +22,8 @@ from portfolio_common import (
     fmt_money,
     fmt_money0,
     fmt_pct_ratio,
-    calc_daily_income_stats,
-    render_daily_income_stats_block,
+    calc_weekly_income_stats,
+    render_weekly_income_stats_block,
     render_open_holdings_block,
 )
 
@@ -134,8 +134,8 @@ def main():
     # Daily Income Stats (premium days + avg + annualized)
     # ----------------------------------------------------------
     st.divider()
-    stats = calc_daily_income_stats(events_window=events, starting_cash=starting_cash)
-    render_daily_income_stats_block(stats)
+    stats = calc_weekly_income_stats(events_window=events, starting_cash=starting_cash)
+    render_weekly_income_stats_block(stats)
 
     # ----------------------------------------------------------
     # Open holdings (assignments) + reconciliation

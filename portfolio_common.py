@@ -512,6 +512,111 @@ def render_daily_income_stats_block(stats: dict):
         "Annualized premium yield uses 252 trading days scaled from observed premium days in the selected window."
     )
 
+# ------
+# Weekly
+# ------
+def calc_weekly_income_stats(events_window: pd.DataFrame, starting_cash: float) -> dict:
+    """
+    Weekly premium stats for WEEKLY options funds.
+
+    Uses only SELL_CSP / SELL_CC as premium events.
+
+    Groups by ISO week (YYYY-WW).
+
+    Returns:
+      weeks_with_premium
+      avg_premium_per_week
+      avg_premium_per_week_100k
+      premium_ytd
+      premium_yield_ytd
+      premium_yield_annualized
+      credits_weekly (df)
+    """
+    out = {
+        "weeks_with_premium": 0,
+        "avg_premium_per_week": 0.0,
+        "avg_premium_per_week_100k": 0.0,
+        "premium_ytd": 0.0,
+        "premium_yield_ytd": 0.0,
+        "premium_yield_annualized": 0.0,
+        "credits_weekly": pd.DataFrame(columns=["week", "cash_delta"]),
+    }
+
+    if events_window is None or events_window.empty:
+        return out
+
+    e = events_window.copy()
+    e["event_type"] = e["event_type"].astype(str).str.upper()
+    e["event_time"] = pd.to_datetime(e["event_time"], errors="coerce")
+    e = e.dropna(subset=["event_time"]).copy()
+
+    mask_credits = e["event_type"].isin(["SELL_CSP", "SELL_CC"])
+    credits = e.loc[mask_credits].copy()
+    if credits.empty:
+        return out
+
+    credits["cash_delta"] = pd.to_numeric(credits["cash_delta"], errors="coerce").fillna(0.0).abs()
+
+    # ISO week key: YYYY-WW
+    iso = credits["event_time"].dt.isocalendar()
+    credits["week"] = iso["year"].astype(str) + "-W" + iso["week"].astype(int).astype(str).str.zfill(2)
+
+    credits_weekly = (
+        credits.groupby("week", as_index=False)["cash_delta"]
+        .sum()
+        .sort_values("week")
+        .reset_index(drop=True)
+    )
+
+    weeks_with_premium = int(len(credits_weekly))
+    premium_ytd = float(credits_weekly["cash_delta"].sum())
+    avg_premium_per_week = float(credits_weekly["cash_delta"].mean()) if weeks_with_premium > 0 else 0.0
+
+    avg_premium_per_week_100k = 0.0
+    if starting_cash and starting_cash > 0:
+        avg_premium_per_week_100k = avg_premium_per_week * (100000.0 / starting_cash)
+
+    premium_yield_ytd = (premium_ytd / starting_cash) if (starting_cash and starting_cash > 0) else 0.0
+
+    premium_yield_annualized = 0.0
+    if weeks_with_premium > 0:
+        premium_yield_annualized = premium_yield_ytd * (52.0 / weeks_with_premium)
+
+    out.update(
+        {
+            "weeks_with_premium": weeks_with_premium,
+            "avg_premium_per_week": avg_premium_per_week,
+            "avg_premium_per_week_100k": avg_premium_per_week_100k,
+            "premium_ytd": premium_ytd,
+            "premium_yield_ytd": premium_yield_ytd,
+            "premium_yield_annualized": premium_yield_annualized,
+            "credits_weekly": credits_weekly,
+        }
+    )
+    return out
+
+
+def render_weekly_income_stats_block(stats: dict):
+    """
+    Streamlit block rendering for the Weekly Income Stats panel.
+    """
+    st.subheader("🗓️ Weekly Income Stats")
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Weeks w/ premium", f"{int(stats.get('weeks_with_premium', 0)):,}")
+    with c2:
+        st.metric("Avg premium / week", fmt_money(stats.get("avg_premium_per_week", 0.0)))
+    with c3:
+        st.metric("Avg premium / week (per $100K)", fmt_money(stats.get("avg_premium_per_week_100k", 0.0)))
+    with c4:
+        st.metric("Annualized premium yield", fmt_pct_ratio(stats.get("premium_yield_annualized", 0.0)))
+
+    st.caption(
+        "Notes: 'Week' means an ISO week where premium was collected via SELL_CSP / SELL_CC. "
+        "Annualized premium yield uses 52 weeks scaled from observed premium weeks in the selected window."
+    )
+
 # ----------------------------------------------------------
 # Options-fund analytics: Open equity holdings (assignments)
 # - Uses BUY_SHARES / SELL_SHARES to detect current stock
