@@ -253,7 +253,9 @@ SHARE_SELL_TYPES = {
 }
 
 # ----------------------------------------------------------
-# Stock-fund analytics (BUY_SHARES / SELL_SHARES only)
+# Stock / Share analytics (supports wheel share-equivalents)
+# BUY: BUY_SHARES, ASSIGN_PUT
+# SELL: SELL_SHARES, CALL_AWAY, ASSIGN_CALL
 # ----------------------------------------------------------
 def calc_cashflows_stockfund(events: pd.DataFrame) -> dict:
     if events is None or events.empty:
@@ -270,7 +272,7 @@ def calc_cashflows_stockfund(events: pd.DataFrame) -> dict:
     wdr_mask = e["event_type"].isin(["WITHDRAW", "WITHDRAWAL", "CASH_WITHDRAWAL", "DISTRIBUTION"])
     deposits_net = float(e.loc[dep_mask, "cash_delta"].sum() + e.loc[wdr_mask, "cash_delta"].sum())
 
-    trade_mask = e["event_type"].isin(["BUY_SHARES", "SELL_SHARES"])
+    trade_mask = e["event_type"].isin(SHARE_BUY_TYPES | SHARE_SELL_TYPES)
     trade_cashflow = float(e.loc[trade_mask, "cash_delta"].sum())
 
     return {"fees_total": fees_total, "deposits_net": deposits_net, "trade_cashflow": trade_cashflow}
@@ -357,7 +359,7 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
 
                 # Prefer cash_delta if present (net proceeds). Otherwise infer from price/fee.
                 if pd.notna(r["cash_delta"]):
-                    proceeds_net = float(r["cash_delta"])
+                    proceeds_net = abs(float(r["cash_delta"]))
                 else:
                     proceeds_net = (sell_qty * px) - fee
 
@@ -406,7 +408,109 @@ def calc_pnl_avg_cost(events: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+# ----------------------------------------------------------
+# Income fund helpers (shared blocks)
+# - Daily Income Stats (premium days + avg + annualized)
+# - Open Holdings (assignments) + reconciliation
+# ----------------------------------------------------------
 
+def calc_daily_income_stats(events_window: pd.DataFrame, starting_cash: float) -> dict:
+    """
+    Calculates daily premium statistics for an options-income fund window.
+
+    Uses only SELL_CSP / SELL_CC as premium events.
+
+    Returns:
+      trading_days_with_premium
+      avg_premium_per_trading_day
+      avg_premium_per_trading_day_100k
+      premium_ytd
+      premium_yield_ytd
+      premium_yield_annualized
+      credits_daily (df)
+    """
+    out = {
+        "trading_days_with_premium": 0,
+        "avg_premium_per_trading_day": 0.0,
+        "avg_premium_per_trading_day_100k": 0.0,
+        "premium_ytd": 0.0,
+        "premium_yield_ytd": 0.0,
+        "premium_yield_annualized": 0.0,
+        "credits_daily": pd.DataFrame(columns=["event_date", "cash_delta"]),
+    }
+
+    if events_window is None or events_window.empty:
+        return out
+
+    e = events_window.copy()
+    e["event_type"] = e["event_type"].astype(str).str.upper()
+    e["event_time"] = pd.to_datetime(e["event_time"], errors="coerce")
+    e = e.dropna(subset=["event_time"]).copy()
+
+    mask_credits = e["event_type"].isin(["SELL_CSP", "SELL_CC"])
+    credits = e.loc[mask_credits].copy()
+    if credits.empty:
+        return out
+
+    credits["event_date"] = credits["event_time"].dt.date
+    credits["cash_delta"] = pd.to_numeric(credits["cash_delta"], errors="coerce").fillna(0.0)
+    credits["cash_delta"] = credits["cash_delta"].abs()
+
+
+    credits_daily = (
+        credits.groupby("event_date", as_index=False)["cash_delta"]
+        .sum()
+        .sort_values("event_date")
+        .reset_index(drop=True)
+    )
+
+    trading_days_with_premium = int(len(credits_daily))
+    premium_ytd = float(credits_daily["cash_delta"].sum())
+    avg_premium_per_trading_day = float(credits_daily["cash_delta"].mean()) if trading_days_with_premium > 0 else 0.0
+
+    avg_premium_per_trading_day_100k = 0.0
+    if starting_cash and starting_cash > 0:
+        avg_premium_per_trading_day_100k = avg_premium_per_trading_day * (100000.0 / starting_cash)
+
+    premium_yield_ytd = (premium_ytd / starting_cash) if (starting_cash and starting_cash > 0) else 0.0
+    premium_yield_annualized = 0.0
+    if trading_days_with_premium > 0:
+        premium_yield_annualized = premium_yield_ytd * (252.0 / trading_days_with_premium)
+
+    out.update(
+        {
+            "trading_days_with_premium": trading_days_with_premium,
+            "avg_premium_per_trading_day": avg_premium_per_trading_day,
+            "avg_premium_per_trading_day_100k": avg_premium_per_trading_day_100k,
+            "premium_ytd": premium_ytd,
+            "premium_yield_ytd": premium_yield_ytd,
+            "premium_yield_annualized": premium_yield_annualized,
+            "credits_daily": credits_daily,
+        }
+    )
+    return out
+
+
+def render_daily_income_stats_block(stats: dict):
+    """
+    Streamlit block rendering for the Daily Income Stats panel.
+    """
+    st.subheader("⚡ Daily Income Stats")
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Trading days w/ premium", f"{int(stats.get('trading_days_with_premium', 0)):,}")
+    with c2:
+        st.metric("Avg premium / trading day", fmt_money(stats.get("avg_premium_per_trading_day", 0.0)))
+    with c3:
+        st.metric("Avg premium / trading day (per $100K)", fmt_money(stats.get("avg_premium_per_trading_day_100k", 0.0)))
+    with c4:
+        st.metric("Annualized premium yield", fmt_pct_ratio(stats.get("premium_yield_annualized", 0.0)))
+
+    st.caption(
+        "Notes: 'Trading day' means a day where premium was collected via SELL_CSP / SELL_CC. "
+        "Annualized premium yield uses 252 trading days scaled from observed premium days in the selected window."
+    )
 
 # ----------------------------------------------------------
 # Options-fund analytics: Open equity holdings (assignments)
@@ -475,6 +579,54 @@ def calc_open_equity_with_unrealized(events: pd.DataFrame) -> pd.DataFrame:
     ]].copy()
 
     return out.sort_values("unrealized_pl").reset_index(drop=True)
+
+def render_open_holdings_block(
+    events_all: pd.DataFrame,
+    credits_gross: float,
+    fees_total: float,
+):
+    """
+    Shows open equity holdings created by assignments + a reconciliation block.
+
+    Uses calc_open_equity_with_unrealized(events_all)
+    """
+    st.subheader("📦 Open holdings (assignments)")
+
+    open_eq = calc_open_equity_with_unrealized(events_all)
+
+    if open_eq is None or open_eq.empty:
+        st.caption("No open share positions detected.")
+        return
+
+    show = open_eq.copy()
+    show["shares"] = show["shares"].astype(float)
+    show["avg_cost"] = show["avg_cost"].apply(fmt_money)
+    show["last_close"] = show["last_close"].apply(fmt_money)
+    show["cost_basis"] = show["cost_basis"].apply(fmt_money)
+    show["mkt_value"] = show["mkt_value"].apply(fmt_money)
+    show["unrealized_pl"] = show["unrealized_pl"].apply(fmt_money)
+    show["unrealized_pct"] = show["unrealized_pct"].apply(fmt_pct_ratio)
+
+    st.dataframe(
+        show[["ticker","name","shares","avg_cost","last_close","mkt_value","unrealized_pl","unrealized_pct"]],
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    credits_net = float((credits_gross or 0.0) - (fees_total or 0.0))
+    unreal_total = float(pd.to_numeric(open_eq["unrealized_pl"], errors="coerce").fillna(0.0).sum())
+
+    st.caption("Reconciliation (why Credits ≠ Return)")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Credits (net)", fmt_money(credits_net))
+    with c2:
+        st.metric("Unrealized equity P/L", fmt_money(unreal_total))
+    with c3:
+        st.metric("Credits + Unrealized", fmt_money(credits_net + unreal_total))
+
+
+
 
 # ----------------------------------------------------------
 # Header card (stock-only)

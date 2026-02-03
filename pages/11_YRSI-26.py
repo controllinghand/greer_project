@@ -76,8 +76,6 @@ def main():
     if not nav.empty:
         nav["nav_date"] = pd.to_datetime(nav["nav_date"]).dt.date
 
-    
-
     # Windowed events (for credits, charts, tables)
     events = load_events_optionsfund(portfolio_id=portfolio_id, start_date=start_date)
     if not events.empty:
@@ -127,12 +125,12 @@ def main():
     render_year_summary_blocks(nav_all=nav_all, portfolio_start_date=portfolio_start, years=[2026])
     
     # Debug (temporary)
-    share_like = ["BUY_SHARES", "SELL_SHARES", "ASSIGN_PUT", "CALL_AWAY", "ASSIGN_CALL"]
-    st.write("DEBUG holdings:")
-    st.write("portfolio_id:", portfolio_id)
-    st.write("events_all rows:", len(events_all))
-    st.write("share-like rows:", len(events_all[events_all["event_type"].astype(str).str.upper().isin(share_like)]))
-    st.write("DUOL rows:", len(events_all[events_all["ticker"].astype(str).str.upper() == "DUOL"]))
+    #share_like = ["BUY_SHARES", "SELL_SHARES", "ASSIGN_PUT", "CALL_AWAY", "ASSIGN_CALL"]
+    #st.write("DEBUG holdings:")
+    #st.write("portfolio_id:", portfolio_id)
+    #st.write("events_all rows:", len(events_all))
+    #st.write("share-like rows:", len(events_all[events_all["event_type"].astype(str).str.upper().isin(share_like)]))
+    #st.write("DUOL rows:", len(events_all[events_all["ticker"].astype(str).str.upper() == "DUOL"]))
 
 
     # ----------------------------------------------------------
