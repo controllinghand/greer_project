@@ -1,4 +1,10 @@
 # 11_YRSI-26.py
+# ----------------------------------------------------------
+# YRSI-26 Results Page (Read-only)
+# - You Rock Star Income Fund (est. 2026)
+# - Uses: portfolios, portfolio_events, portfolio_nav_daily
+# ----------------------------------------------------------
+
 import streamlit as st
 import pandas as pd
 from datetime import date
@@ -16,20 +22,22 @@ from portfolio_common import (
     fmt_money,
     fmt_money0,
     fmt_pct_ratio,
-    calc_open_equity_with_unrealized,
+    calc_daily_income_stats,
+    render_daily_income_stats_block,
+    render_open_holdings_block,
 )
 
-# st.set_page_config(page_title="YRSI Results", layout="wide")
+# st.set_page_config(page_title="YRSI-26 Results", layout="wide")
 
 # ----------------------------------------------------------
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("⭐📣 YRSI Results (You Rock Star Income Fund est. 2026)")
+    st.title("⭐📣 YRSI-26 Results (You Rock Star Income Fund est. 2026)")
 
     st.markdown(
         """
-        Read-only community page for YRSI.  
+        Read-only community page for **YRSI-26**.  
         Uses **only**: portfolios, portfolio_events, portfolio_nav_daily.
         """
     )
@@ -82,7 +90,7 @@ def main():
         events["event_time"] = pd.to_datetime(events["event_time"], errors="coerce")
         events["expiry"] = pd.to_datetime(events["expiry"], errors="coerce").dt.date
 
-    # All events since portfolio start (for holdings so they don't disappear when start_date changes)
+    # All events since portfolio start (for holdings + accuracy)
     events_all = load_events_optionsfund(portfolio_id=portfolio_id, start_date=portfolio_start)
     if not events_all.empty:
         events_all["event_time"] = pd.to_datetime(events_all["event_time"], errors="coerce")
@@ -91,9 +99,11 @@ def main():
     if (nav_all.empty and nav.empty) and events.empty:
         st.info("No NAV or ledger events found for this date window yet.")
         return
-    
 
-    # Credits (premium inflows) = cash_delta on SELL_CSP/SELL_CC
+    # ----------------------------------------------------------
+    # Credits (premium inflows) + Fees (windowed)
+    # NOTE: take ABS so credits are always positive even if stored negative
+    # ----------------------------------------------------------
     credits_gross = 0.0
     fees_total = 0.0
     if not events.empty:
@@ -102,6 +112,7 @@ def main():
         credits_gross = float(
             pd.to_numeric(events.loc[mask_credits, "cash_delta"], errors="coerce")
             .fillna(0.0)
+            .abs()
             .sum()
         )
 
@@ -120,62 +131,36 @@ def main():
         cc_collateral=cc_collateral,
     )
 
-    # 2026 block right after header
+    # ----------------------------------------------------------
+    # 2026 performance block right after header
+    # ----------------------------------------------------------
     st.divider()
     render_year_summary_blocks(nav_all=nav_all, portfolio_start_date=portfolio_start, years=[2026])
-    
-    # Debug (temporary)
-    #share_like = ["BUY_SHARES", "SELL_SHARES", "ASSIGN_PUT", "CALL_AWAY", "ASSIGN_CALL"]
-    #st.write("DEBUG holdings:")
-    #st.write("portfolio_id:", portfolio_id)
-    #st.write("events_all rows:", len(events_all))
-    #st.write("share-like rows:", len(events_all[events_all["event_type"].astype(str).str.upper().isin(share_like)]))
-    #st.write("DUOL rows:", len(events_all[events_all["ticker"].astype(str).str.upper() == "DUOL"]))
-
 
     # ----------------------------------------------------------
-    # Open Holdings
-    # ---------------------------------------------------------
+    # Daily Income Stats (premium days + avg + annualized)  ✅ ADDED
+    # - Uses the *windowed* events (respects start_date control)
+    # ----------------------------------------------------------
     st.divider()
-    st.subheader("📦 Open holdings (assignments)")
+    stats = calc_daily_income_stats(events_window=events, starting_cash=starting_cash)
+    render_daily_income_stats_block(stats)
 
-    open_eq = calc_open_equity_with_unrealized(events_all)
-
-    if open_eq.empty:
-        st.caption("No open share positions detected.")
-    else:
-        show = open_eq.copy()
-
-        # Pretty formatting
-        show["shares"] = show["shares"].astype(float)
-        show["avg_cost"] = show["avg_cost"].apply(fmt_money)
-        show["last_close"] = show["last_close"].apply(fmt_money)
-        show["cost_basis"] = show["cost_basis"].apply(fmt_money)
-        show["mkt_value"] = show["mkt_value"].apply(fmt_money)
-        show["unrealized_pl"] = show["unrealized_pl"].apply(fmt_money)
-        show["unrealized_pct"] = show["unrealized_pct"].apply(fmt_pct_ratio)
-
-        st.dataframe(
-            show[["ticker","name","shares","avg_cost","last_close","mkt_value","unrealized_pl","unrealized_pct"]],
-            hide_index=True,
-            use_container_width=True,
-        )
-
-        # Reconciliation: credits vs unrealized explains why return is smaller
-        credits_net = float((credits_gross or 0.0) - (fees_total or 0.0))
-        unreal_total = float(pd.to_numeric(open_eq["unrealized_pl"], errors="coerce").fillna(0.0).sum())
-
-        st.caption("Reconciliation (why Credits ≠ Return)")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.metric("Credits (net)", fmt_money(credits_net))
-        with c2:
-            st.metric("Unrealized equity P/L", fmt_money(unreal_total))
-        with c3:
-            st.metric("Credits + Unrealized", fmt_money(credits_net + unreal_total))
-
+    # ----------------------------------------------------------
+    # Open holdings (assignments) + reconciliation  ✅ keeps holdings stable vs start_date
+    # - Uses *all* events since portfolio start so holdings don't disappear
+    # - Reconciliation uses windowed credits/fees (what user is viewing)
+    # ----------------------------------------------------------
     st.divider()
+    render_open_holdings_block(
+        events_all=events_all,
+        credits_gross=credits_gross,
+        fees_total=fees_total,
+    )
 
+    # ----------------------------------------------------------
+    # NAV over time
+    # ----------------------------------------------------------
+    st.divider()
     st.subheader("📈 NAV over time")
     if nav.empty:
         st.info("No NAV rows found yet. (Run nav.py / nightly cron.)")
@@ -185,17 +170,27 @@ def main():
         nav_curve = nav_curve.set_index(pd.to_datetime(nav_curve["nav_date"]))
         st.line_chart(nav_curve["nav"])
 
+    # ----------------------------------------------------------
+    # NAV vs cumulative credits
+    # ----------------------------------------------------------
     st.divider()
-
     st.subheader("📉 NAV vs cumulative credits")
     if nav.empty or events.empty:
         st.caption("Needs both NAV rows and ledger events.")
     else:
         credits = events[events["event_type"].astype(str).str.upper().isin(["SELL_CSP", "SELL_CC"])].copy()
-        credits["event_date"] = credits["event_time"].dt.date
-        credits["cash_delta"] = pd.to_numeric(credits["cash_delta"], errors="coerce").fillna(0.0)
+        credits["event_date"] = pd.to_datetime(credits["event_time"], errors="coerce").dt.date
+        credits["cash_delta"] = (
+            pd.to_numeric(credits["cash_delta"], errors="coerce")
+            .fillna(0.0)
+            .abs()
+        )
 
-        credits_daily = credits.groupby("event_date", as_index=False)["cash_delta"].sum().sort_values("event_date")
+        credits_daily = (
+            credits.groupby("event_date", as_index=False)["cash_delta"]
+            .sum()
+            .sort_values("event_date")
+        )
         credits_daily["cum_credits"] = credits_daily["cash_delta"].cumsum()
 
         nav_join = nav.copy()
@@ -215,8 +210,10 @@ def main():
 
         st.line_chart(merged[["nav", "cum_credits"]])
 
+    # ----------------------------------------------------------
+    # Totals by event type
+    # ----------------------------------------------------------
     st.divider()
-
     st.subheader("🧮 Totals by event type")
     by_type = load_totals_by_type(portfolio_id=portfolio_id, start_date=start_date)
     if by_type.empty:
@@ -227,8 +224,10 @@ def main():
         show["total_cash_delta"] = show["total_cash_delta"].apply(fmt_money)
         st.dataframe(show, hide_index=True, use_container_width=True)
 
+    # ----------------------------------------------------------
+    # Totals by ticker
+    # ----------------------------------------------------------
     st.divider()
-
     st.subheader("🏷️ Totals by ticker")
     by_ticker = load_totals_by_ticker(portfolio_id=portfolio_id, start_date=start_date)
     if by_ticker.empty:
@@ -239,8 +238,10 @@ def main():
         show["total_cash_delta"] = show["total_cash_delta"].apply(fmt_money)
         st.dataframe(show, hide_index=True, use_container_width=True)
 
+    # ----------------------------------------------------------
+    # Ledger events
+    # ----------------------------------------------------------
     st.divider()
-
     st.subheader("🧾 Ledger events")
     if events.empty:
         st.info("No events logged yet.")
@@ -271,6 +272,9 @@ def main():
             use_container_width=True,
         )
 
+    # ----------------------------------------------------------
+    # Downloads
+    # ----------------------------------------------------------
     c1, c2 = st.columns(2)
     with c1:
         if not events.empty:
@@ -288,6 +292,7 @@ def main():
                 file_name=f"{portfolio_code.lower()}_nav.csv",
                 mime="text/csv",
             )
+
 
 if __name__ == "__main__":
     main()
