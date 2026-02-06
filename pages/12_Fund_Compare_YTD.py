@@ -482,7 +482,7 @@ def main():
 
     available = pmeta["code"].astype(str).tolist()
 
-    default_codes = ["YRI-26", "YRSI-26", "YROG", "YR3G", "YRQ-26", "YRQI-26"]
+    default_codes = ["YRVI-26", "YRSI-26", "YROG-26", "YR3G-26", "YRQI-26", "QQQ-26", "SPY-26"]
     selected_default = [c for c in default_codes if c in available] or available[:5]
 
     years = list(range(date.today().year, date.today().year - 6, -1))
@@ -496,7 +496,7 @@ def main():
         bench_code = st.selectbox(
             "Benchmark",
             options=available,
-            index=available.index("YRQ-26") if "YRQ-26" in available else 0,
+            index=available.index("QQQ-26") if "QQQ-26" in available else 0,
         )
 
     selected_codes = st.multiselect("Funds to compare", options=available, default=selected_default)
