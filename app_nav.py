@@ -14,12 +14,22 @@ def build_pages():
         ],
         "Portfolios": [
             st.Page("pages/12_Fund_Compare_YTD.py", title="Fund Compare (YTD)", icon="🆚"),
-            st.Page("pages/11_YRQI-26.py", title="YRQI-26", icon = "⚡"),
-            st.Page("pages/11_YRI-26.py", title="YRI-26", icon="📣"),
-            st.Page("pages/11_YRSI-26.py", title="YRSI-26", icon="💵"),
-            st.Page("pages/12_YR3G-25.py", title="YR3G-25", icon="🚀"),
-            st.Page("pages/12_YROG-25.py", title="YROG-25", icon="📈"),
-            st.Page("pages/12_YRQ-26.py", title="YRQ-26", icon="📐"),
+
+            # ---- Income Funds ----
+            st.Page("pages/_spacer.py", title="— Income Funds —", icon=""),
+            st.Page("pages/11_YRQI-26.py", title="  YRQI-26", icon="⚡"),
+            st.Page("pages/11_YRVI-26.py", title="  YRVI-26", icon="📣"),
+            st.Page("pages/11_YRSI-26.py", title="  YRSI-26", icon="💵"),
+
+            # ---- Growth Funds ----
+            st.Page("pages/_spacer.py", title="— Growth Funds —", icon=""),
+            st.Page("pages/12_YR3G-26.py", title="  YR3G-26", icon="🚀"),
+            st.Page("pages/12_YROG-26.py", title="  YROG-26", icon="📈"),
+
+            # ---- Baseline ----
+            st.Page("pages/_spacer.py", title="— Baselines —", icon=""),
+            st.Page("pages/12_SPY-26.py", title="  SPY-26", icon="📐"),
+            st.Page("pages/12_QQQ-26.py", title="  QQQ-26", icon="📐"),
         ],
         "Tools": [
             st.Page("pages/10_Opportunities_IV.py", title="Opportunities (IV)", icon="🎯"),

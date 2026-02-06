@@ -27,8 +27,6 @@ from portfolio_common import (
     render_open_holdings_block,
 )
 
-# st.set_page_config(page_title="YRSI-26 Results", layout="wide")
-
 # ----------------------------------------------------------
 # Main
 # ----------------------------------------------------------
