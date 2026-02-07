@@ -37,6 +37,13 @@ def main():
         """
         Read-only community page for **YRSI-26**.  
         Uses **only**: portfolios, portfolio_events, portfolio_nav_daily.
+
+        **Strategy:**  
+        Weekly option positions are systematically sourced from our **Weekly IV Targets** screener and 
+        must carry a **minimum 1-Star rating** within our quality framework. The screener scans the market 
+        for contracts exhibiting favorable implied volatility, liquidity, and premium characteristics, 
+        helping prioritize opportunities with strong income potential while reinforcing a disciplined, 
+        data-driven selection process.
         """
     )
 

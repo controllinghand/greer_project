@@ -30,6 +30,13 @@ def main():
         Read-only community page for **YRQI-26** (QQQ Daily Income).  
         Strategy baseline: **2-contract model** · Starting NAV target: **$130,000**.  
         Uses **only**: portfolios, portfolio_events, portfolio_nav_daily.
+
+        **Strategy:**  
+        YRQI-26 is a systematic daily income strategy focused exclusively on **QQQ**. 
+        The fund seeks to generate consistent premium by executing short-duration option trades 
+        selected for favorable implied volatility, liquidity, and risk characteristics. 
+        Positions follow a defined sizing model to promote repeatability and disciplined execution 
+        while emphasizing steady cash-flow generation.
         """
     )
 
