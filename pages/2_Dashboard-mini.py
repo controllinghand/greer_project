@@ -7,29 +7,38 @@ from db import get_engine
 
 # st.set_page_config(page_title="Mini Dashboard — Ticker Grid", layout="wide")
 
+# --------------------------------------------------
+# Load the dashboard snapshot (fast read-only table)
+# --------------------------------------------------
 @st.cache_data(ttl=600)
-def load_data():
+def load_data() -> pd.DataFrame:
     engine = get_engine()
-    df = pd.read_sql(
+    return pd.read_sql(
         """
-        SELECT c.ticker,
-               c.greer_star_rating,
-               s.greer_value_score,
-               s.above_50_count,
-               s.greer_yield_score,
-               s.buyzone_flag
-        FROM companies c
-        JOIN latest_company_snapshot s ON c.ticker = s.ticker
-        WHERE c.delisted = FALSE
-        ORDER BY c.ticker;
+        SELECT
+            ticker,
+            greer_star_rating,
+            greer_value_score,
+            above_50_count,
+            greer_yield_score,
+            buyzone_flag,
+            snapshot_date
+        FROM dashboard_snapshot
+        ORDER BY ticker;
         """,
         engine
     )
-    return df
 
 df = load_data()
+if df.empty:
+    st.warning("dashboard_snapshot is empty. Run run_all.py (or build_dashboard_snapshot.py) to populate it.")
+    st.stop()
 
 st.markdown("## Mini Dashboard — All Companies")
+
+last_updated = df["snapshot_date"].max() if "snapshot_date" in df.columns else None
+if last_updated is not None:
+    st.caption(f"Last updated: {last_updated}")
 
 # Sidebar filters (optional)
 with st.sidebar:
@@ -38,8 +47,12 @@ with st.sidebar:
     only_buyzone = st.checkbox("Only show BuyZone = True", value=False)
 
 filtered = df.copy()
+
+# NaN-safe star filtering
 if min_stars:
-    filtered = filtered[filtered["greer_star_rating"] >= min_stars]
+    stars_series = pd.to_numeric(filtered["greer_star_rating"], errors="coerce").fillna(0)
+    filtered = filtered[stars_series >= min_stars]
+
 if only_buyzone:
     filtered = filtered[filtered["buyzone_flag"] == True]
 
@@ -51,13 +64,20 @@ BOXES_PER_ROW = 10  # control how many per row
 for i in range(0, len(filtered), BOXES_PER_ROW):
     row = filtered.iloc[i : i + BOXES_PER_ROW]
     cols = st.columns(len(row))
-    for col, (_, r) in zip(cols, row.iterrows()):
-        t = r["ticker"]
-        stars = int(r.get("greer_star_rating", 0))
-        gv = r.get("greer_value_score") or 0
-        above50 = r.get("above_50_count") or 0
 
-        # color logic for box background (adjust as needed)
+    for col, (_, r) in zip(cols, row.iterrows()):
+        t = r.get("ticker", "")
+
+        stars_val = r.get("greer_star_rating")
+        stars = int(stars_val) if pd.notnull(stars_val) else 0
+
+        gv_val = r.get("greer_value_score")
+        gv = float(gv_val) if pd.notnull(gv_val) else 0.0
+
+        above50_val = r.get("above_50_count")
+        above50 = int(above50_val) if pd.notnull(above50_val) else 0
+
+        # color logic for box background
         if above50 == 6:
             box_color = "#D4AF37"
         elif gv >= 50:
