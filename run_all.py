@@ -75,6 +75,13 @@ logger.info("Running refresh_snapshot.py")
 run_cmd(["python", "refresh_snapshot.py"])
 
 # ----------------------------------------------------------
+# Build the Dashboard Snapshot
+# ----------------------------------------------------------
+print("\n⚡ Building dashboard_snapshot (fast dashboard table)…")
+logger.info("Running build_dashboard_snapshot.py")
+run_cmd(["python", "build_dashboard_snapshot.py"])
+
+# ----------------------------------------------------------
 # Opportunity Periods
 # ----------------------------------------------------------
 print("\n📜 Rebuilding Greer opportunity periods …")

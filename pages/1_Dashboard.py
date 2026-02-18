@@ -45,61 +45,26 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --------------------------------------------------
+# Load the dashboard snapshot (fast read-only table)
+# --------------------------------------------------
 @st.cache_data(ttl=600)
-def load_companies():
+def load_dashboard_snapshot() -> pd.DataFrame:
     engine = get_engine()
-    sql = """
-    SELECT c.ticker,
-           c.name,
-           c.sector,
-           c.industry,
-           c.greer_star_rating,
-           s.greer_value_score,
-           s.above_50_count,
-           s.greer_yield_score,
-           s.buyzone_flag,
-           s.fvg_last_direction
-    FROM companies c
-    JOIN latest_company_snapshot s
-      ON c.ticker = s.ticker
-    WHERE c.delisted = FALSE
-    ORDER BY c.ticker;
-    """
-    return pd.read_sql(sql, engine)
-
-
-@st.cache_data(ttl=600)
-def load_price_and_gfv():
-    engine = get_engine()
-    prices = pd.read_sql(
-        """
-        SELECT DISTINCT ON (ticker) ticker, close AS price
-        FROM prices
-        ORDER BY ticker, date DESC
-        """,
+    return pd.read_sql(
+        "SELECT * FROM dashboard_snapshot ORDER BY ticker;",
         engine
     )
-    gfv = pd.read_sql(
-        """
-        SELECT DISTINCT ON (ticker) ticker, gfv_price, gfv_status
-        FROM greer_fair_value_daily
-        ORDER BY ticker, date DESC
-        """,
-        engine
-    )
-    return prices.set_index("ticker"), gfv.set_index("ticker")
 
-
-df = load_companies()
-prices_df, gfv_df = load_price_and_gfv()
-
-df = df.set_index("ticker")
-df["current_price"] = prices_df["price"]
-df["gfv_price"] = gfv_df["gfv_price"]
-df["gfv_status"] = gfv_df["gfv_status"]
-df = df.reset_index()
+df = load_dashboard_snapshot()
+if df.empty:
+    st.warning("dashboard_snapshot is empty. Run run_all.py (or build_dashboard_snapshot.py) to populate it.")
+    st.stop()
 
 st.markdown("# 📊 Company Dashboard — Overview (All Companies)")
+
+last_updated = df["snapshot_date"].max() if "snapshot_date" in df.columns else None
+if last_updated is not None:
+    st.caption(f"Last updated: {last_updated}")
 
 # Optional filters
 with st.sidebar:
@@ -108,7 +73,7 @@ with st.sidebar:
 
 filtered = df.copy()
 if min_stars > 0:
-    filtered = filtered[filtered["greer_star_rating"] >= min_stars]
+    filtered = filtered[pd.to_numeric(filtered["greer_star_rating"], errors="coerce").fillna(0) >= min_stars]
 if only_buyzone:
     filtered = filtered[filtered["buyzone_flag"] == True]
 
@@ -120,14 +85,26 @@ for i in range(0, len(filtered), cards_per_row):
     for j, (_, row) in enumerate(filtered.iloc[i : i + cards_per_row].iterrows()):
         col = cols[j]
         with col:
-            ticker = row["ticker"]
+            ticker = row.get("ticker", "")
             name = row.get("name", "")
-            stars = int(row.get("greer_star_rating", 0))
+
+            # --------------------------------------------------
+            # NaN-safe parsing for key metrics
+            # --------------------------------------------------
+            stars_val = row.get("greer_star_rating")
+            stars = int(stars_val) if pd.notnull(stars_val) else 0
+            stars = max(0, min(3, stars))
             star_icons = "★" * stars + "☆" * (3 - stars)
 
-            gv = row.get("greer_value_score") or 0
-            above50 = row.get("above_50_count") or 0
-            yld = row.get("greer_yield_score") or 0
+            gv_val = row.get("greer_value_score")
+            gv = float(gv_val) if pd.notnull(gv_val) else 0.0
+
+            above50_val = row.get("above_50_count")
+            above50 = int(above50_val) if pd.notnull(above50_val) else 0
+
+            yld_val = row.get("greer_yield_score")
+            yld_i = int(yld_val) if pd.notnull(yld_val) else 0  # integer 0–4 expected
+
             bz = bool(row.get("buyzone_flag"))
             fvg = row.get("fvg_last_direction") or ""
             price = row.get("current_price")
@@ -142,19 +119,19 @@ for i in range(0, len(filtered), cards_per_row):
             else:
                 gv_color = "#F44336"
 
-            # Yield color logic
-            if yld == 4:
+            # Yield color logic (use yld_i)
+            if yld_i == 4:
                 yld_color = "#D4AF37"
-            elif yld == 3:
+            elif yld_i == 3:
                 yld_color = "#4CAF50"
-            elif yld in (1, 2):
+            elif yld_i in (1, 2):
                 yld_color = "#2196F3"
             else:
                 yld_color = "#F44336"
 
             # BuyZone and FVG colors
             bz_color = "#4CAF50" if bz else "#9E9E9E"
-            fvg_low = fvg.lower()
+            fvg_low = str(fvg).lower()
             if fvg_low == "bullish":
                 fvg_color = "#4CAF50"
             elif fvg_low == "bearish":
@@ -182,7 +159,7 @@ for i in range(0, len(filtered), cards_per_row):
 
               <div>
                 <span class="metric-badge" style="background:{gv_color};">GV: {gv:.1f}%</span>
-                <span class="metric-badge" style="background:{yld_color};">Yield: {int(yld)}/4</span>
+                <span class="metric-badge" style="background:{yld_color};">Yield: {yld_i}/4</span>
                 <span class="metric-badge" style="background:{gfv_color};">GFV: {f'${gfv:,.2f}' if pd.notnull(gfv) else '—'}</span>
                 <span class="metric-badge" style="background:{bz_color};">BuyZone: {'Yes' if bz else 'No'}</span>
               </div>
