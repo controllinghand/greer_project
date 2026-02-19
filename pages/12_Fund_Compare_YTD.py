@@ -482,7 +482,7 @@ def main():
 
     available = pmeta["code"].astype(str).tolist()
 
-    default_codes = ["YRVI-26", "YRSI-26", "YROG-26", "YR3G-26", "YRQI-26", "QQQ-26", "SPY-26"]
+    default_codes = ["YRVI-26", "YRSI-26", "YROG-26", "YR3G-26", "YRQI-26", "QQQ-26", "SPY-26", "BTC-26", "GLD-26"]
     selected_default = [c for c in default_codes if c in available] or available[:5]
 
     years = list(range(date.today().year, date.today().year - 6, -1))
