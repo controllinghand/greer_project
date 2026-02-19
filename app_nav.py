@@ -18,8 +18,8 @@ def build_pages():
             # ---- Income Funds ----
             st.Page("pages/_spacer.py", title="— Income Funds —", url_path="spacer-income"),
             st.Page("pages/11_YRQI-26.py", title="  YRQI-26", icon="⚡"),
-            st.Page("pages/11_YRVI-26.py", title="  YRVI-26", icon="📣"),
             st.Page("pages/11_YRSI-26.py", title="  YRSI-26", icon="💵"),
+            st.Page("pages/11_YRVI-26.py", title="  YRVI-26", icon="📣"),
 
             # ---- Growth Funds ----
             st.Page("pages/_spacer.py", title="— Growth Funds —", url_path="spacer-growth"),
@@ -28,8 +28,10 @@ def build_pages():
 
             # ---- Baseline ----
             st.Page("pages/_spacer.py", title="— Baselines —", url_path="spacer-baseline"),
-            st.Page("pages/12_SPY-26.py", title="  SPY-26", icon="📐"),
+            st.Page("pages/12_BTC-26.py", title="  BTC-26", icon="📐"),
+            st.Page("pages/12_GLD-26.py", title="  GLD-26", icon="📐"),
             st.Page("pages/12_QQQ-26.py", title="  QQQ-26", icon="📐"),
+            st.Page("pages/12_SPY-26.py", title="  SPY-26", icon="📐"),
         ],
         "Tools": [
             st.Page("pages/10_Opportunities_IV.py", title="Opportunities (IV)", icon="🎯"),
