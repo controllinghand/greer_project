@@ -35,3 +35,9 @@ logs/
 data/
 
 yfinance_db.sql
+.env.local
+
+# local db dumps
+render_prod.dump
+*.dump
+*.sql

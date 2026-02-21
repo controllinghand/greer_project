@@ -66,10 +66,10 @@ def fmt_money(x):
 def fmt_pct(x):
     try:
         if x is None or pd.isna(x):
-            return "—"
+            return ""
         return f"{float(x) * 100:.2f}%"
     except Exception:
-        return "—"
+        return ""
 
 # ----------------------------------------------------------
 # Load portfolios
@@ -146,13 +146,32 @@ def load_nav_series(portfolio_id: int, d0: date, d1: date) -> pd.DataFrame:
 # ----------------------------------------------------------
 def fund_group(code: str, bench_code: str) -> str:
     c = (code or "").upper()
-    if c.startswith(bench_code.upper().split("-")[0]):  # e.g., YRQ from YRQ-26
+    base = c.split("-")[0]           # "YRSI" from "YRSI-26"
+    bench_base = (bench_code or "").upper().split("-")[0]
+
+    # Benchmark should only be the selected benchmark row
+    if c == (bench_code or "").upper():
         return "Benchmark"
-    if c.endswith("I"):  # YRI, YRSI
+
+    # Income / Growth based on base code suffix
+    if base.endswith("I"):
         return "Income"
-    if c.endswith("G"):  # YROG, YR3G
+    if base.endswith("G"):
         return "Growth"
+
     return "Other"
+
+BASELINE_CODES = {"SPY-26", "QQQ-26", "GLD-26", "BTC-26"}
+
+def table_type(code: str, name: str, bench_code: str) -> str:
+    c = (code or "").upper()
+    n = (name or "").lower()
+
+    if c in BASELINE_CODES or "baseline" in n:
+        return "Baseline"
+
+    # Everything else: reuse fund grouping (Income/Growth/Other)
+    return fund_group(c, bench_code)
 
 def build_nav_chart_altair(
     pmeta: pd.DataFrame,
@@ -381,7 +400,7 @@ def build_nav_index_chart_altair(
 # ----------------------------------------------------------
 # Compute table for selected funds
 # ----------------------------------------------------------
-def compute_comparison(pmeta: pd.DataFrame, year: int, asof: date, selected_codes: list[str]) -> pd.DataFrame:
+def compute_comparison(pmeta: pd.DataFrame, year: int, asof: date, selected_codes: list[str], bench_code: str) -> pd.DataFrame:
     y0 = date(year, 1, 1)
     out = []
 
@@ -401,6 +420,7 @@ def compute_comparison(pmeta: pd.DataFrame, year: int, asof: date, selected_code
 
         out.append(
             {
+                "Type": table_type(code, name, bench_code),
                 "Code": code,
                 "Name": name,
                 "Start NAV": start_nav,
@@ -431,21 +451,44 @@ def style_table(df: pd.DataFrame, bench_code: str):
     if not bench.empty and pd.notna(bench.iloc[0].get("YTD Return", None)):
         bench_ret = float(bench.iloc[0]["YTD Return"])
 
+    # ----------------------------------------------------------
+    # Baseline detection
+    # ----------------------------------------------------------
+    baseline_codes = {"SPY-26", "QQQ-26", "GLD-26", "BTC-26"}
+
+    def is_baseline(row) -> bool:
+        code = str(row.get("Code", "") or "")
+        name = str(row.get("Name", "") or "")
+        return (code in baseline_codes) or ("baseline" in name.lower())
+
     def row_style(row):
-        code = row.get("Code", "")
+        code = str(row.get("Code", "") or "")
         alpha = row.get("Alpha vs Benchmark", None)
+        is_base = (row.get("Type") == "Baseline")
 
         styles = [""] * len(row.index)
 
+        # 1) Baseline full-row gray
+        if is_base:
+            gray = "background-color: rgba(180, 180, 180, 0.16);"
+            styles = [gray] * len(row.index)
+
+        # 4) Benchmark row bold (ALL COLUMNS)
         if code == bench_code:
+            bold = "font-weight: 700;"
+            styles = [(s + " " + bold).strip() if s else bold for s in styles]
+            return styles  # benchmark doesn't need alpha shading
+
+        # 2) No alpha shading for baselines
+        if is_base:
             return styles
 
+        # Alpha shading for NON-baselines only
         if bench_ret is None or alpha is None or pd.isna(alpha):
             return styles
 
         green = "background-color: rgba(0, 200, 0, 0.18);"
         red = "background-color: rgba(255, 0, 0, 0.18);"
-
         alpha_style = green if alpha > 0 else red if alpha < 0 else ""
 
         for col in ["YTD Return", "Alpha vs Benchmark"]:
@@ -464,7 +507,8 @@ def style_table(df: pd.DataFrame, bench_code: str):
             "P&L": fmt_money,
             "YTD Return": fmt_pct,
             "Alpha vs Benchmark": fmt_pct,
-        }
+        },
+        na_rep="",   # 👈 this forces blank display
     )
 
     return sty
@@ -513,7 +557,7 @@ def main():
     # ----------------------------------------------------------
     # Table
     # ----------------------------------------------------------
-    df = compute_comparison(pmeta, year=year, asof=asof, selected_codes=selected_codes)
+    df = compute_comparison(pmeta, year=year, asof=asof, selected_codes=selected_codes, bench_code=bench_code)
     if df.empty:
         st.info("No NAV data found for the selected funds in this window.")
         return
@@ -526,7 +570,14 @@ def main():
 
     df["Alpha vs Benchmark"] = (df["YTD Return"] - bench_ret) if bench_ret is not None else None
 
+    # Baselines should not have Alpha (they are reference rows)
+    df.loc[df["Type"] == "Baseline", "Alpha vs Benchmark"] = None
+
+    # ✅ Force display-friendly placeholder so Streamlit never shows "None"
+    # df["Alpha vs Benchmark"] = df["Alpha vs Benchmark"].where(pd.notna(df["Alpha vs Benchmark"]), "-")
+
     cols = [
+        "Type",
         "Code",
         "Name",
         "Start NAV",
@@ -537,6 +588,7 @@ def main():
         "Start Date Used",
         "End Date Used",
     ]
+
     df = df[cols]
 
     st.caption("Green = outperforming benchmark. Red = underperforming benchmark.")
@@ -546,8 +598,10 @@ def main():
     if bench_ret is not None:
         c1, c2 = st.columns(2)
 
-        outperform = df[df["Alpha vs Benchmark"] > 0].sort_values("Alpha vs Benchmark", ascending=False)
-        underperform = df[df["Alpha vs Benchmark"] < 0].sort_values("Alpha vs Benchmark", ascending=True)
+        alpha_numeric = pd.to_numeric(df["Alpha vs Benchmark"], errors="coerce")
+
+        outperform = df[alpha_numeric > 0].sort_values("Alpha vs Benchmark", ascending=False)
+        underperform = df[alpha_numeric < 0].sort_values("Alpha vs Benchmark", ascending=True)
 
         with c1:
             st.subheader("✅ Outperforming")
