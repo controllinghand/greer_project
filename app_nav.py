@@ -38,8 +38,8 @@ def build_pages():
             st.Page("pages/11_WK_IV_Targets.py", title="Weekly IV Targets", icon="🧲"),
             st.Page("pages/6_Backtesting.py", title="Backtesting", icon="🧪"),
             st.Page("pages/add_company.py", title="Add Company", icon="➕"),
-            st.Page("pages/8_all_stars.py", title="All Stars", icon="⭐"),
-            st.Page("pages/9_all_stars_cards.py", title="All Stars Cards", icon="🪪"),
+            st.Page("pages/8_all_stars.py", title="All 3-Stars", icon="⭐"),
+            st.Page("pages/9_all_star_alumni.py", title="All 3-Stars Alumni", icon="⭐"),
         ],
     }
 
