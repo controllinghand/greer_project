@@ -7,11 +7,13 @@ def is_admin() -> bool:
 
 def build_pages():
     pages = {
-        "Dashboards": [
+        "Home": [
             st.Page("pages/0_Home.py", title="Greer Value Search", icon="🔎", default=True),
+        ],
+        "Dashboards": [
+            st.Page("pages/3_Dashboard-Summary.py", title="Dashboard Summary", icon="🧭"),
             st.Page("pages/1_Dashboard.py", title="Dashboard", icon="📊"),
             st.Page("pages/2_Dashboard-mini.py", title="Dashboard Mini", icon="🧩"),
-            st.Page("pages/3_Dashboard-Summary.py", title="Dashboard Summary", icon="🧭"),
         ],
         "Portfolios": [
             st.Page("pages/12_Fund_Compare_YTD.py", title="Fund Compare (YTD)", icon="🆚"),
