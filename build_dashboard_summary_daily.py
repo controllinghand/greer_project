@@ -1,7 +1,7 @@
 # build_dashboard_summary_daily.py
 # ----------------------------------------------------------
 # build_dashboard_summary_daily.py
-# - Computes daily market breadth + Greer Market Index (GMI)
+# - Computes daily market breadth + Greer Market Regime Score
 # - Source: dashboard_snapshot
 # - Inserts into: dashboard_summary_daily (1 row per day)
 # ----------------------------------------------------------
@@ -18,27 +18,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------
-# Config: composite score weights (must sum to 1.0)
-# ----------------------------------------------------------
-WEIGHTS = {
-    "gv": 0.40,
-    "ys": 0.25,
-    "gfv": 0.25,
-    "buyzone": 0.10,
-}
-
-# ----------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------
 def safe_pct(n: int, d: int) -> float:
     return (n / d * 100.0) if d else 0.0
 
-def compute_regime_score(gv_green_pct: float, buyzone_pct: float) -> float:
+def compute_regime_score(gv_bullish_pct: float, buyzone_pct: float) -> float:
     """
     Greer Market Regime Score (0-100)
+
+    gv_bullish_pct = GV Green % + GV Gold % (both are bull indicators)
+    buyzone_pct    = % of tickers in BuyZone (market stress / pullback density)
     """
     score = (
-        0.6 * gv_green_pct
+        0.6 * gv_bullish_pct
         + 0.4 * (100.0 - buyzone_pct)
     )
     return round(float(score), 2)
@@ -154,12 +147,17 @@ def main():
 
     buyzone_count = int(buyzone.sum())
 
+    # Percentages
     gv_green_pct = safe_pct(gv_green, total)
+    gv_gold_pct = safe_pct(gv_gold, total)
+    gv_bullish_pct = gv_green_pct + gv_gold_pct  # ✅ Green + Gold
+
     ys_green_pct = safe_pct(ys_green, total)
     gfv_green_pct = safe_pct(gfv_green, total)
     buyzone_pct = safe_pct(buyzone_count, total)
 
-    regime_score = compute_regime_score(gv_green_pct, buyzone_pct)
+    # Regime score
+    regime_score = compute_regime_score(gv_bullish_pct, buyzone_pct)
 
     upsert = """
     INSERT INTO dashboard_summary_daily (
