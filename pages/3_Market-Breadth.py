@@ -1,6 +1,6 @@
-# 3_Dashboard_Summary.py
+# 3_Market_Breadth.py
 # ----------------------------------------------------------
-# Dashboard Summary
+# Market Breadth
 # - Breadth counts for GV / Yield / GFV / BuyZone
 # - Source: dashboard_snapshot
 # ----------------------------------------------------------
@@ -10,7 +10,7 @@ import pandas as pd
 import altair as alt
 from db import get_engine
 
-st.set_page_config(page_title="Dashboard Summary", layout="wide")
+st.set_page_config(page_title="Market Breadth", layout="wide")
 
 # ----------------------------------------------------------
 # Load snapshot
@@ -40,7 +40,10 @@ if df.empty:
     st.warning("dashboard_snapshot is empty. Run build_dashboard_snapshot.py (or run_all.py).")
     st.stop()
 
-st.title("📊 Dashboard Summary — Market Breadth")
+# ----------------------------------------------------------
+# Header
+# ----------------------------------------------------------
+st.title("📊 Market Breadth")
 
 last_updated = df["snapshot_date"].max() if "snapshot_date" in df.columns else None
 if last_updated is not None:
@@ -63,8 +66,6 @@ def load_regime_history(days: int = 120) -> pd.DataFrame:
         """,
         engine
     )
-
-import altair as alt  # add at top of file with other imports
 
 # ----------------------------------------------------------
 # Greer Market Regime Banner + Trend + Chart + Streak
@@ -111,11 +112,20 @@ else:
     delta_display = f"{delta_arrow} {delta_str}" if delta_str is not None else None
 
     if today_label == "BULL":
-        st.success(f"🟢 Greer Market Regime: {today_label} ({today_score:.2f})  •  Day {streak}" + (f"  •  {delta_display}" if delta_display else ""))
+        st.success(
+            f"🟢 Greer Market Regime: {today_label} ({today_score:.2f})  •  Day {streak}"
+            + (f"  •  {delta_display}" if delta_display else "")
+        )
     elif today_label == "TRANSITIONAL":
-        st.warning(f"🟡 Greer Market Regime: {today_label} ({today_score:.2f})  •  Day {streak}" + (f"  •  {delta_display}" if delta_display else ""))
+        st.warning(
+            f"🟡 Greer Market Regime: {today_label} ({today_score:.2f})  •  Day {streak}"
+            + (f"  •  {delta_display}" if delta_display else "")
+        )
     else:
-        st.error(f"🔴 Greer Market Regime: {today_label} ({today_score:.2f})  •  Day {streak}" + (f"  •  {delta_display}" if delta_display else ""))
+        st.error(
+            f"🔴 Greer Market Regime: {today_label} ({today_score:.2f})  •  Day {streak}"
+            + (f"  •  {delta_display}" if delta_display else "")
+        )
 
     # 90-day chart with thresholds
     chart_df = hist.tail(90).copy()
@@ -162,51 +172,6 @@ st.markdown(f"Showing **{total}** companies")
 # ----------------------------------------------------------
 # Bucket logic
 # ----------------------------------------------------------
-def gv_bucket(row) -> str:
-    above50_raw = row.get("above_50_count")
-    gv_raw = row.get("greer_value_score")
-
-    above50 = 0 if pd.isna(above50_raw) else int(above50_raw)
-    gv = 0.0 if pd.isna(gv_raw) else float(gv_raw)
-
-    if above50 == 6:
-        return "gold"
-    if gv >= 50:
-        return "green"
-    return "red"
-
-def yield_bucket(row) -> str:
-    ys_raw = row.get("greer_yield_score")
-    ys = 0 if pd.isna(ys_raw) else int(ys_raw)
-
-    if ys >= 4:
-        return "gold"
-    if ys >= 2:
-        return "green"
-    return "red"
-
-def gfv_bucket(row) -> str:
-    """
-    GFV is already computed in dashboard_snapshot:
-    - gold/green/red based on DCF+Graham logic
-    - otherwise gray
-    """
-    s = row.get("gfv_status")
-    s = str(s).strip().lower() if pd.notnull(s) else "gray"
-
-    if s in {"gold", "green", "red", "gray"}:
-        return s
-
-    # In case older rows used different labels:
-    if s in {"undervalued_strong", "strong_buy", "both_above"}:
-        return "gold"
-    if s in {"undervalued", "buy", "one_above"}:
-        return "green"
-    if s in {"overvalued", "sell", "both_below"}:
-        return "red"
-
-    return "gray"
-
 def summarize(series: pd.Series, include_gray: bool = False) -> dict:
     out = {
         "gold": int((series == "gold").sum()),
@@ -271,13 +236,11 @@ ys = summarize(filtered["ys_bucket"])
 gfv = summarize(filtered["gfv_bucket"], include_gray=True)
 
 buyzone_count = int(filtered["buyzone_flag"].fillna(False).sum())
-buyzone_pct = (buyzone_count / total * 100.0) if total else 0.0
 
 # ----------------------------------------------------------
 # Summary strip (with %)
 # ----------------------------------------------------------
-
-def pct(x):
+def pct(x: int) -> str:
     return f"{(x / total * 100):.1f}%" if total else "0.0%"
 
 c1, c2, c3, c4 = st.columns(4)

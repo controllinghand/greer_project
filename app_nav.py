@@ -11,7 +11,11 @@ def build_pages():
             st.Page("pages/0_Home.py", title="Greer Value Search", icon="🔎", default=True),
         ],
         "Dashboards": [
-            st.Page("pages/3_Dashboard-Summary.py", title="Dashboard Summary", icon="🧭"),
+            st.Page("pages/7_Sentiment-Panel.py", title="Sentiment Panel", icon="🧠"),
+            st.Page("pages/4_Market-Cycle.py", title="Market Cycle", icon="🧭"),
+            st.Page("pages/6_Fear-Greed.py", title="Fear & Greed", icon="📊"),
+            st.Page("pages/5_Bottom-Detector.py", title="Bottom Detector", icon="🧯"),
+            st.Page("pages/3_Market-Breadth.py", title="Market Breadth", icon="📈"),
             st.Page("pages/1_Dashboard.py", title="Dashboard", icon="📊"),
             st.Page("pages/2_Dashboard-mini.py", title="Dashboard Mini", icon="🧩"),
         ],
