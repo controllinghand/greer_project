@@ -50,6 +50,41 @@ if df.empty:
 summary_date = df["summary_date"].iloc[0]
 
 # ----------------------------------------------------------
+# Load company drilldown for a selected sector
+# ----------------------------------------------------------
+@st.cache_data(ttl=600)
+def load_sector_companies(selected_sector: str) -> pd.DataFrame:
+    engine = get_engine()
+    return pd.read_sql(
+        """
+        SELECT
+          ticker,
+          name,
+          sector,
+          industry,
+          greer_star_rating,
+          greer_value_score,
+          above_50_count,
+          greer_yield_score,
+          buyzone_flag,
+          fvg_last_direction,
+          current_price,
+          gfv_price,
+          gfv_status,
+          snapshot_date
+        FROM dashboard_snapshot
+        WHERE sector = %(sector)s
+        ORDER BY
+          greer_star_rating DESC,
+          greer_value_score DESC,
+          greer_yield_score DESC,
+          ticker;
+        """,
+        engine,
+        params={"sector": selected_sector},
+    )
+
+# ----------------------------------------------------------
 # Cycle Phase Rules
 # ----------------------------------------------------------
 def classify_phase(health: float, buyzone: float, opp: float) -> str:
@@ -67,7 +102,7 @@ def classify_phase(health: float, buyzone: float, opp: float) -> str:
         return "EXPANSION"
 
     # RECOVERY: lots of pullbacks (high buyzone) but attractive valuations + fundamentals not broken
-    if buyzone >= 25 and opp >= 55 and health >= 45:
+    if health >= 45 and buyzone >= 25 and opp >= 55:
         return "RECOVERY"
 
     # CONTRACTION: fundamentals weak and trend weak (buyzones high)
@@ -118,6 +153,54 @@ def signal_emoji(value: float) -> str:
 
 def signal_pct(value: float) -> str:
     return f"{signal_emoji(value)} {value:.1f}"
+
+def gv_bucket_label(gv_score: float, above_50_count: float) -> str:
+    gv = float(gv_score) if pd.notnull(gv_score) else 0.0
+    a50 = int(above_50_count) if pd.notnull(above_50_count) else 0
+
+    if a50 == 6:
+        return "🟨 Gold"
+    if gv >= 50:
+        return "🟢 Green"
+    return "🔴 Red"
+
+def ys_bucket_label(ys_score: float) -> str:
+    ys = int(ys_score) if pd.notnull(ys_score) else 0
+
+    if ys >= 4:
+        return "🟨 Gold"
+    if ys >= 2:
+        return "🟢 Green"
+    return "🔴 Red"
+
+def gfv_bucket_label(gfv_status: str) -> str:
+    s = str(gfv_status).strip().lower() if pd.notnull(gfv_status) else "gray"
+
+    if s == "gold":
+        return "🟨 Gold"
+    if s == "green":
+        return "🟢 Green"
+    if s == "red":
+        return "🔴 Red"
+    return "⚪ Gray"
+
+def buyzone_label(flag) -> str:
+    return "🟢 Yes" if bool(flag) else "⚪ No"
+
+def safe_round(value, digits=2):
+    return round(float(value), digits) if pd.notnull(value) else None
+
+def safe_pct_to_fair_value(current_price, gfv_price):
+    if pd.isnull(current_price) or pd.isnull(gfv_price):
+        return None
+
+    current_price = float(current_price)
+    gfv_price = float(gfv_price)
+
+    if current_price == 0:
+        return None
+
+    return round(((gfv_price / current_price) - 1.0) * 100.0, 1)
 
 def render_cycle_strip(current_phase: str):
     phase = str(current_phase).strip().upper()
@@ -432,6 +515,143 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
 )
+
+st.divider()
+
+# ----------------------------------------------------------
+# Sector Drilldown
+# ----------------------------------------------------------
+st.subheader("Sector Drilldown")
+st.caption("Select a sector to view the companies that make up that sector.")
+
+drill_c1, drill_c2, drill_c3, drill_c4 = st.columns([2, 1, 1, 1])
+
+with drill_c1:
+    drill_sector = st.selectbox(
+        "Choose a sector",
+        options=sorted(sector_df["sector"].unique().tolist()),
+        index=0,
+        key="sector_drilldown_select",
+    )
+
+with drill_c2:
+    only_3_star = st.checkbox("Only 3-Star", value=False)
+
+with drill_c3:
+    only_buyzone = st.checkbox("Only BuyZone", value=False)
+
+with drill_c4:
+    only_gfv_bullish = st.checkbox("Only GFV Green/Gold", value=False)
+
+companies_df = load_sector_companies(drill_sector)
+
+if companies_df.empty:
+    st.info("No companies found for that sector.")
+else:
+    companies_df = companies_df.copy()
+
+    companies_df["gv_bucket"] = companies_df.apply(
+        lambda r: gv_bucket_label(r["greer_value_score"], r["above_50_count"]),
+        axis=1
+    )
+
+    companies_df["ys_bucket"] = companies_df["greer_yield_score"].apply(ys_bucket_label)
+    companies_df["gfv_bucket"] = companies_df["gfv_status"].apply(gfv_bucket_label)
+    companies_df["buyzone"] = companies_df["buyzone_flag"].apply(buyzone_label)
+
+    companies_df["gfv_upside_pct"] = companies_df.apply(
+        lambda r: safe_pct_to_fair_value(r["current_price"], r["gfv_price"]),
+        axis=1
+    )
+
+    companies_df["greer_value_score"] = companies_df["greer_value_score"].apply(lambda x: safe_round(x, 1))
+    companies_df["current_price"] = companies_df["current_price"].apply(lambda x: safe_round(x, 2))
+    companies_df["gfv_price"] = companies_df["gfv_price"].apply(lambda x: safe_round(x, 2))
+
+    if only_3_star:
+        companies_df = companies_df[companies_df["greer_star_rating"] == 3]
+
+    if only_buyzone:
+        companies_df = companies_df[companies_df["buyzone_flag"] == True]
+
+    if only_gfv_bullish:
+        companies_df = companies_df[
+            companies_df["gfv_status"].astype("string").str.lower().isin(["green", "gold"])
+        ]
+
+    drill_sort = st.selectbox(
+        "Sort companies by",
+        options=[
+            "Star Rating",
+            "Greer Value Score",
+            "Greer Yield Score",
+            "GFV Upside %",
+            "Ticker",
+        ],
+        index=0,
+        key="sector_company_sort",
+    )
+
+    drill_sort_map = {
+        "Star Rating": (["greer_star_rating", "greer_value_score", "greer_yield_score", "ticker"], [False, False, False, True]),
+        "Greer Value Score": (["greer_value_score", "greer_star_rating", "ticker"], [False, False, True]),
+        "Greer Yield Score": (["greer_yield_score", "greer_value_score", "ticker"], [False, False, True]),
+        "GFV Upside %": (["gfv_upside_pct", "greer_value_score", "ticker"], [False, False, True]),
+        "Ticker": (["ticker"], [True]),
+    }
+
+    drill_sort_cols, drill_sort_asc = drill_sort_map[drill_sort]
+    companies_df = companies_df.sort_values(
+        by=drill_sort_cols,
+        ascending=drill_sort_asc,
+        na_position="last"
+    )
+
+    st.caption(f"{drill_sector}: {len(companies_df)} companies shown")
+
+    display_df = companies_df[
+        [
+            "ticker",
+            "name",
+            "industry",
+            "greer_star_rating",
+            "greer_value_score",
+            "gv_bucket",
+            "greer_yield_score",
+            "ys_bucket",
+            "buyzone",
+            "fvg_last_direction",
+            "current_price",
+            "gfv_price",
+            "gfv_bucket",
+            "gfv_upside_pct",
+        ]
+    ].copy()
+
+    display_df = display_df.rename(
+        columns={
+            "ticker": "Ticker",
+            "name": "Name",
+            "industry": "Industry",
+            "greer_star_rating": "Stars",
+            "greer_value_score": "GV Score",
+            "gv_bucket": "GV",
+            "greer_yield_score": "YS Score",
+            "ys_bucket": "YS",
+            "buyzone": "BuyZone",
+            "fvg_last_direction": "FVG Dir",
+            "current_price": "Price",
+            "gfv_price": "GFV",
+            "gfv_bucket": "GFV Status",
+            "gfv_upside_pct": "GFV Upside %",
+        }
+    )
+
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+    )
 
 st.divider()
 
