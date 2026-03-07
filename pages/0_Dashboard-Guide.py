@@ -136,12 +136,14 @@ st.divider()
 st.header("📖 Phase Definitions")
 
 st.markdown("""
-These phases are based on three main ingredients:
+These phases are based on three main ingredients, and **confidence** measures how strongly the signals agree:
 
 - **Health** = GV bullish %
 - **BuyZone** = BuyZone %
 - **Opportunity** = Yield + GFV bullish average
 """)
+
+
 
 st.markdown("""
 | Phase | Health | BuyZone | Opportunity | Interpretation | Typical Action |
@@ -155,30 +157,58 @@ st.markdown("""
 st.divider()
 
 # ----------------------------------------------------------
-# Transitional Explanation
+# Confidence Explanation
 # ----------------------------------------------------------
-st.header("🟡 About Transitional")
+st.header("🎯 About Confidence")
 
 st.markdown("""
-You may sometimes see **Transitional** used internally when the market does not cleanly fit one phase.
+The dashboards now use **4 primary phases**:
 
-In plain English, **Transitional means mixed signals**:
+**Recovery → Expansion → Euphoria → Contraction**
 
-- health may be improving, but buyzones are still elevated
-- trend may look strong, but opportunity is fading
-- one signal says recovery while another says contraction
+Instead of showing a separate **Transitional** phase, the system always assigns the
+**closest main phase** and then shows a **confidence score**.
 
-For the user-facing dashboard, you may want to either:
+In plain English:
 
-1. **Hide Transitional** and force the closest main phase  
-2. **Show Transitional only when confidence is low**  
-3. **Use it as a small note instead of a main badge**
+- **High confidence** = the signals strongly agree on the current phase
+- **Medium confidence** = the phase is still valid, but some signals are mixed
+- **Low confidence** = the market may be between phases or close to shifting
+""")
+
+st.markdown("""
+### How to interpret confidence
+
+- **High confidence**
+  - phase is clear
+  - signals are aligned
+  - regime is stable
+
+- **Medium confidence**
+  - phase is likely correct
+  - some indicators are starting to disagree
+  - worth monitoring for change
+
+- **Low confidence**
+  - signals are mixed
+  - the market may be transitioning
+  - highest chance of a phase shift
+""")
+
+st.markdown("""
+### Confidence Guide
+
+| Confidence | Meaning | What It Suggests |
+|---|---|---|
+| **High** | Signals strongly agree | Regime is stable |
+| **Medium** | Some signals are mixed | Watch for rotation or weakening |
+| **Low** | Signals are conflicted | Possible phase shift / transition risk |
 """)
 
 st.info("""
 Recommended approach:
-Use the 4 primary phases as the main display and reserve **Transitional**
-for edge cases or low-confidence readings.
+Focus on the **main phase first**, then use **confidence** to judge how stable or fragile
+that phase is.
 """)
 
 st.divider()
@@ -230,6 +260,7 @@ Best for answering:
 - Are we in a healthy uptrend?
 - Are we stretched?
 - Are we breaking down?
+- How confident is the current regime read?
 """)
 
 with st.expander("🏙️ Sector Market Cycle"):
@@ -240,6 +271,7 @@ Best for answering:
 - Which sectors are leading?
 - Which sectors are weak?
 - Where is new opportunity forming?
+- Which sectors have the highest transition risk?
 """)
 
 with st.expander("📊 Fear & Greed"):
