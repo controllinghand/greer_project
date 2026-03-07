@@ -85,8 +85,15 @@ run_cmd(["python", "build_dashboard_snapshot.py"])
 # Build the Dashboard Summary Daily
 # ----------------------------------------------------------
 print("\n⚡ Building dashboard Summary Daily (for market summary)…")
-logger.info("Running build_dashboard_Summary.py")
+logger.info("Running build_dashboard_summary_daily.py")
 run_cmd(["python", "build_dashboard_summary_daily.py"])
+
+# ----------------------------------------------------------
+# Build the Dashboard Sector Summary Daily
+# ----------------------------------------------------------
+print("\n⚡ Building dashboard Sector Summary Daily (for market sector summary)…")
+logger.info("Running build_sector_summary_daily.py")
+run_cmd(["python", "build_sector_summary_daily.py"])
 
 # ----------------------------------------------------------
 # Opportunity Periods
