@@ -11,6 +11,7 @@ def build_pages():
             st.Page("pages/0_Home.py", title="Greer Value Search", icon="🔎", default=True),
         ],
         "Dashboards": [
+            st.Page("pages/0_Dashboard-Guide.py", title="Dashboard Guide", icon="📘"),
             st.Page("pages/7_Sentiment-Panel.py", title="Sentiment Panel", icon="🧠"),
             st.Page("pages/4_Market-Cycle.py", title="Market Cycle", icon="🧭"),
             st.Page("pages/5_Sector-Market-Cycle.py", title="Sector Market Cycle", icon="🏭"),

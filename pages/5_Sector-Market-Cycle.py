@@ -10,6 +10,13 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from db import get_engine
+from market_cycle_utils import (
+    classify_phase_with_confidence,
+    phase_badge_inline,
+    phase_interpretation_text,
+    phase_confidence_note,
+    get_ranked_phase_scores,
+)
 
 st.set_page_config(page_title="Greer Sector Market Cycle", layout="wide")
 
@@ -85,51 +92,10 @@ def load_sector_companies(selected_sector: str) -> pd.DataFrame:
     )
 
 # ----------------------------------------------------------
-# Cycle Phase Rules
-# ----------------------------------------------------------
-def classify_phase(health: float, buyzone: float, opp: float) -> str:
-    """
-    health  = GV bullish %
-    buyzone = BuyZone %
-    opp     = Opportunity % (Yield + GFV bullish avg)
-    """
-    # EUPHORIA: strong fundamentals + strong trend + expensive (low opportunity)
-    if health >= 60 and buyzone <= 12 and opp <= 35:
-        return "EUPHORIA"
-
-    # EXPANSION: strong fundamentals + strong trend + not super cheap
-    if health >= 60 and buyzone <= 20 and opp > 35:
-        return "EXPANSION"
-
-    # RECOVERY: lots of pullbacks (high buyzone) but attractive valuations + fundamentals not broken
-    if health >= 45 and buyzone >= 25 and opp >= 55:
-        return "RECOVERY"
-
-    # CONTRACTION: fundamentals weak and trend weak (buyzones high)
-    if health <= 45 and buyzone >= 25:
-        return "CONTRACTION"
-
-    return "TRANSITIONAL"
-
-# ----------------------------------------------------------
 # UI helpers
 # ----------------------------------------------------------
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
-
-def phase_badge_inline(phase_name: str):
-    p = str(phase_name).strip().upper()
-
-    if p == "EXPANSION":
-        st.success("🟢 Sector Phase: **EXPANSION**")
-    elif p == "EUPHORIA":
-        st.warning("🟠 Sector Phase: **EUPHORIA**")
-    elif p == "RECOVERY":
-        st.info("🔵 Sector Phase: **RECOVERY**")
-    elif p == "CONTRACTION":
-        st.error("🔴 Sector Phase: **CONTRACTION**")
-    else:
-        st.warning("🟡 Sector Phase: **TRANSITIONAL**")
 
 def signal_emoji(value: float) -> str:
     """
@@ -152,7 +118,7 @@ def signal_emoji(value: float) -> str:
     return "🟩"
 
 def signal_pct(value: float) -> str:
-    return f"{signal_emoji(value)} {value:.1f}"
+    return f"{signal_emoji(value)} {value:.1f}%"
 
 def gv_bucket_label(gv_score: float, above_50_count: float) -> str:
     gv = float(gv_score) if pd.notnull(gv_score) else 0.0
@@ -205,14 +171,13 @@ def safe_pct_to_fair_value(current_price, gfv_price):
 def render_cycle_strip(current_phase: str):
     phase = str(current_phase).strip().upper()
 
-    phases = ["RECOVERY", "EXPANSION", "EUPHORIA", "CONTRACTION", "TRANSITIONAL"]
+    phases = ["RECOVERY", "EXPANSION", "EUPHORIA", "CONTRACTION"]
 
     colors = {
         "RECOVERY": "#5BC0DE",
         "EXPANSION": "#5CB85C",
         "EUPHORIA": "#F0AD4E",
         "CONTRACTION": "#D9534F",
-        "TRANSITIONAL": "#FFD966",
     }
 
     icons = {
@@ -220,11 +185,10 @@ def render_cycle_strip(current_phase: str):
         "EXPANSION": "📈",
         "EUPHORIA": "🔥",
         "CONTRACTION": "📉",
-        "TRANSITIONAL": "🟡",
     }
 
     if phase not in phases:
-        phase = "TRANSITIONAL"
+        phase = phases[0]
 
     st.markdown(
         """
@@ -305,39 +269,6 @@ def render_cycle_strip(current_phase: str):
 
     st.markdown("".join(parts), unsafe_allow_html=True)
 
-def phase_interpretation(phase_name: str):
-    p = str(phase_name).strip().upper()
-
-    if p == "EXPANSION":
-        st.caption(
-            "Strong fundamentals and strong market direction. "
-            "The majority of companies in this sector are growing and trends remain healthy."
-        )
-
-    elif p == "EUPHORIA":
-        st.caption(
-            "Fundamentals and trends remain strong but valuation opportunities are limited. "
-            "This sector may be approaching a late-cycle phase."
-        )
-
-    elif p == "RECOVERY":
-        st.caption(
-            "Valuations are attractive and pullbacks are common, but fundamentals remain intact. "
-            "This sector may be emerging from a correction."
-        )
-
-    elif p == "CONTRACTION":
-        st.caption(
-            "Fundamentals are weakening and many companies are in pullback zones. "
-            "This sector is likely experiencing broad deterioration."
-        )
-
-    else:
-        st.caption(
-            "Sector signals are mixed. Fundamentals and trends remain reasonable, "
-            "but valuation opportunities and momentum are not clearly aligned."
-        )
-
 def dial_bucket(value: float) -> str:
     """
     Shared bucket logic for the 3 dials (0-100):
@@ -415,6 +346,18 @@ def render_semicircle_gauge(title: str, value: float, subtitle: str, chart_key: 
     st.caption(f"Status: **{dial_label(b)}**")
 
 # ----------------------------------------------------------
+# Transition Risk indicator
+# ----------------------------------------------------------
+def transition_risk_label(confidence: float) -> str:
+    c = float(confidence)
+
+    if c < 0.35:
+        return "⚠ Possible Phase Shift"
+    if c < 0.55:
+        return "👀 Watch"
+    return ""
+
+# ----------------------------------------------------------
 # Build display metrics for each sector
 # ----------------------------------------------------------
 sector_rows = []
@@ -441,7 +384,12 @@ for _, row in df.iterrows():
     )
 
     opportunity_pct = (ys_bullish_pct + gfv_bullish_pct) / 2.0
-    phase = classify_phase(gv_bullish_pct, buyzone_pct, opportunity_pct)
+
+    phase, confidence = classify_phase_with_confidence(
+        gv_bullish_pct,
+        buyzone_pct,
+        opportunity_pct,
+    )
 
     sector_rows.append(
         {
@@ -455,6 +403,7 @@ for _, row in df.iterrows():
             "gfv_bullish_pct": round(gfv_bullish_pct, 1),
             "greer_market_index": round(float(row["greer_market_index"]), 2) if pd.notnull(row["greer_market_index"]) else 0.0,
             "phase": phase,
+            "confidence": round(confidence, 4),
         }
     )
 
@@ -467,48 +416,71 @@ st.title("🏭 Greer Sector Market Cycle")
 st.caption(f"Latest sector snapshot: {summary_date}  •  Sectors: {len(sector_df)}")
 
 # ----------------------------------------------------------
+# Phase label with color icon
+# ----------------------------------------------------------
+def phase_label(phase_name: str) -> str:
+    p = str(phase_name).strip().upper()
+
+    if p == "EXPANSION":
+        return "🟢 Expansion"
+    if p == "EUPHORIA":
+        return "🟠 Euphoria"
+    if p == "RECOVERY":
+        return "🔵 Recovery"
+    if p == "CONTRACTION":
+        return "🔴 Contraction"
+
+    return "⚪ Unknown"
+
+# ----------------------------------------------------------
 # Top Summary Table
 # ----------------------------------------------------------
 st.subheader("Sector Summary")
-st.caption("Quick scan of sector-level health, direction, opportunity, and phase.")
+st.caption("Quick scan of sector-level health, direction, opportunity, phase, and confidence.")
 
 summary_display = sector_df.copy()
 
 summary_display["Health"] = summary_display["health_pct"].apply(signal_pct)
 summary_display["Direction"] = summary_display["direction_pct"].apply(signal_pct)
 summary_display["Opportunity"] = summary_display["opportunity_pct"].apply(signal_pct)
-
-summary_display = summary_display[
-    [
-        "sector",
-        "total_companies",
-        "Health",
-        "Direction",
-        "Opportunity",
-        "greer_market_index",
-        "phase",
-        "health_pct",
-        "direction_pct",
-        "opportunity_pct",
-    ]
-].copy()
+summary_display["Phase"] = summary_display["phase"].apply(phase_label)
+summary_display["Confidence"] = summary_display["confidence"].apply(lambda x: f"{round(float(x) * 100)}%")
+summary_display["Transition Risk"] = summary_display["confidence"].apply(transition_risk_label)
 
 summary_display = summary_display.rename(
     columns={
         "sector": "Sector",
         "total_companies": "Tickers",
         "greer_market_index": "Greer Market Index",
-        "phase": "Phase",
         "health_pct": "_health_sort",
         "direction_pct": "_direction_sort",
         "opportunity_pct": "_opportunity_sort",
+        "confidence": "_confidence_sort",
     }
 )
 
+summary_display = summary_display[
+    [
+        "Sector",
+        "Tickers",
+        "Health",
+        "Direction",
+        "Opportunity",
+        "Greer Market Index",
+        "Phase",
+        "Confidence",
+        "Transition Risk",
+        "_health_sort",
+        "_direction_sort",
+        "_opportunity_sort",
+        "_confidence_sort",
+    ]
+]
+
 summary_display = summary_display.sort_values(
-    by=["Greer Market Index", "_health_sort", "_direction_sort"],
-    ascending=[False, False, False]
-).drop(columns=["_health_sort", "_direction_sort", "_opportunity_sort"])
+    by=["Greer Market Index", "_confidence_sort", "_health_sort", "_direction_sort"],
+    ascending=[False, False, False, False]
+).drop(columns=["_health_sort", "_direction_sort", "_opportunity_sort", "_confidence_sort"])
 
 st.dataframe(
     summary_display,
@@ -676,6 +648,7 @@ with c2:
             "Health %",
             "Direction %",
             "Opportunity %",
+            "Confidence %",
         ],
         index=1,
     )
@@ -688,6 +661,7 @@ sort_map = {
     "Health %": ("health_pct", False),
     "Direction %": ("direction_pct", False),
     "Opportunity %": ("opportunity_pct", False),
+    "Confidence %": ("confidence", False),
 }
 
 sort_col, ascending = sort_map[sort_by]
@@ -706,14 +680,19 @@ for _, row in filtered_df.iterrows():
     ys_bullish_pct = float(row["ys_bullish_pct"])
     gfv_bullish_pct = float(row["gfv_bullish_pct"])
     phase = row["phase"]
+    confidence = float(row["confidence"])
     gmi = float(row["greer_market_index"])
 
     st.subheader(f"🏷️ {sector}")
     st.caption(f"Universe: {total} tickers  •  Greer Market Index: {gmi:.2f}")
 
-    phase_badge_inline(phase)
-    phase_interpretation(phase)
+    phase_badge_inline(phase, confidence, label_prefix="Sector Phase")
+    st.caption(phase_interpretation_text(phase, confidence))
     render_cycle_strip(phase)
+    st.caption(
+        f"Confidence: **{round(confidence * 100)}%**  •  "
+        f"{phase_confidence_note(confidence)}"
+    )
 
     c1, c2, c3 = st.columns(3)
 
@@ -742,6 +721,12 @@ for _, row in filtered_df.iterrows():
         )
 
     with st.expander(f"Show underlying sector breadth components — {sector}"):
+        ranked_scores = get_ranked_phase_scores(
+            health_pct,
+            buyzone_pct,
+            opportunity_pct,
+        )
+
         st.write(
             {
                 "Sector": sector,
@@ -754,6 +739,10 @@ for _, row in filtered_df.iterrows():
                 "Opportunity % (avg Yield+GFV)": round(opportunity_pct, 2),
                 "Greer Market Index": round(gmi, 2),
                 "Phase": phase,
+                "Confidence %": round(confidence * 100, 1),
+                "Phase Scores": {
+                    k: round(v, 4) for k, v in ranked_scores
+                },
             }
         )
 

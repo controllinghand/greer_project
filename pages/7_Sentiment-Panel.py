@@ -10,6 +10,10 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from db import get_engine
+from market_cycle_utils import (
+    classify_phase_with_confidence,
+    phase_confidence_note,
+)
 
 st.set_page_config(page_title="Greer Sentiment Panel", layout="wide")
 
@@ -91,20 +95,38 @@ def fg_bucket(x: float) -> str:
         return "Greed"
     return "Extreme Greed"
 
-def market_cycle_phase(health: float, direction: float, opportunity: float) -> str:
-    """
-    Simple phase mapping (tweak anytime):
-    - Health ~ fundamentals breadth (GV green+gold)
-    - Direction ~ 100 - BuyZone%
-    - Opportunity ~ undervaluation breadth (Yield bullish proxy)
-    """
-    if direction >= 70 and opportunity < 35:
-        return "BULL RUN"
-    if direction >= 55 and opportunity >= 35:
-        return "PULLBACK OPPORTUNITY"
-    if direction < 55 and opportunity >= 35:
-        return "CAPITULATION / BUYABLE FEAR"
-    return "TRANSITIONAL"
+def sentiment_regime_label(phase: str, confidence: float, buyzone_pct: float) -> tuple[str, str]:
+    p = str(phase).strip().upper()
+
+    if p == "EUPHORIA":
+        if confidence < 0.35:
+            return "🟠 Late Cycle Strength", "Trend Strong • Rotation Risk Rising"
+        return "🟠 Late Cycle Strength", "Trend Strong • Opportunity Limited"
+
+    if p == "EXPANSION":
+        return "🟢 Trend Strong", "Healthy Breadth • Trend Supportive"
+
+    if p == "RECOVERY":
+        if buyzone_pct >= 30:
+            return "🔵 Pullback Opportunity", "Value Improving • Stress Elevated"
+        return "🔵 Recovery", "Opportunity Building • Trend Repairing"
+
+    if p == "CONTRACTION":
+        return "🔴 Defensive Regime", "Stress Rising • Selective Opportunities"
+
+    return "🟡 Mixed Regime", "Signals Mixed"
+
+
+def temperature_label(x: float) -> str:
+    if x < 25:
+        return "❄️ Deep Bear"
+    if x < 45:
+        return "🧊 Cool Market"
+    if x < 60:
+        return "🌤 Balanced"
+    if x < 75:
+        return "🔥 Heating Up"
+    return "🌋 Overheated"
 
 # ----------------------------------------------------------
 # Color intelligence (emoji deltas)
@@ -129,15 +151,7 @@ def metric_signal_inverse(value: float, good_below: float, bad_above: float) -> 
         return "🔴 Rising"
     return "🟡 Mixed"
 
-def phase_badge(phase: str) -> str:
-    p = (phase or "").upper().strip()
-    if "BULL RUN" in p:
-        return "🟢"
-    if "CAPITULATION" in p:
-        return "🔴"
-    if "PULLBACK" in p:
-        return "🟡"
-    return "🟡"
+
 
 # ----------------------------------------------------------
 # Compute panel metrics from latest snapshot
@@ -158,7 +172,11 @@ ys_gold = safe_float(latest.get("ys_gold"), 0.0)
 yield_bullish_pct = ((ys_green + ys_gold) / total * 100.0) if total else 0.0
 opportunity = clamp(yield_bullish_pct, 0.0, 100.0)
 
-phase = market_cycle_phase(health, direction, opportunity)
+phase, confidence = classify_phase_with_confidence(
+    health,
+    buyzone_pct,
+    opportunity,
+)
 
 bottom_score = clamp((buyzone_pct + yield_bullish_pct) / 2.0, 0.0, 100.0)
 
@@ -246,13 +264,34 @@ def render_fear_greed_dial(value: float):
 # Header
 # ----------------------------------------------------------
 st.title("🧠 Greer Sentiment Panel")
-trend_word = metric_signal(direction,60,40).split()[1]
-stress_word = metric_signal_inverse(buyzone_pct,15,30).split()[1]
+regime_title, regime_sub = sentiment_regime_label(phase, confidence, buyzone_pct)
 
 st.info(
-    f"{phase_badge(phase)} Market Regime: {phase.replace('_',' ').title()} "
-    f"• Trend {trend_word} • Stress {stress_word}"
+    f"Market Regime: {regime_title} ({phase.title()} Phase) "
+    f"• Confidence {round(confidence * 100)}% "
+    f"• {regime_sub}"
 )
+# ----------------------------------------------------------
+# Market Temperature Score
+# ----------------------------------------------------------
+
+opportunity_heat = 100.0 - opportunity
+
+temperature = (
+    0.30 * direction +
+    0.25 * health +
+    0.20 * fg_now +
+    0.15 * opportunity_heat +
+    0.10 * buyzone_pct
+)
+
+temperature = clamp(temperature, 0.0, 100.0)
+st.metric(
+    "Market Temperature",
+    f"{temperature:.1f}",
+    temperature_label(temperature)
+)
+
 st.caption(f"Latest: {latest['summary_date'].date()}  •  Universe: {total} tickers")
 st.divider()
 
@@ -268,7 +307,10 @@ with c1:
 
 with c2:
     st.subheader("Market Cycle")
-    st.markdown(f"**Phase:** {phase_badge(phase)} `{phase}`")
+    st.markdown(f"**Phase:** `{phase}`")
+    st.caption(
+        f"Confidence: {round(confidence * 100)}% • {phase_confidence_note(confidence)}"
+    )
 
     st.metric(
         "Health (GV bullish)",

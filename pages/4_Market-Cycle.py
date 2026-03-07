@@ -2,7 +2,8 @@
 # ----------------------------------------------------------
 # Greer Market Cycle Dashboard
 # - 3 semicircle gauges: Health (GV), Direction (100 - BuyZone), Opportunity (Yield + GFV)
-# - Cycle Phase classification: Recovery / Expansion / Euphoria / Contraction / Transitional
+# - Cycle Phase classification: Recovery / Expansion / Euphoria / Contraction
+# - Mixed states are expressed through phase confidence instead of a separate Transitional phase
 # - Source: dashboard_summary_daily
 # ----------------------------------------------------------
 
@@ -10,6 +11,13 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from db import get_engine
+from market_cycle_utils import (
+    classify_phase_with_confidence,
+    phase_badge_inline,
+    phase_interpretation_text,
+    phase_confidence_note,
+    get_ranked_phase_scores,
+)
 
 st.set_page_config(page_title="Greer Market Cycle", layout="wide")
 
@@ -59,34 +67,11 @@ ys_bullish_pct = ((int(row["ys_green"]) + int(row["ys_gold"])) / total * 100.0) 
 gfv_bullish_pct = ((int(row["gfv_green"]) + int(row["gfv_gold"])) / total * 100.0) if total else 0.0
 opportunity_pct = (ys_bullish_pct + gfv_bullish_pct) / 2.0
 
-# ----------------------------------------------------------
-# Cycle Phase Rules (simple + interpretable) - KEEPING YOUR 5 PHASES
-# ----------------------------------------------------------
-def classify_phase(health: float, buyzone: float, opp: float) -> str:
-    """
-    health  = GV bullish %
-    buyzone = BuyZone %
-    opp     = Opportunity % (Yield + GFV bullish avg)
-    """
-    # EUPHORIA: strong fundamentals + strong trend + expensive (low opportunity)
-    if health >= 60 and buyzone <= 12 and opp <= 35:
-        return "EUPHORIA"
-
-    # EXPANSION: strong fundamentals + strong trend + not super cheap
-    if health >= 60 and buyzone <= 20 and opp > 35:
-        return "EXPANSION"
-
-    # RECOVERY: lots of pullbacks (high buyzone) but attractive valuations + fundamentals not broken
-    if buyzone >= 25 and opp >= 55 and health >= 45:
-        return "RECOVERY"
-
-    # CONTRACTION: fundamentals weak and trend weak (buyzones high)
-    if health <= 45 and buyzone >= 25:
-        return "CONTRACTION"
-
-    return "TRANSITIONAL"
-
-phase = classify_phase(gv_bullish_pct, buyzone_pct, opportunity_pct)
+phase, confidence = classify_phase_with_confidence(
+    gv_bullish_pct,
+    buyzone_pct,
+    opportunity_pct,
+)
 
 # ----------------------------------------------------------
 # UI helpers
@@ -97,36 +82,19 @@ def clamp(x: float, lo: float, hi: float) -> float:
 def pct_str(x: float) -> str:
     return f"{x:.1f}%"
 
-def phase_badge(phase_name: str):
-    p = str(phase_name).strip().upper()
-
-    if p == "EXPANSION":
-        st.success("🟢 Greer Market Cycle Phase: **EXPANSION**")
-    elif p == "EUPHORIA":
-        st.warning("🟠 Greer Market Cycle Phase: **EUPHORIA**")
-    elif p == "RECOVERY":
-        st.info("🔵 Greer Market Cycle Phase: **RECOVERY**")
-    elif p == "CONTRACTION":
-        st.error("🔴 Greer Market Cycle Phase: **CONTRACTION**")
-    else:
-        st.warning("🟡 Greer Market Cycle Phase: **TRANSITIONAL**")
-
 # ----------------------------------------------------------
-# Slick Market Cycle Strip (Recovery → Expansion → Euphoria → Contraction → Transitional)
+# Slick Market Cycle Strip (Recovery → Expansion → Euphoria → Contraction)
 # ----------------------------------------------------------
 def render_cycle_strip(current_phase: str):
     phase = str(current_phase).strip().upper()
 
-    # Order matters (this is the storyline you want users to internalize)
-    phases = ["RECOVERY", "EXPANSION", "EUPHORIA", "CONTRACTION", "TRANSITIONAL"]
+    phases = ["RECOVERY", "EXPANSION", "EUPHORIA", "CONTRACTION"]
 
-    # Theme colors (match your dial vibe)
     colors = {
-        "RECOVERY": "#5BC0DE",      # blue
-        "EXPANSION": "#5CB85C",     # green
-        "EUPHORIA": "#F0AD4E",      # orange
-        "CONTRACTION": "#D9534F",   # red
-        "TRANSITIONAL": "#FFD966",  # yellow
+        "RECOVERY": "#5BC0DE",
+        "EXPANSION": "#5CB85C",
+        "EUPHORIA": "#F0AD4E",
+        "CONTRACTION": "#D9534F",
     }
 
     icons = {
@@ -134,14 +102,11 @@ def render_cycle_strip(current_phase: str):
         "EXPANSION": "📈",
         "EUPHORIA": "🔥",
         "CONTRACTION": "📉",
-        "TRANSITIONAL": "🟡",
     }
 
-    # Fallback if phase text ever drifts
     if phase not in phases:
-        phase = "TRANSITIONAL"
+        phase = phases[0]
 
-    # CSS once
     st.markdown(
         """
         <style>
@@ -191,7 +156,6 @@ def render_cycle_strip(current_phase: str):
         unsafe_allow_html=True,
     )
 
-    # Build HTML
     parts = ['<div class="cycle-wrap">']
     for i, p in enumerate(phases):
         is_active = (p == phase)
@@ -212,8 +176,6 @@ def render_cycle_strip(current_phase: str):
             parts.append('<div class="cycle-arrow">→</div>')
 
     parts.append("</div>")
-
-    # “You are here” pointer (subtle)
     parts.append(
         f"""
         <div class="cycle-sub">
@@ -223,42 +185,6 @@ def render_cycle_strip(current_phase: str):
     )
 
     st.markdown("".join(parts), unsafe_allow_html=True)
-
-# ----------------------------------------------------------
-# Phase interpretation text
-# ----------------------------------------------------------
-def phase_interpretation(phase_name: str):
-    p = str(phase_name).strip().upper()
-
-    if p == "EXPANSION":
-        st.caption(
-            "Strong fundamentals and strong market direction. "
-            "The majority of companies are growing and trends remain healthy."
-        )
-
-    elif p == "EUPHORIA":
-        st.caption(
-            "Fundamentals and trends remain strong but valuation opportunities are limited. "
-            "Markets may be approaching a late-cycle phase."
-        )
-
-    elif p == "RECOVERY":
-        st.caption(
-            "Valuations are attractive and pullbacks are common, but fundamentals remain intact. "
-            "This phase often occurs after market corrections."
-        )
-
-    elif p == "CONTRACTION":
-        st.caption(
-            "Fundamentals are weakening and many companies are in pullback zones. "
-            "Markets are likely experiencing broad deterioration."
-        )
-
-    else:  # TRANSITIONAL
-        st.caption(
-            "Market signals are mixed. Fundamentals and trends remain reasonable, "
-            "but valuation opportunities are limited. The cycle may be shifting."
-        )
 
 def dial_bucket(value: float) -> str:
     """
@@ -337,14 +263,17 @@ def render_semicircle_gauge(title: str, value: float, subtitle: str):
 st.title("🧭 Greer Market Cycle")
 st.caption(f"Latest snapshot: {summary_date}  •  Universe: {total} tickers")
 
-# Phase badge ABOVE the 3 dials
-phase_badge(phase)
-phase_interpretation(phase)
+phase_badge_inline(phase, confidence, label_prefix="Greer Market Cycle Phase")
+st.caption(phase_interpretation_text(phase, confidence))
 render_cycle_strip(phase)
+st.caption(
+    f"Confidence: **{round(confidence * 100)}%**  •  "
+    f"{phase_confidence_note(confidence)}"
+)
 st.divider()
 
 # ----------------------------------------------------------
-# 3 Semicircle Dials (replaces the full wheel)
+# 3 Semicircle Dials
 # ----------------------------------------------------------
 c1, c2, c3 = st.columns(3)
 
@@ -375,6 +304,12 @@ st.divider()
 # Optional: show the underlying components for transparency
 # ----------------------------------------------------------
 with st.expander("Show underlying breadth components"):
+    ranked_scores = get_ranked_phase_scores(
+        gv_bullish_pct,
+        buyzone_pct,
+        opportunity_pct,
+    )
+
     st.write(
         {
             "GV Bullish % (Green+Gold)": round(gv_bullish_pct, 2),
@@ -383,5 +318,10 @@ with st.expander("Show underlying breadth components"):
             "Yield Bullish % (Green+Gold)": round(ys_bullish_pct, 2),
             "GFV Bullish % (Green+Gold)": round(gfv_bullish_pct, 2),
             "Opportunity % (avg Yield+GFV)": round(opportunity_pct, 2),
+            "Phase": phase,
+            "Confidence %": round(confidence * 100, 1),
+            "Phase Scores": {
+                k: round(v, 4) for k, v in ranked_scores
+            },
         }
     )
