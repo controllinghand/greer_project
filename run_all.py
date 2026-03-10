@@ -59,6 +59,7 @@ etl_commands = [
     ["python", "greer_fair_value_calculator.py"],
     ["python", "update_all_star_ratings.py"],
     ["python", "nav.py"],
+    ["python", "post_discord_updates.py"],
 ]
 
 # ----------------------------------------------------------
