@@ -155,10 +155,10 @@ def sync_ledger():
         if event_exists(portfolio_id, marker):
             return jsonify({"status": "already_synced"})
 
-        contracts = float(data["contracts"])
-        premium = float(data["premium"])
-        fees = float(data["fees"])
-        strike = float(data["strike"])
+        contracts = float(data.get("contracts") or 0)
+        premium = float(data.get("premium") or 0)
+        fees = float(data.get("fees") or 0)
+        strike = float(data.get("strike") or 0)
 
         expiry = data["expiry"]
         event_time = data["entry_date"]
@@ -201,9 +201,9 @@ def sync_ledger():
         if result == "Expired":
             return jsonify({"status": "expired_no_event"})
 
-        shares = float(data["shares"])
-        strike = float(data["strike"])
-        fees = float(data.get("fees", 0))
+        shares = float(data.get("shares") or 0)
+        strike = float(data.get("strike") or 0)
+        fees = float(data.get("fees") or 0)
         event_time = data["expiry"]
 
         if result == "Assigned":
