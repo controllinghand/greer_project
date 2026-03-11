@@ -13,7 +13,29 @@ app = Flask(__name__)
 
 SYNC_SECRET = os.getenv("GSHEET_SYNC_SECRET")
 
+# ----------------------------------------------------------
+# Sheet fund code -> DB portfolio code map
+# ----------------------------------------------------------
+FUND_CODE_MAP = {
+    "YRVI": "YRVI-26",
+    "YRSI": "YRSI-26",
+    "YR3G": "YR3G-26",
+    "YROG": "YROG-26",
+    "YRQI": "YRQI-26",
+    "SPY": "SPY-26",
+    "QQQ": "QQQ-26",
+    "GLD": "GLD-26",
+    "BTC": "BTC-26",
+    "ROTH": "ROTH-26",
+}
 
+# ----------------------------------------------------------
+# Map sheet fund code to DB portfolio code
+# ----------------------------------------------------------
+def map_fund_code(sheet_code):
+    code = (sheet_code or "").strip().upper()
+    return FUND_CODE_MAP.get(code, code)
+    
 # ----------------------------------------------------------
 # Helper: get portfolio_id from fund code
 # ----------------------------------------------------------
@@ -117,7 +139,12 @@ def sync_ledger():
     ticker = data["ticker"]
     strategy = data["strategy"]
 
-    portfolio_id = get_portfolio_id(fund)
+    db_fund_code = map_fund_code(fund)
+
+    try:
+        portfolio_id = get_portfolio_id(db_fund_code)
+    except Exception as e:
+        return jsonify({"error": str(e), "fund": fund, "db_fund_code": db_fund_code}), 404
 
     sync_type = data["sync_type"]
 
