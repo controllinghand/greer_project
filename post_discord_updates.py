@@ -1,6 +1,9 @@
 # ----------------------------------------------------------
 # post_discord_updates.py
-# Posts the YR Fund Comparison leaderboard to Discord
+# Posts You Rock fund updates to Discord
+# - fund comparison
+# - fund leaderboard
+# - weekly performance
 # ----------------------------------------------------------
 
 from pathlib import Path
@@ -8,7 +11,7 @@ from dotenv import load_dotenv
 import os
 import requests
 import pandas as pd
-from datetime import date
+from datetime import date, timedelta
 from sqlalchemy import text
 
 from db import get_engine
@@ -19,7 +22,10 @@ from db import get_engine
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
 
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+WEBHOOK_FUND_COMPARISON = os.getenv("DISCORD_WEBHOOK_FUND_COMPARISON")
+WEBHOOK_FUND_LEADERBOARD = os.getenv("DISCORD_WEBHOOK_FUND_LEADERBOARD")
+WEBHOOK_WEEKLY_PERFORMANCE = os.getenv("DISCORD_WEBHOOK_WEEKLY_PERFORMANCE")
+WEBHOOK_FUND_TRADES = os.getenv("DISCORD_WEBHOOK_FUND_TRADES")
 
 
 # ----------------------------------------------------------
@@ -34,6 +40,218 @@ def load_portfolios() -> pd.DataFrame:
     with get_engine().connect() as conn:
         return pd.read_sql(text(sql), conn)
 
+# ----------------------------------------------------------
+# Load recent fund trades
+# ----------------------------------------------------------
+def load_recent_fund_trades(asof: date, days_back: int = 1) -> pd.DataFrame:
+    sql = """
+        SELECT
+            pe.event_id,
+            pe.event_time,
+            pe.event_type,
+            pe.ticker,
+            pe.quantity,
+            pe.price,
+            pe.fees,
+            pe.option_type,
+            pe.strike,
+            pe.expiry,
+            pe.cash_delta,
+            pe.notes,
+            p.code AS portfolio_code,
+            p.name AS portfolio_name
+        FROM portfolio_events pe
+        JOIN portfolios p
+          ON p.portfolio_id = pe.portfolio_id
+        WHERE pe.event_time >= :start_ts
+          AND pe.event_time < :end_ts
+        ORDER BY pe.event_time DESC, pe.event_id DESC
+    """
+
+    start_ts = pd.Timestamp(asof) - pd.Timedelta(days=days_back)
+    end_ts = pd.Timestamp(asof) + pd.Timedelta(days=1)
+
+    with get_engine().connect() as conn:
+        return pd.read_sql(
+            text(sql),
+            conn,
+            params={"start_ts": start_ts, "end_ts": end_ts},
+        )
+
+
+# ----------------------------------------------------------
+# Format money
+# ----------------------------------------------------------
+def fmt_money(val) -> str:
+    if val is None or pd.isna(val):
+        return "N/A"
+    return f"${float(val):,.2f}"
+
+
+# ----------------------------------------------------------
+# Format quantity
+# ----------------------------------------------------------
+def fmt_quantity(val) -> str:
+    if val is None or pd.isna(val):
+        return "N/A"
+
+    val = float(val)
+    if val.is_integer():
+        return f"{int(val):,}"
+
+    return f"{val:,.2f}"
+
+
+# ----------------------------------------------------------
+# Format short timestamp
+# ----------------------------------------------------------
+def fmt_event_time(val) -> str:
+    if val is None or pd.isna(val):
+        return "N/A"
+
+    ts = pd.to_datetime(val)
+    return ts.strftime("%b %-d, %Y %I:%M %p")
+
+
+# ----------------------------------------------------------
+# Format short date
+# ----------------------------------------------------------
+def fmt_short_date(val) -> str:
+    if val is None or pd.isna(val):
+        return "N/A"
+
+    dt = pd.to_datetime(val)
+    return dt.strftime("%b %-d, %Y")
+
+
+# ----------------------------------------------------------
+# Build human-friendly trade title
+# ----------------------------------------------------------
+def get_trade_title(row: pd.Series) -> tuple[str, str]:
+    event_type = str(row.get("event_type") or "").strip().lower()
+    option_type = str(row.get("option_type") or "").strip().lower()
+
+    if option_type == "call":
+        if "sell" in event_type:
+            return "📈", "Sold Covered Call"
+        if "buy" in event_type:
+            return "📘", "Bought Call Option"
+
+    if option_type == "put":
+        if "sell" in event_type:
+            return "📉", "Sold Cash-Secured Put"
+        if "buy" in event_type:
+            return "📙", "Bought Put Option"
+
+    if "buy" in event_type:
+        return "🟢", "Bought Shares"
+
+    if "sell" in event_type:
+        return "🔴", "Sold Shares"
+
+    return "📌", str(row.get("event_type") or "Fund Trade").title()
+
+
+# ----------------------------------------------------------
+# Build one fund trade Discord message
+# ----------------------------------------------------------
+def build_fund_trade_message(row: pd.Series) -> str:
+    icon, title = get_trade_title(row)
+
+    portfolio_code = str(row.get("portfolio_code") or "UNKNOWN")
+    ticker = str(row.get("ticker") or "N/A")
+    quantity = row.get("quantity")
+    price = row.get("price")
+    strike = row.get("strike")
+    expiry = row.get("expiry")
+    cash_delta = row.get("cash_delta")
+    notes = row.get("notes")
+    option_type = str(row.get("option_type") or "").strip().lower()
+    event_time = row.get("event_time")
+
+    lines = []
+    lines.append(f"{icon} **{portfolio_code}**")
+    lines.append("")
+    lines.append(f"**{title}**")
+    lines.append(f"Ticker: **{ticker}**")
+
+    if quantity is not None and not pd.isna(quantity):
+        if option_type in {"call", "put"}:
+            contracts = float(quantity)
+            shares_covered = contracts * 100
+
+            if contracts.is_integer():
+                lines.append(f"Contracts: **{int(contracts):,}**")
+            else:
+                lines.append(f"Contracts: **{contracts:,.2f}**")
+
+            if shares_covered.is_integer():
+                lines.append(f"Shares Covered: **{int(shares_covered):,}**")
+            else:
+                lines.append(f"Shares Covered: **{shares_covered:,.2f}**")
+        else:
+            lines.append(f"Shares: **{fmt_quantity(quantity)}**")
+
+    if price is not None and not pd.isna(price):
+        if option_type in {"call", "put"}:
+            lines.append(f"Premium: **{fmt_money(price)}**")
+        else:
+            lines.append(f"Price: **{fmt_money(price)}**")
+
+    if strike is not None and not pd.isna(strike):
+        lines.append(f"Strike: **{fmt_money(strike)}**")
+
+    if expiry is not None and not pd.isna(expiry):
+        lines.append(f"Expiry: **{fmt_short_date(expiry)}**")
+
+    if cash_delta is not None and not pd.isna(cash_delta):
+        cash_val = float(cash_delta)
+        event_type_lower = str(row.get("event_type") or "").lower()
+
+        if option_type in {"call", "put"}:
+
+            if "sell" in event_type_lower and cash_val > 0:
+                lines.append(f"Premium Collected: **{fmt_money(cash_val)}**")
+
+            elif "buy" in event_type_lower and cash_val < 0:
+                lines.append(f"Premium Paid: **{fmt_money(abs(cash_val))}**")
+
+            else:
+                if cash_val > 0:
+                    lines.append(f"Cash In: **{fmt_money(cash_val)}**")
+                elif cash_val < 0:
+                    lines.append(f"Cash Out: **{fmt_money(abs(cash_val))}**")
+
+        else:
+            if cash_val > 0:
+                lines.append(f"Cash In: **{fmt_money(cash_val)}**")
+            elif cash_val < 0:
+                lines.append(f"Cash Out: **{fmt_money(abs(cash_val))}**")
+
+    lines.append(f"Trade Time: **{fmt_event_time(event_time)}**")
+
+    if notes and str(notes).strip():
+        lines.append(f"Notes: {str(notes).strip()}")
+
+    return "\n".join(lines)
+
+
+# ----------------------------------------------------------
+# Post recent fund trades
+# ----------------------------------------------------------
+def post_recent_fund_trades(asof: date) -> None:
+    print("[INFO] Loading recent fund trades")
+    trades_df = load_recent_fund_trades(asof=asof, days_back=1)
+
+    if trades_df.empty:
+        print("[INFO] No recent fund trades found")
+        return
+
+    print(f"[INFO] Retrieved {len(trades_df)} recent fund trades")
+
+    for _, row in trades_df.iterrows():
+        message = build_fund_trade_message(row)
+        post_to_discord(message, WEBHOOK_FUND_TRADES, "Fund Trades")
 
 # ----------------------------------------------------------
 # Get first NAV on/after Jan 1 AND last NAV on/before as-of
@@ -74,9 +292,51 @@ def load_ytd_start_end(portfolio_id: int, y0: date, asof: date) -> dict | None:
     return dict(row)
 
 
+# ----------------------------------------------------------
+# Get first NAV on/after period start AND last NAV on/before as-of
+# ----------------------------------------------------------
+def load_period_start_end(portfolio_id: int, start_date: date, asof: date) -> dict | None:
+    sql = """
+        WITH start_row AS (
+            SELECT nav_date, nav
+            FROM portfolio_nav_daily
+            WHERE portfolio_id = :pid
+              AND nav_date >= :start_date
+            ORDER BY nav_date ASC
+            LIMIT 1
+        ),
+        end_row AS (
+            SELECT nav_date, nav
+            FROM portfolio_nav_daily
+            WHERE portfolio_id = :pid
+              AND nav_date <= :asof
+            ORDER BY nav_date DESC
+            LIMIT 1
+        )
+        SELECT
+            (SELECT nav_date FROM start_row) AS start_date,
+            (SELECT nav FROM start_row)     AS start_nav,
+            (SELECT nav_date FROM end_row)  AS end_date,
+            (SELECT nav FROM end_row)       AS end_nav
+    """
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            text(sql),
+            {"pid": portfolio_id, "start_date": start_date, "asof": asof},
+        ).mappings().first()
+
+    if not row or row["start_nav"] is None or row["end_nav"] is None:
+        return None
+
+    return dict(row)
+
+
 BASELINE_CODES = {"SPY-26", "QQQ-26", "GLD-26", "BTC-26"}
 
 
+# ----------------------------------------------------------
+# Classify fund type
+# ----------------------------------------------------------
 def fund_group(code: str, bench_code: str) -> str:
     c = (code or "").upper()
     base = c.split("-")[0]
@@ -92,6 +352,9 @@ def fund_group(code: str, bench_code: str) -> str:
     return "Other"
 
 
+# ----------------------------------------------------------
+# Classify table type
+# ----------------------------------------------------------
 def table_type(code: str, name: str, bench_code: str) -> str:
     c = (code or "").upper()
     n = (name or "").lower()
@@ -101,34 +364,45 @@ def table_type(code: str, name: str, bench_code: str) -> str:
 
     return fund_group(c, bench_code)
 
-# ----------------------------------------------------------
-# Format return with green/red arrows
-# ----------------------------------------------------------
-def fmt_return(val: float) -> str:
 
+# ----------------------------------------------------------
+# Format compact return with icon
+# ----------------------------------------------------------
+def fmt_return_compact(val: float) -> str:
     if val is None or pd.isna(val):
         return ""
 
     pct = val * 100
 
     if pct > 0:
-        return f"🟢 ↑ {pct:+.2f}%"
+        icon = "🟢"
     elif pct < 0:
-        return f"🔴 ↓ {pct:+.2f}%"
+        icon = "🔴"
     else:
-        return f"⚪ 0.00%"
+        icon = "⚪"
+
+    return f"{icon} {pct:+.2f}%"
+
 
 # ----------------------------------------------------------
-# Build comparison table
+# Format plain return
 # ----------------------------------------------------------
-def compute_comparison(
+def fmt_return_plain(val: float) -> str:
+    if val is None or pd.isna(val):
+        return "N/A"
+    return f"{val * 100:+.2f}%"
+
+
+# ----------------------------------------------------------
+# Compute return table for a given start date
+# ----------------------------------------------------------
+def compute_returns_for_period(
     pmeta: pd.DataFrame,
-    year: int,
+    start_date: date,
     asof: date,
     selected_codes: list[str],
     bench_code: str,
 ) -> pd.DataFrame:
-    y0 = date(year, 1, 1)
     out = []
 
     for _, r in pmeta[pmeta["code"].isin(selected_codes)].iterrows():
@@ -136,7 +410,7 @@ def compute_comparison(
         code = str(r["code"])
         name = str(r.get("name") or "")
 
-        se = load_ytd_start_end(pid, y0, asof)
+        se = load_period_start_end(pid, start_date, asof)
         if not se:
             continue
 
@@ -153,7 +427,7 @@ def compute_comparison(
                 "Start NAV": start_nav,
                 "End NAV": end_nav,
                 "P&L": pnl,
-                "YTD Return": ret,
+                "Return": ret,
                 "Start Date Used": se["start_date"],
                 "End Date Used": se["end_date"],
             }
@@ -163,38 +437,39 @@ def compute_comparison(
     if df.empty:
         return df
 
-    df = df.sort_values("YTD Return", ascending=False).reset_index(drop=True)
+    df = df.sort_values("Return", ascending=False).reset_index(drop=True)
     return df
 
-# ----------------------------------------------------------
-# Format return with green/red icon
-# ----------------------------------------------------------
-def fmt_return_compact(val: float) -> str:
-
-    if val is None or pd.isna(val):
-        return ""
-
-    pct = val * 100
-
-    if pct > 0:
-        icon = "🟢"
-    elif pct < 0:
-        icon = "🔴"
-    else:
-        icon = "⚪"
-
-    return f"{icon} {pct:+.2f}%"
 
 # ----------------------------------------------------------
-# Build Discord message
+# Compute YTD comparison
 # ----------------------------------------------------------
-def build_message(df: pd.DataFrame, bench_code: str, asof: date) -> str:
-    bench = df[df["Code"] == bench_code]
-    bench_ret = None
+def compute_comparison(
+    pmeta: pd.DataFrame,
+    year: int,
+    asof: date,
+    selected_codes: list[str],
+    bench_code: str,
+) -> pd.DataFrame:
+    y0 = date(year, 1, 1)
+    df = compute_returns_for_period(
+        pmeta=pmeta,
+        start_date=y0,
+        asof=asof,
+        selected_codes=selected_codes,
+        bench_code=bench_code,
+    )
 
-    if not bench.empty and pd.notna(bench.iloc[0]["YTD Return"]):
-        bench_ret = float(bench.iloc[0]["YTD Return"])
+    if not df.empty:
+        df = df.rename(columns={"Return": "YTD Return"})
 
+    return df
+
+
+# ----------------------------------------------------------
+# Build fund comparison message
+# ----------------------------------------------------------
+def build_fund_comparison_message(df: pd.DataFrame, bench_code: str, asof: date) -> str:
     lines = []
     lines.append("🏁 **YOU ROCK FUND RACE**")
     lines.append(f"**As of:** {asof.strftime('%b %-d, %Y')}")
@@ -214,6 +489,54 @@ def build_message(df: pd.DataFrame, bench_code: str, asof: date) -> str:
             lines.append(f"{rank:>2}. {code:<8} {ret}")
 
     lines.append("```")
+    return "\n".join(lines)
+
+
+# ----------------------------------------------------------
+# Build daily leaderboard message
+# ----------------------------------------------------------
+def build_fund_leaderboard_message(df: pd.DataFrame, asof: date) -> str:
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+    lines = []
+    lines.append("🏆 **YOU ROCK FUND LEADERBOARD**")
+    lines.append(f"**As of:** {asof.strftime('%b %-d, %Y')}")
+    lines.append("")
+
+    for idx, row in df.iterrows():
+        rank = idx + 1
+        code = str(row["Code"])
+        ret = fmt_return_plain(row["YTD Return"])
+        prefix = medals.get(rank, f"{rank}.")
+
+        lines.append(f"{prefix} **{code}** {ret}")
+
+    return "\n".join(lines)
+
+
+# ----------------------------------------------------------
+# Build weekly performance message
+# ----------------------------------------------------------
+def build_weekly_performance_message(df: pd.DataFrame, asof: date) -> str:
+    lines = []
+    lines.append("📊 **WEEKLY FUND PERFORMANCE**")
+    lines.append(f"**As of:** {asof.strftime('%b %-d, %Y')}")
+    lines.append("")
+    lines.append("```text")
+
+    for _, row in df.iterrows():
+        code = str(row["Code"])
+        ret = fmt_return_compact(row["Return"])
+        lines.append(f"{code:<8} {ret}")
+
+    lines.append("```")
+
+    if not df.empty:
+        best = df.iloc[0]
+        worst = df.iloc[-1]
+        lines.append("")
+        lines.append(f"🏆 Best This Week: **{best['Code']}** {fmt_return_plain(best['Return'])}")
+        lines.append(f"📉 Worst This Week: **{worst['Code']}** {fmt_return_plain(worst['Return'])}")
 
     return "\n".join(lines)
 
@@ -221,33 +544,51 @@ def build_message(df: pd.DataFrame, bench_code: str, asof: date) -> str:
 # ----------------------------------------------------------
 # Post to Discord
 # ----------------------------------------------------------
-def post_to_discord(message: str) -> None:
-    if not WEBHOOK_URL:
-        print("[ERROR] DISCORD_WEBHOOK_URL is not set")
+def post_to_discord(message: str, webhook_url: str | None, label: str) -> None:
+    if not webhook_url:
+        print(f"[WARNING] {label} webhook is not set")
         return
 
     try:
         response = requests.post(
-            WEBHOOK_URL,
+            webhook_url,
             json={"content": message},
             timeout=30,
         )
 
         if response.status_code == 204:
-            print("[INFO] Discord post successful")
+            print(f"[INFO] {label} Discord post successful")
         else:
-            print(f"[ERROR] Discord post failed: {response.status_code}")
+            print(f"[ERROR] {label} Discord post failed: {response.status_code}")
             print(response.text)
 
     except Exception as e:
-        print("[ERROR] Exception sending Discord message")
+        print(f"[ERROR] Exception sending {label} Discord message")
         print(str(e))
 
 
 # ----------------------------------------------------------
-# Main
+# Get selected fund codes
 # ----------------------------------------------------------
-def post_fund_comparison() -> None:
+def get_selected_codes(available: list[str]) -> list[str]:
+    desired = [
+        "YRVI-26",
+        "YRSI-26",
+        "YROG-26",
+        "YR3G-26",
+        "YRQI-26",
+        "QQQ-26",
+        "SPY-26",
+        "BTC-26",
+        "GLD-26",
+    ]
+    return [c for c in desired if c in available]
+
+
+# ----------------------------------------------------------
+# Main runner
+# ----------------------------------------------------------
+def post_all_discord_updates() -> None:
     print("[INFO] Loading portfolios")
     pmeta = load_portfolios()
 
@@ -256,30 +597,21 @@ def post_fund_comparison() -> None:
         return
 
     available = pmeta["code"].astype(str).tolist()
+    selected_codes = get_selected_codes(available)
 
-    selected_codes = [
-        c for c in [
-            "YRVI-26",
-            "YRSI-26",
-            "YROG-26",
-            "YR3G-26",
-            "YRQI-26",
-            "QQQ-26",
-            "SPY-26",
-            "BTC-26",
-            "GLD-26",
-        ] if c in available
-    ]
+    if not selected_codes:
+        print("[WARNING] No matching portfolios selected")
+        return
 
-    bench_code = "QQQ-26" if "QQQ-26" in available else available[0]
+    bench_code = "QQQ-26" if "QQQ-26" in available else selected_codes[0]
     if bench_code not in selected_codes:
         selected_codes.append(bench_code)
 
-    year = date.today().year
     asof = date.today()
+    year = asof.year
 
-    print("[INFO] Computing comparison")
-    df = compute_comparison(
+    print("[INFO] Computing YTD comparison")
+    comparison_df = compute_comparison(
         pmeta=pmeta,
         year=year,
         asof=asof,
@@ -287,17 +619,33 @@ def post_fund_comparison() -> None:
         bench_code=bench_code,
     )
 
-    if df.empty:
-        print("[WARNING] No NAV data found")
+    if comparison_df.empty:
+        print("[WARNING] No YTD NAV data found")
         return
 
-    print(f"[INFO] Retrieved {len(df)} funds")
+    weekly_start = asof - timedelta(days=7)
 
-    message = build_message(df, bench_code=bench_code, asof=asof)
+    print("[INFO] Computing weekly performance")
+    weekly_df = compute_returns_for_period(
+        pmeta=pmeta,
+        start_date=weekly_start,
+        asof=asof,
+        selected_codes=selected_codes,
+        bench_code=bench_code,
+    )
 
-    print("[INFO] Posting to Discord")
-    post_to_discord(message)
+    comparison_msg = build_fund_comparison_message(comparison_df, bench_code, asof)
+    leaderboard_msg = build_fund_leaderboard_message(comparison_df, asof)
+
+    post_to_discord(comparison_msg, WEBHOOK_FUND_COMPARISON, "Fund Comparison")
+    post_to_discord(leaderboard_msg, WEBHOOK_FUND_LEADERBOARD, "Fund Leaderboard")
+    post_recent_fund_trades(asof)
+
+    # Optional: only post weekly on Fridays
+    if asof.weekday() == 4 and not weekly_df.empty:
+        weekly_msg = build_weekly_performance_message(weekly_df, asof)
+        post_to_discord(weekly_msg, WEBHOOK_WEEKLY_PERFORMANCE, "Weekly Performance")
 
 
 if __name__ == "__main__":
-    post_fund_comparison()
+    post_all_discord_updates()
