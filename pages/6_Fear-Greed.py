@@ -100,30 +100,30 @@ def render_fear_greed_dial(value: float):
     # ----------------------------------------------------------
     # Very slick guard: animate only on bucket change
     # ----------------------------------------------------------
-    bucket_now = fg_bucket(target)
-    last_bucket = st.session_state.get("fg_last_bucket")
+    #bucket_now = fg_bucket(target)
+    #last_bucket = st.session_state.get("fg_last_bucket")
 
-    animate = (last_bucket is None) or (bucket_now != last_bucket)
+    #animate = (last_bucket is None) or (bucket_now != last_bucket)
 
-    st.session_state["fg_last_bucket"] = bucket_now
-    st.session_state["fg_last_value"] = target
+    #st.session_state["fg_last_bucket"] = bucket_now
+    #st.session_state["fg_last_value"] = target
 
-    if not animate:
-        ph.plotly_chart(make_fig(target), use_container_width=True, config={"displayModeBar": False})
-        return
+    #if not animate:
+    ph.plotly_chart(make_fig(target), use_container_width=True, config={"displayModeBar": False})
+    #    return
 
     # ----------------------------------------------------------
     # Animate sweep from 50 → target
     # ----------------------------------------------------------
-    start = 50.0
-    steps = 18
-    duration_ms = 900
-    sleep_sec = (duration_ms / 1000.0) / steps
+    #start = 50.0
+    #steps = 18
+    #duration_ms = 900
+    #sleep_sec = (duration_ms / 1000.0) / steps
 
-    for i in range(steps + 1):
-        v = start + (target - start) * (i / steps)
-        ph.plotly_chart(make_fig(v), use_container_width=True, config={"displayModeBar": False})
-        time.sleep(sleep_sec)
+    #for i in range(steps + 1):
+    #    v = start + (target - start) * (i / steps)
+    #    ph.plotly_chart(make_fig(v), use_container_width=True, config={"displayModeBar": False})
+    #    time.sleep(sleep_sec)
 
 # ----------------------------------------------------------
 # Compute core series
@@ -204,7 +204,7 @@ last_week = float(hist.iloc[-6]["greer_fear_greed"]) if len(hist) >= 6 else None
 # ----------------------------------------------------------
 # UI
 # ----------------------------------------------------------
-st.title("📊 Greer Fear & Greed Index (Latest)")
+st.title("🎭 Greer Fear & Greed Index (Latest)")
 st.caption(f"Latest: {latest['summary_date'].date()}  •  Universe: {int(latest['total_companies'])} tickers")
 
 # Dial (Bitcoin-style)
