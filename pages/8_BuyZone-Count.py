@@ -55,9 +55,9 @@ prev = df.iloc[-2] if len(df) > 1 else latest
 # ----------------------------------------------------------
 # Practical starter thresholds
 # ----------------------------------------------------------
-LOW_THRESHOLD = 180
-NORMAL_THRESHOLD = 260
-ELEVATED_THRESHOLD = 340
+LOW_THRESHOLD = 280
+NORMAL_THRESHOLD = 360
+ELEVATED_THRESHOLD = 440
 
 def classify_buyzone_count(value: float) -> tuple[str, str]:
     if value < LOW_THRESHOLD:
