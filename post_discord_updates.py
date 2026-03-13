@@ -4,6 +4,7 @@
 # - fund comparison
 # - fund leaderboard
 # - weekly performance
+# - recent public fund trades only
 # ----------------------------------------------------------
 
 from pathlib import Path
@@ -15,6 +16,7 @@ from datetime import date, timedelta
 from sqlalchemy import text
 
 from db import get_engine
+
 
 # ----------------------------------------------------------
 # Load environment variables from project .env
@@ -33,15 +35,32 @@ WEBHOOK_FUND_TRADES = os.getenv("DISCORD_WEBHOOK_FUND_TRADES")
 # ----------------------------------------------------------
 def load_portfolios() -> pd.DataFrame:
     sql = """
-        SELECT portfolio_id, code, name, start_date
+        SELECT
+            portfolio_id,
+            code,
+            name,
+            start_date,
+            is_public
         FROM portfolios
         ORDER BY code
     """
     with get_engine().connect() as conn:
         return pd.read_sql(text(sql), conn)
 
+
 # ----------------------------------------------------------
-# Load recent fund trades
+# Get selected public fund codes
+# ----------------------------------------------------------
+def get_selected_codes(pmeta: pd.DataFrame) -> list[str]:
+    if pmeta.empty or "is_public" not in pmeta.columns:
+        return []
+
+    public_df = pmeta[pmeta["is_public"] == True].copy()
+    return public_df["code"].astype(str).tolist()
+
+
+# ----------------------------------------------------------
+# Load recent public fund trades
 # ----------------------------------------------------------
 def load_recent_fund_trades(asof: date, days_back: int = 1) -> pd.DataFrame:
     sql = """
@@ -65,6 +84,7 @@ def load_recent_fund_trades(asof: date, days_back: int = 1) -> pd.DataFrame:
           ON p.portfolio_id = pe.portfolio_id
         WHERE pe.event_time >= :start_ts
           AND pe.event_time < :end_ts
+          AND p.is_public = TRUE
         ORDER BY pe.event_time DESC, pe.event_id DESC
     """
 
@@ -209,19 +229,15 @@ def build_fund_trade_message(row: pd.Series) -> str:
         event_type_lower = str(row.get("event_type") or "").lower()
 
         if option_type in {"call", "put"}:
-
             if "sell" in event_type_lower and cash_val > 0:
                 lines.append(f"Premium Collected: **{fmt_money(cash_val)}**")
-
             elif "buy" in event_type_lower and cash_val < 0:
                 lines.append(f"Premium Paid: **{fmt_money(abs(cash_val))}**")
-
             else:
                 if cash_val > 0:
                     lines.append(f"Cash In: **{fmt_money(cash_val)}**")
                 elif cash_val < 0:
                     lines.append(f"Cash Out: **{fmt_money(abs(cash_val))}**")
-
         else:
             if cash_val > 0:
                 lines.append(f"Cash In: **{fmt_money(cash_val)}**")
@@ -240,56 +256,18 @@ def build_fund_trade_message(row: pd.Series) -> str:
 # Post recent fund trades
 # ----------------------------------------------------------
 def post_recent_fund_trades(asof: date) -> None:
-    print("[INFO] Loading recent fund trades")
+    print("[INFO] Loading recent public fund trades")
     trades_df = load_recent_fund_trades(asof=asof, days_back=1)
 
     if trades_df.empty:
-        print("[INFO] No recent fund trades found")
+        print("[INFO] No recent public fund trades found")
         return
 
-    print(f"[INFO] Retrieved {len(trades_df)} recent fund trades")
+    print(f"[INFO] Retrieved {len(trades_df)} recent public fund trades")
 
     for _, row in trades_df.iterrows():
         message = build_fund_trade_message(row)
         post_to_discord(message, WEBHOOK_FUND_TRADES, "Fund Trades")
-
-# ----------------------------------------------------------
-# Get first NAV on/after Jan 1 AND last NAV on/before as-of
-# ----------------------------------------------------------
-def load_ytd_start_end(portfolio_id: int, y0: date, asof: date) -> dict | None:
-    sql = """
-        WITH start_row AS (
-            SELECT nav_date, nav
-            FROM portfolio_nav_daily
-            WHERE portfolio_id = :pid
-              AND nav_date >= :y0
-            ORDER BY nav_date ASC
-            LIMIT 1
-        ),
-        end_row AS (
-            SELECT nav_date, nav
-            FROM portfolio_nav_daily
-            WHERE portfolio_id = :pid
-              AND nav_date <= :asof
-            ORDER BY nav_date DESC
-            LIMIT 1
-        )
-        SELECT
-            (SELECT nav_date FROM start_row) AS start_date,
-            (SELECT nav FROM start_row)     AS start_nav,
-            (SELECT nav_date FROM end_row)  AS end_date,
-            (SELECT nav FROM end_row)       AS end_nav
-    """
-    with get_engine().connect() as conn:
-        row = conn.execute(
-            text(sql),
-            {"pid": portfolio_id, "y0": y0, "asof": asof},
-        ).mappings().first()
-
-    if not row or row["start_nav"] is None or row["end_nav"] is None:
-        return None
-
-    return dict(row)
 
 
 # ----------------------------------------------------------
@@ -568,24 +546,6 @@ def post_to_discord(message: str, webhook_url: str | None, label: str) -> None:
 
 
 # ----------------------------------------------------------
-# Get selected fund codes
-# ----------------------------------------------------------
-def get_selected_codes(available: list[str]) -> list[str]:
-    desired = [
-        "YRVI-26",
-        "YRSI-26",
-        "YROG-26",
-        "YR3G-26",
-        "YRQI-26",
-        "QQQ-26",
-        "SPY-26",
-        "BTC-26",
-        "GLD-26",
-    ]
-    return [c for c in desired if c in available]
-
-
-# ----------------------------------------------------------
 # Main runner
 # ----------------------------------------------------------
 def post_all_discord_updates() -> None:
@@ -596,15 +556,16 @@ def post_all_discord_updates() -> None:
         print("[WARNING] No portfolios found")
         return
 
-    available = pmeta["code"].astype(str).tolist()
-    selected_codes = get_selected_codes(available)
+    selected_codes = get_selected_codes(pmeta)
 
     if not selected_codes:
-        print("[WARNING] No matching portfolios selected")
+        print("[WARNING] No public portfolios selected")
         return
 
-    bench_code = "QQQ-26" if "QQQ-26" in available else selected_codes[0]
-    if bench_code not in selected_codes:
+    available = pmeta["code"].astype(str).tolist()
+
+    bench_code = "QQQ-26" if "QQQ-26" in selected_codes else selected_codes[0]
+    if bench_code not in selected_codes and bench_code in available:
         selected_codes.append(bench_code)
 
     asof = date.today()
