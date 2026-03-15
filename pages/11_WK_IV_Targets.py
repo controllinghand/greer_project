@@ -235,6 +235,7 @@ def main():
         **Included:**  
         - **~20Δ Put** (Cash-Secured Put candidate)  
         - **~20Δ Call** (Covered Call candidate)  
+        - **Bid-based premium estimates** for a more conservative, execution-aware view  
         - Premium % filters to target **~1%/week**
         """
     )
@@ -312,6 +313,9 @@ def main():
     df["iv_atm"] = pd.to_numeric(df["iv_atm"], errors="coerce").round(3)
     df["iv_median"] = pd.to_numeric(df["iv_median"], errors="coerce").round(3)
 
+    df["put_20d_strike"] = pd.to_numeric(df["put_20d_strike"], errors="coerce")
+    df["buffer_pct"] = ((df["latest_price"] - df["put_20d_strike"]) / df["latest_price"])
+
     # Earnings columns
     df["earnings_date"] = pd.to_datetime(df["earnings_date"], errors="coerce").dt.date
     df["days_to_earnings"] = pd.to_numeric(df["days_to_earnings"], errors="coerce").astype("Int64")
@@ -385,6 +389,8 @@ def main():
 
     df["call_20d_premium_fmt"] = df["call_20d_premium"].apply(fmt_money_local)
     df["call_20d_premium_pct_fmt"] = df["call_20d_premium_pct"].apply(fmt_pct_local)
+
+    df["buffer_pct_fmt"] = df["buffer_pct"].apply(fmt_pct_local)
 
     # ----------------------------------------------------------
     # Filters
@@ -513,6 +519,7 @@ def main():
 
         # Put side
         "put_20d_strike",
+        "buffer_pct_fmt",
         "put_20d_delta",
         "put_20d_premium_fmt",
         "put_20d_premium_pct_fmt",
@@ -547,7 +554,43 @@ def main():
         "wheel_reason",
     ]
 
-    st.dataframe(df[columns], hide_index=True, use_container_width=True)
+    display_df = df[columns].rename(columns={
+        "ticker": "Ticker",
+        "stars": "Stars",
+        "latest_price": "Price",
+        "market_cap": "Market Cap",
+        "iv_atm": "IV ATM",
+        "iv_median": "IV Median",
+        "expiry": "Expiry",
+        "dte": "DTE",
+        "contract_count": "Contracts",
+        "put_20d_strike": "Put Strike",
+        "buffer_pct_fmt": "Buffer %",
+        "put_20d_delta": "Put Delta",
+        "put_20d_premium_fmt": "Bid Premium",
+        "put_20d_premium_pct_fmt": "Bid Premium %",
+        "call_20d_strike": "Call Strike",
+        "call_20d_delta": "Call Delta",
+        "call_20d_premium_fmt": "Call Premium",
+        "call_20d_premium_pct_fmt": "Call Premium %",
+        "action_strategy": "Action",
+        "action_strike": "Action Strike",
+        "action_delta": "Action Delta",
+        "action_premium_fmt": "Action Premium",
+        "action_premium_pct_fmt": "Action Premium %",
+        "put_itm_flag": "Put ITM",
+        "call_itm_flag": "Call ITM",
+        "earnings_flag": "Earnings",
+        "earnings_date": "Earnings Date",
+        "days_to_earnings": "Days to Earnings",
+        "earnings_recent_flag": "Recent Earnings",
+        "earnings_upcoming_flag": "Upcoming Earnings",
+        "wheel_flag": "Wheel Flag",
+        "wheel_fit": "Wheel Fit",
+        "wheel_reason": "Wheel Reason",
+    })
+
+    st.dataframe(display_df, hide_index=True, use_container_width=True)
 
     st.download_button(
         "Download CSV",
