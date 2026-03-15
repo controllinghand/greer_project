@@ -496,7 +496,9 @@ def pick_expiry(expiries: list[str], dte_min: int, dte_max: int) -> tuple[str | 
 # ----------------------------------------------------------
 # Function: Pick a strike closest to target delta (+0.20 call / -0.20 put)
 # - Prefers Tradier "delta" if present; otherwise uses BS-estimated delta.
-# - Premium uses mid(bid/ask) first, else lastPrice.
+# - Premium uses BID first (conservative), else lastPrice.
+# - Spread is calculated and returned for visibility only.
+# - No hard spread filter in strike selection.
 # ----------------------------------------------------------
 def pick_target_delta_option(
     df: pd.DataFrame,
@@ -508,7 +510,6 @@ def pick_target_delta_option(
     q: float = 0.0,
     min_oi: int = 0,
     min_vol: int = 0,
-    max_spread_pct: float = 0.30,
     ticker: str | None = None
 ) -> dict | None:
     if df is None or df.empty:
@@ -517,7 +518,6 @@ def pick_target_delta_option(
     if "strike" not in df.columns:
         return None
 
-    # Need IV only if we must BS fallback
     has_tradier_delta = ("delta" in df.columns) and df["delta"].notna().any()
 
     label = ticker or "UNKNOWN"
@@ -557,6 +557,7 @@ def pick_target_delta_option(
 
     deltas = []
     premiums = []
+    mids = []
     spreads_pct = []
 
     opt_is_put = option_type.lower() == "put"
@@ -566,13 +567,14 @@ def pick_target_delta_option(
         if K is None:
             deltas.append(None)
             premiums.append(None)
+            mids.append(None)
             spreads_pct.append(None)
             continue
 
         # Prefer Tradier delta if present
         d = f(row.get("delta"))
 
-        # Normalize delta sign just in case
+        # Normalize sign just in case
         if d is not None:
             if opt_is_put and d > 0:
                 d = -abs(d)
@@ -593,29 +595,30 @@ def pick_target_delta_option(
         ask = f(row.get("ask"))
         last = f(row.get("lastPrice"))
 
-        prem = None
+        mid = None
         if bid is not None and ask is not None and ask >= bid:
-            prem = (bid + ask) / 2.0
-        elif last is not None:
+            mid = (bid + ask) / 2.0
+        mids.append(mid)
+
+        # Conservative premium: BID first, else LAST
+        prem = None
+        if bid is not None and bid > 0:
+            prem = bid
+        elif last is not None and last > 0:
             prem = last
         premiums.append(prem)
 
         sp = None
-        if bid is not None and ask is not None and ask >= bid:
-            mid = (bid + ask) / 2.0
-            if mid and mid > 0:
-                sp = (ask - bid) / mid
+        if bid is not None and ask is not None and ask >= bid and mid is not None and mid > 0:
+            sp = (ask - bid) / mid
         spreads_pct.append(sp)
 
     work["est_delta"] = deltas
     work["premium"] = premiums
+    work["mid"] = mids
     work["spread_pct"] = spreads_pct
 
     work = work.dropna(subset=["est_delta", "premium"])
-    if work.empty:
-        return None
-
-    work = work[(work["spread_pct"].isna()) | (work["spread_pct"] <= max_spread_pct)]
     if work.empty:
         return None
 
@@ -624,17 +627,28 @@ def pick_target_delta_option(
 
     iv_val = f(best.get("impliedVolatility"))
 
-    return {
+    result = {
         "strike": float(best["strike"]),
         "iv": iv_val,
         "delta": float(best["est_delta"]),
         "premium": float(best["premium"]),
         "bid": f(best.get("bid")),
         "ask": f(best.get("ask")),
+        "mid": f(best.get("mid")),
         "spread_pct": f(best.get("spread_pct")),
         "open_interest": int(best["openInterest"]) if "openInterest" in best and not pd.isna(best["openInterest"]) else None,
         "volume": int(best["volume"]) if "volume" in best and not pd.isna(best["volume"]) else None,
     }
+
+    if ticker:
+        logger.info(
+            f"{ticker} {option_type.upper()} selected "
+            f"strike={result['strike']} delta={result['delta']:.3f} "
+            f"premium={result['premium']:.2f} bid={result['bid']} ask={result['ask']} "
+            f"mid={result['mid']} spread_pct={result['spread_pct']}"
+        )
+
+    return result
 
 
 # ----------------------------------------------------------
@@ -820,7 +834,6 @@ def fetch_iv_summary_for_ticker(
             q=0.0,
             min_oi=min_oi,
             min_vol=min_vol,
-            max_spread_pct=max_spread_pct,
             ticker=ticker,
         )
 
@@ -839,7 +852,6 @@ def fetch_iv_summary_for_ticker(
             q=0.0,
             min_oi=min_oi,
             min_vol=min_vol,
-            max_spread_pct=max_spread_pct,
             ticker=ticker,
         )
 
@@ -896,9 +908,15 @@ def fetch_iv_summary_for_ticker(
 
         "put_20d_strike": float(put_20["strike"]) if put_20 else None,
         "put_20d_iv": float(put_20["iv"]) if put_20 and put_20.get("iv") is not None else None,
-        "put_20d_premium": float(put_20["premium"]) if put_20 else None,
+        "put_20d_premium": float(put_20["premium"]) if put_20 and put_20.get("premium") is not None else None,
         "put_20d_premium_pct": float(put_20_premium_pct) if put_20_premium_pct is not None else None,
-        "put_20d_delta": float(put_20["delta"]) if put_20 else None,
+        "put_20d_delta": float(put_20["delta"]) if put_20 and put_20.get("delta") is not None else None,
+        "put_20d_bid": float(put_20["bid"]) if put_20 and put_20.get("bid") is not None else None,
+        "put_20d_ask": float(put_20["ask"]) if put_20 and put_20.get("ask") is not None else None,
+        "put_20d_mid": float(put_20["mid"]) if put_20 and put_20.get("mid") is not None else None,
+        "put_20d_spread_pct": float(put_20["spread_pct"]) if put_20 and put_20.get("spread_pct") is not None else None,
+        "put_20d_open_interest": int(put_20["open_interest"]) if put_20 and put_20.get("open_interest") is not None else None,
+        "put_20d_volume": int(put_20["volume"]) if put_20 and put_20.get("volume") is not None else None,
 
         "call_20d_strike": float(call_20["strike"]) if call_20 else None,
         "call_20d_iv": float(call_20["iv"]) if call_20 and call_20.get("iv") is not None else None,
@@ -992,6 +1010,7 @@ def process_tickers(
             iv_min, iv_25, iv_median, iv_75,
             iv_max, iv_atm, atm_premium, atm_premium_pct,
             put_20d_strike, put_20d_iv, put_20d_premium, put_20d_premium_pct, put_20d_delta,
+            put_20d_bid, put_20d_ask, put_20d_mid, put_20d_spread_pct, put_20d_open_interest, put_20d_volume,
             call_20d_strike, call_20d_iv, call_20d_premium, call_20d_premium_pct, call_20d_delta
         )
         VALUES (
@@ -1000,6 +1019,7 @@ def process_tickers(
             :iv_min, :iv_25, :iv_median, :iv_75,
             :iv_max, :iv_atm, :atm_premium, :atm_premium_pct,
             :put_20d_strike, :put_20d_iv, :put_20d_premium, :put_20d_premium_pct, :put_20d_delta,
+            :put_20d_bid, :put_20d_ask, :put_20d_mid, :put_20d_spread_pct, :put_20d_open_interest, :put_20d_volume,
             :call_20d_strike, :call_20d_iv, :call_20d_premium, :call_20d_premium_pct, :call_20d_delta
         )
         ON CONFLICT (ticker, fetch_date) DO UPDATE SET
@@ -1025,6 +1045,12 @@ def process_tickers(
             put_20d_premium = EXCLUDED.put_20d_premium,
             put_20d_premium_pct = EXCLUDED.put_20d_premium_pct,
             put_20d_delta = EXCLUDED.put_20d_delta,
+            put_20d_bid = EXCLUDED.put_20d_bid,
+            put_20d_ask = EXCLUDED.put_20d_ask,
+            put_20d_mid = EXCLUDED.put_20d_mid,
+            put_20d_spread_pct = EXCLUDED.put_20d_spread_pct,
+            put_20d_open_interest = EXCLUDED.put_20d_open_interest,
+            put_20d_volume = EXCLUDED.put_20d_volume,
 
             call_20d_strike = EXCLUDED.call_20d_strike,
             call_20d_iv = EXCLUDED.call_20d_iv,
@@ -1064,8 +1090,7 @@ if __name__ == "__main__":
     parser.add_argument("--r", type=float, default=0.05, help="Risk-free rate used for BS fallback delta (default: 0.05)")
     parser.add_argument("--min_oi", type=int, default=0, help="Minimum open interest filter (default: 0)")
     parser.add_argument("--min_vol", type=int, default=0, help="Minimum volume filter (default: 0)")
-    parser.add_argument("--max_spread_pct", type=float, default=0.30, help="Max bid/ask spread pct vs mid (default: 0.30)")
-
+    
     parser.add_argument("--force",action="store_true",help="Re-fetch and overwrite today's IV snapshot (testing mode)"
 )
 
@@ -1099,7 +1124,7 @@ if __name__ == "__main__":
         f"Starting IV summary fetch for {len(tickers_list)} tickers "
         f"workers={args.workers}, delay={args.delay}s, retries={args.retries}, timeout={args.timeout}s, "
         f"batch_size={args.batch_size}, pause={args.pause_between_batches}s, "
-        f"dte=[{args.dte_min},{args.dte_max}], r={args.r}, min_oi={args.min_oi}, min_vol={args.min_vol}, max_spread_pct={args.max_spread_pct}"
+        f"dte=[{args.dte_min},{args.dte_max}], r={args.r}, min_oi={args.min_oi}, min_vol={args.min_vol} "
     )
 
     for i in range(0, len(tickers_list), args.batch_size):
@@ -1118,7 +1143,6 @@ if __name__ == "__main__":
             risk_free_rate=args.r,
             min_oi=args.min_oi,
             min_vol=args.min_vol,
-            max_spread_pct=args.max_spread_pct,
             force=args.force
         )
 
