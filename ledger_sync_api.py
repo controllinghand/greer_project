@@ -16,6 +16,12 @@ app = Flask(__name__)
 
 SYNC_SECRET = os.getenv("GSHEET_SYNC_SECRET")
 
+print(f"LOADED FILE: {__file__}")
+print("REGISTERED ROUTES:")
+for rule in app.url_map.iter_rules():
+    print(rule)
+
+
 # ----------------------------------------------------------
 # Sheet fund code -> DB portfolio code map
 # ----------------------------------------------------------
@@ -600,3 +606,8 @@ def get_csp_targets():
         "count": len(rows),
         "rows": rows.to_dict(orient="records")
     })
+
+print("FINAL ROUTES AFTER REGISTRATION:")
+for rule in app.url_map.iter_rules():
+    print(rule)
+
