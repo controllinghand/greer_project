@@ -600,12 +600,10 @@ def pick_target_delta_option(
             mid = (bid + ask) / 2.0
         mids.append(mid)
 
-        # Conservative premium: BID first, else LAST
+        # Conservative premium: BID only
         prem = None
         if bid is not None and bid > 0:
             prem = bid
-        elif last is not None and last > 0:
-            prem = last
         premiums.append(prem)
 
         sp = None
