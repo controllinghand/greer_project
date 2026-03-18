@@ -35,6 +35,7 @@ def build_pages():
             st.Page("pages/_spacer.py", title="— Growth Funds —", url_path="spacer-growth"),
             st.Page("pages/12_YR3G-26.py", title="  YR3G-26", icon="⭐"),
             st.Page("pages/12_YROG-26.py", title="  YROG-26", icon="🪨"),
+            st.Page("pages/12_YRVG-26.py", title="  YRVG-26", icon="🌪️"),
 
             # ---- Baseline ----
             st.Page("pages/_spacer.py", title="— Baselines —", url_path="spacer-baseline"),
