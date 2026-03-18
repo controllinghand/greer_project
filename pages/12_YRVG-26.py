@@ -24,7 +24,7 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("📈 YRVG Results (You Rock Volatility Growth Fund est. 2026)")
+    st.title("🌪️ YRVG Results (You Rock Volatility Growth Fund est. 2026)")
 
     st.markdown(
         """
