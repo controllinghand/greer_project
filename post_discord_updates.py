@@ -5,6 +5,7 @@
 # - fund leaderboard
 # - weekly performance
 # - recent public fund trades only
+# - growth fund trades to their own fund channels
 # ----------------------------------------------------------
 
 from pathlib import Path
@@ -28,6 +29,21 @@ WEBHOOK_FUND_COMPARISON = os.getenv("DISCORD_WEBHOOK_FUND_COMPARISON")
 WEBHOOK_FUND_LEADERBOARD = os.getenv("DISCORD_WEBHOOK_FUND_LEADERBOARD")
 WEBHOOK_WEEKLY_PERFORMANCE = os.getenv("DISCORD_WEBHOOK_WEEKLY_PERFORMANCE")
 WEBHOOK_FUND_TRADES = os.getenv("DISCORD_WEBHOOK_FUND_TRADES")
+
+WEBHOOK_YR3G_TRADES = os.getenv("DISCORD_WEBHOOK_YR3G_TRADES")
+WEBHOOK_YROG_TRADES = os.getenv("DISCORD_WEBHOOK_YROG_TRADES")
+WEBHOOK_YRVG_TRADES = os.getenv("DISCORD_WEBHOOK_YRVG_TRADES")
+
+
+# ----------------------------------------------------------
+# Growth fund trade webhooks
+# Each fund channel receives only its own trades
+# ----------------------------------------------------------
+GROWTH_TRADE_WEBHOOKS = {
+    "YR3G-26": WEBHOOK_YR3G_TRADES,
+    "YROG-26": WEBHOOK_YROG_TRADES,
+    "YRVG-26": WEBHOOK_YRVG_TRADES,
+}
 
 
 # ----------------------------------------------------------
@@ -254,6 +270,8 @@ def build_fund_trade_message(row: pd.Series) -> str:
 
 # ----------------------------------------------------------
 # Post recent fund trades
+# - all public trades -> fund-trades channel
+# - each growth fund trade -> only its own channel
 # ----------------------------------------------------------
 def post_recent_fund_trades(asof: date) -> None:
     print("[INFO] Loading recent public fund trades")
@@ -265,9 +283,34 @@ def post_recent_fund_trades(asof: date) -> None:
 
     print(f"[INFO] Retrieved {len(trades_df)} recent public fund trades")
 
+    # ----------------------------------------------------------
+    # Post all public trades to the main fund-trades channel
+    # ----------------------------------------------------------
     for _, row in trades_df.iterrows():
         message = build_fund_trade_message(row)
         post_to_discord(message, WEBHOOK_FUND_TRADES, "Fund Trades")
+
+    # ----------------------------------------------------------
+    # Post each growth fund only to its own channel
+    # ----------------------------------------------------------
+    trades_df["portfolio_code"] = trades_df["portfolio_code"].astype(str).str.upper()
+
+    for fund_code, webhook_url in GROWTH_TRADE_WEBHOOKS.items():
+        if not webhook_url:
+            print(f"[WARNING] {fund_code} trade webhook is not set")
+            continue
+
+        fund_df = trades_df[trades_df["portfolio_code"] == fund_code].copy()
+
+        if fund_df.empty:
+            print(f"[INFO] No recent trades found for {fund_code}")
+            continue
+
+        print(f"[INFO] Posting {len(fund_df)} recent trade(s) to {fund_code}")
+
+        for _, row in fund_df.iterrows():
+            message = build_fund_trade_message(row)
+            post_to_discord(message, webhook_url, f"{fund_code} Trades")
 
 
 # ----------------------------------------------------------
@@ -602,7 +645,9 @@ def post_all_discord_updates() -> None:
     post_to_discord(leaderboard_msg, WEBHOOK_FUND_LEADERBOARD, "Fund Leaderboard")
     post_recent_fund_trades(asof)
 
+    # ----------------------------------------------------------
     # Optional: only post weekly on Fridays
+    # ----------------------------------------------------------
     if asof.weekday() == 4 and not weekly_df.empty:
         weekly_msg = build_weekly_performance_message(weekly_df, asof)
         post_to_discord(weekly_msg, WEBHOOK_WEEKLY_PERFORMANCE, "Weekly Performance")
