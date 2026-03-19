@@ -31,7 +31,7 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("⭐📣 YRSI-26 Results (You Rock Star Income Fund est. 2026)")
+    st.title("💵 YRSI-26 Results (You Rock Star Income Fund est. 2026)")
 
     st.markdown(
         """

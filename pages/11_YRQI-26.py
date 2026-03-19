@@ -23,7 +23,7 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("💰 YRQI-26 Results (QQQ Daily Income Fund est. 2026)")
+    st.title("⚡ YRQI-26 Results (QQQ Daily Income Fund est. 2026)")
 
     st.markdown(
         """

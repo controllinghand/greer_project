@@ -23,7 +23,7 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("🚀 YR3G Results (You Rock 3 Stars Growth Fund est. 2026)")
+    st.title("⭐ YR3G Results (You Rock 3 Stars Growth Fund est. 2026)")
 
     st.markdown(
         """
