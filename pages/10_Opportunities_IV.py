@@ -1,4 +1,4 @@
-# opportunities-IV.py
+# 10_opportunities-IV.py
 
 import streamlit as st
 import pandas as pd
@@ -101,6 +101,7 @@ def load_filtered_companies():
         )
         SELECT
           l.ticker,
+          c.sector,
           c.greer_star_rating    AS stars,
           l.greer_value_score    AS greer_value,
           l.greer_yield_score    AS yield_score,
@@ -192,10 +193,11 @@ def main():
 
     # Build display table
     df_display = df[[
-        'Ticker', 'Stars', 'greer_value', 'yield_score',
+        'Ticker', 'sector', 'Stars', 'greer_value', 'yield_score',
         'iv_atm', 'iv_expiry',
         'current_price', 'gfv_price', 'gfv_mos', 'last_entry_date'
     ]].rename(columns={
+        'sector': 'Sector',
         'greer_value': 'Greer Value %',
         'yield_score': 'Yield Score',
         'iv_atm': 'IV ATM',
