@@ -1,4 +1,4 @@
-# 10_opportunities-IV.py
+# opportunities-IV.py
 
 import streamlit as st
 import pandas as pd
@@ -156,10 +156,29 @@ def main():
         st.info("No companies currently meet all conditions.")
         return
 
-    # Format numeric columns
-    df['last_entry_date'] = pd.to_datetime(df['last_entry_date']).dt.date
+    # --------------------------------------------------
+    # Sector filter
+    # --------------------------------------------------
+    df["sector"] = df["sector"].fillna("Unknown")
+    sector_options = ["All Sectors"] + sorted(df["sector"].dropna().unique().tolist())
 
-    for col in ['current_price', 'gfv_price', 'gfv_mos']:
+    selected_sector = st.selectbox(
+        "Filter by Sector",
+        sector_options,
+        index=0
+    )
+
+    if selected_sector != "All Sectors":
+        df = df[df["sector"] == selected_sector].copy()
+
+    if df.empty:
+        st.info(f"No companies currently match the selected sector: {selected_sector}")
+        return
+
+    # Format numeric columns
+    df["last_entry_date"] = pd.to_datetime(df["last_entry_date"]).dt.date
+
+    for col in ["current_price", "gfv_price", "gfv_mos"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
 
@@ -183,29 +202,29 @@ def main():
         return f"<span class='star-icon'>{'★'*n}{'☆'*(3-n)}</span>"
 
     df = df.copy()
-    df['Stars'] = df['stars'].apply(stars_to_html)
+    df["Stars"] = df["stars"].apply(stars_to_html)
 
     # Make ticker column a clickable link
     def link_ticker(t: str) -> str:
         return f"<a href='/?ticker={t}' class='ticker-link'>{t}</a>"
 
-    df['Ticker'] = df['ticker'].apply(link_ticker)
+    df["Ticker"] = df["ticker"].apply(link_ticker)
 
     # Build display table
     df_display = df[[
-        'Ticker', 'sector', 'Stars', 'greer_value', 'yield_score',
-        'iv_atm', 'iv_expiry',
-        'current_price', 'gfv_price', 'gfv_mos', 'last_entry_date'
+        "Ticker", "sector", "Stars", "greer_value", "yield_score",
+        "iv_atm", "iv_expiry",
+        "current_price", "gfv_price", "gfv_mos", "last_entry_date"
     ]].rename(columns={
-        'sector': 'Sector',
-        'greer_value': 'Greer Value %',
-        'yield_score': 'Yield Score',
-        'iv_atm': 'IV ATM',
-        'iv_expiry': 'IV Expiry',
-        'current_price': 'Current Price',
-        'gfv_price': 'GFV',
-        'gfv_mos': 'GFV 75% MOS',
-        'last_entry_date': 'Last Gap Date'
+        "sector": "Sector",
+        "greer_value": "Greer Value %",
+        "yield_score": "Yield Score",
+        "iv_atm": "IV ATM",
+        "iv_expiry": "IV Expiry",
+        "current_price": "Current Price",
+        "gfv_price": "GFV",
+        "gfv_mos": "GFV 75% MOS",
+        "last_entry_date": "Last Gap Date"
     })
 
     html_table = df_display.to_html(
@@ -218,7 +237,7 @@ def main():
 
     st.download_button(
         "Download CSV",
-        df_display.to_csv(index=False).encode('utf-8'),
+        df_display.to_csv(index=False).encode("utf-8"),
         file_name="greer_gfv_opportunities.csv",
         mime="text/csv"
     )
