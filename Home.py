@@ -8,67 +8,93 @@ import streamlit as st
 # - DO NOT run navigation at import-time
 # ----------------------------------------------------------
 def render_home():
-    # Home.py
-    import streamlit as st
-    import pandas as pd
-    import numpy as np
-    import matplotlib.pyplot as plt
+    import textwrap
     from datetime import date
-    from sqlalchemy import text
-    from db import get_engine  # ✅ Centralized DB connection
 
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    from sqlalchemy import text
+
+    from db import get_engine
+    from market_cycle_utils import (
+        classify_phase_with_confidence,
+        phase_badge_inline,
+        phase_confidence_note,
+        phase_interpretation_text,
+    )
+
+    # ----------------------------------------------------------
+    # Page CSS
+    # ----------------------------------------------------------
     st.markdown("""
     <style>
         .greer-header {
-            font-size: 2.5rem;
-            font-weight: 600;
+            font-size: 2.4rem;
+            font-weight: 700;
             text-align: center;
-            margin-bottom: 1rem;
+            margin-bottom: 0.50rem;
         }
+
+        .greer-subheader {
+            text-align: center;
+            font-size: 0.95rem;
+            color: #666;
+            margin-top: 0;
+            margin-bottom: 1.25rem;
+        }
+
         .stTextInput > div > div > input {
             font-size: 20px;
-            height: 2.5rem;
+            height: 2.6rem;
             text-align: center;
         }
 
-        /* Shared card look */
-        .company-card, .metric-card {
+        .company-card, .metric-card, .summary-banner {
             border: 1px solid #e0e0e0;
-            border-radius: 12px;
+            border-radius: 14px;
             background: #fafafa;
             padding: 12px 16px;
             box-shadow: 0 1px 2px rgba(0,0,0,.04);
         }
+
+        .company-card {
+            min-height: 245px;
+        }
+
         .company-title {
             font-size: 20px;
             font-weight: 700;
-            margin-bottom: 4px;
+            margin-bottom: 6px;
         }
+
         .company-meta {
             font-size: 14px;
             margin: 2px 0;
         }
 
-        /* Metric card content */
         .metric-card {
             display: flex;
             flex-direction: column;
             gap: 6px;
-            min-height: 120px; /* keeps all cards same height */
+            min-height: 110px;
             justify-content: center;
             text-align: center;
         }
+
         .metric-label {
             font-size: 13px;
-            font-weight: 600;
-            opacity: .9;
+            font-weight: 700;
+            opacity: .92;
         }
+
         .metric-main {
-            font-size: 20px;
+            font-size: 22px;
             font-weight: 800;
-            line-height: 1.1;
+            line-height: 1.05;
             margin-top: 2px;
         }
+
         .metric-sub {
             font-size: 12px;
             font-weight: 600;
@@ -76,17 +102,171 @@ def render_home():
             margin-top: 2px;
         }
 
-        button[kind="secondary"] {
-            color: #1976d2 !important;
-            background: none !important;
-            border: none !important;
-            padding: 0 !important;
-            font-size: 14px;
-            text-decoration: underline;
-            cursor: pointer;
+        .summary-banner {
+            background: #f6f8fb;
+            margin-top: 14px;
+            margin-bottom: 14px;
+            font-size: 15px;
+            line-height: 1.45;
+        }
+
+        .summary-banner b {
+            color: #1f2937;
+        }
+
+        .card-section-title {
+            font-size: 0.90rem;
+            font-weight: 700;
+            color: #4b5563;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        div[data-baseweb="tab-list"] {
+            gap: 8px;
+        }
+
+        button[data-baseweb="tab"] {
+            border-radius: 10px !important;
+            padding: 8px 14px !important;
         }
     </style>
     """, unsafe_allow_html=True)
+
+    # ----------------------------------------------------------
+    # Helpers
+    # ----------------------------------------------------------
+    def index_color(score):
+        if score is None or pd.isnull(score):
+            return "#9CA3AF"
+        score = float(score)
+        if score >= 75:
+            return "#4CAF50"   # strong
+        if score >= 55:
+            return "#5BC0DE"   # middle
+        return "#F44336"       # weak
+    def first_non_null(*values):
+        for v in values:
+            if pd.notnull(v):
+                return v
+        return None
+
+    def clamp(x: float, lo: float, hi: float) -> float:
+        return max(lo, min(hi, x))
+
+    def safe_round(value, digits=2):
+        return round(float(value), digits) if pd.notnull(value) else None
+
+    def safe_pct_to_fair_value(current_price, gfv_price):
+        if pd.isnull(current_price) or pd.isnull(gfv_price):
+            return None
+
+        current_price = float(current_price)
+        gfv_price = float(gfv_price)
+
+        if current_price == 0:
+            return None
+
+        return round(((gfv_price / current_price) - 1.0) * 100.0, 1)
+
+    def classify_greer(score, above_50):
+        if pd.notnull(above_50) and int(above_50) == 6:
+            return "Exceptional", "#D4AF37", "black"
+        if pd.notnull(score) and float(score) >= 50:
+            return "Strong", "#4CAF50", "white"
+        if pd.notnull(score):
+            return "Weak", "#F44336", "white"
+        return "—", "#E0E0E0", "black"
+
+    def classify_yield(yield_score):
+        if yield_score is None:
+            return "—", "#E0E0E0", "black"
+        if yield_score == 4:
+            return "Exceptional Value", "#D4AF37", "black"
+        if yield_score == 3:
+            return "Undervalued", "#4CAF50", "white"
+        if yield_score in (1, 2):
+            return "Fairly Valued", "#2196F3", "white"
+        return "Overvalued", "#F44336", "white"
+
+    def phase_label_with_icon(phase_name: str) -> str:
+        p = str(phase_name).strip().upper()
+        if p == "EXPANSION":
+            return "🟢 Expansion"
+        if p == "EUPHORIA":
+            return "🟠 Euphoria"
+        if p == "RECOVERY":
+            return "🔵 Recovery"
+        if p == "CONTRACTION":
+            return "🔴 Contraction"
+        return "⚪ Unknown"
+
+    def transition_risk_label(confidence: float) -> str:
+        c = float(confidence)
+        if c < 0.35:
+            return "⚠ High Shift Risk"
+        if c < 0.60:
+            return "👀 Watch Transition"
+        return "✅ Stable Trend"
+
+    # ----------------------------------------------------------
+    # Company-cycle scoring helpers
+    # ----------------------------------------------------------
+    def compute_health_pct(gv_score, above_50_count) -> float:
+        gv = float(gv_score) if pd.notnull(gv_score) else 0.0
+        a50 = float(above_50_count) if pd.notnull(above_50_count) else 0.0
+        a50_pct = (a50 / 6.0) * 100.0
+        score = (gv * 0.85) + (a50_pct * 0.15)
+        return round(clamp(score, 0.0, 100.0), 1)
+
+    def compute_buyzone_score(buyzone_flag) -> float:
+        return 25.0 if bool(buyzone_flag) else 75.0
+
+    def compute_fvg_score(fvg_last_direction) -> float:
+        s = str(fvg_last_direction).strip().lower() if pd.notnull(fvg_last_direction) else ""
+        if s in ["bullish", "up", "green"]:
+            return 100.0
+        if s in ["bearish", "down", "red"]:
+            return 0.0
+        return 50.0
+
+    def compute_direction_pct(buyzone_flag, fvg_last_direction, sector_direction_pct) -> float:
+        buyzone_score = compute_buyzone_score(buyzone_flag)
+        fvg_score = compute_fvg_score(fvg_last_direction)
+        sector_score = float(sector_direction_pct) if pd.notnull(sector_direction_pct) else 50.0
+
+        score = (
+            (buyzone_score * 0.35) +
+            (fvg_score * 0.35) +
+            (sector_score * 0.30)
+        )
+        return round(clamp(score, 0.0, 100.0), 1)
+
+    def compute_gfv_score(gfv_status) -> float:
+        s = str(gfv_status).strip().lower() if pd.notnull(gfv_status) else "gray"
+        if s == "gold":
+            return 100.0
+        if s == "green":
+            return 75.0
+        if s == "gray":
+            return 50.0
+        return 0.0
+
+    def compute_opportunity_pct(greer_yield_score, gfv_status) -> float:
+        ys = float(greer_yield_score) if pd.notnull(greer_yield_score) else 0.0
+        ys_pct = (ys / 4.0) * 100.0
+        gfv_pct = compute_gfv_score(gfv_status)
+
+        score = (ys_pct * 0.5) + (gfv_pct * 0.5)
+        return round(clamp(score, 0.0, 100.0), 1)
+
+    def compute_company_index(health_pct, direction_pct, opportunity_pct) -> float:
+        score = (float(health_pct) + float(direction_pct) + float(opportunity_pct)) / 3.0
+        return round(clamp(score, 0.0, 100.0), 2)
+
+    def compute_company_buyzone_proxy(direction_pct: float) -> float:
+        return round(clamp(100.0 - float(direction_pct), 0.0, 100.0), 2)
 
     # ----------------------------------------------------------
     # Database Queries (cached)
@@ -127,18 +307,8 @@ def render_home():
         )
         return df
 
-    # ----------------------------------------------------------
-    # Star transition dates (LATEST 3⭐ RUN)
-    # ----------------------------------------------------------
     @st.cache_data(ttl=600)
     def get_star_transition_dates(ticker: str):
-        """
-        Returns the latest 3⭐ run summary:
-          - entered_3star_date: most recent date the ticker crossed into >=3
-          - exited_3star_date: first date the ticker crossed from >=3 to <3 AFTER that enter (NULL if still 3⭐)
-          - days_in_3star: inclusive days in that run (only set if exited)
-          - tracking_start_date: first date we started storing greer_star_rating in company_snapshot
-        """
         engine = get_engine()
         df = pd.read_sql(
             """
@@ -200,13 +370,8 @@ def render_home():
         )
         return df
 
-
     @st.cache_data(ttl=300)
     def get_latest_gfv(ticker: str, _cache_buster=None):
-        """
-        Tries greer_fair_value_latest view first; falls back to DISTINCT ON if the view isn't present.
-        Returns a 1-row DataFrame or empty DataFrame.
-        """
         engine = get_engine()
         try:
             df = pd.read_sql(
@@ -214,7 +379,7 @@ def render_home():
                 SELECT ticker, date, close_price, gfv_price, gfv_status,
                        dcf_value, graham_value,
                        growth_rate_fcf, growth_rate_eps,
-                       growth_rate_fcf_raw, growth_rate_eps_raw,      -- NEW
+                       growth_rate_fcf_raw, growth_rate_eps_raw,
                        discount_rate, terminal_growth, graham_yield_Y, fcf_per_share, eps
                 FROM greer_fair_value_latest
                 WHERE ticker = %(t)s
@@ -226,16 +391,15 @@ def render_home():
             if not df.empty:
                 return df
         except Exception:
-            pass  # view might not exist or may not yet expose _raw columns
+            pass
 
-        # Fallback: pull latest from daily
         df = pd.read_sql(
             """
             SELECT DISTINCT ON (ticker)
                    ticker, date, close_price, gfv_price, gfv_status,
                    dcf_value, graham_value,
                    growth_rate_fcf, growth_rate_eps,
-                   growth_rate_fcf_raw, growth_rate_eps_raw,        -- NEW
+                   growth_rate_fcf_raw, growth_rate_eps_raw,
                    discount_rate, terminal_growth, graham_yield_Y, fcf_per_share, eps
             FROM greer_fair_value_daily
             WHERE ticker = %(t)s
@@ -247,39 +411,169 @@ def render_home():
         )
         return df
 
+    @st.cache_data(ttl=600)
+    def get_latest_sector_context(sector: str):
+        engine = get_engine()
+        df = pd.read_sql(
+            """
+            SELECT
+              summary_date,
+              sector,
+              total_companies,
+              buyzone_pct,
+              greer_market_index
+            FROM sector_summary_daily
+            WHERE summary_date = (
+                SELECT MAX(summary_date) FROM sector_summary_daily
+            )
+              AND sector = %(sector)s
+            LIMIT 1;
+            """,
+            engine,
+            params={"sector": sector},
+        )
+        return df
+
     # ----------------------------------------------------------
-    # Helper Functions: Classifiers and Card Renderers
+    # Bundle builder
     # ----------------------------------------------------------
-    def classify_greer(score, above_50):
-        if pd.notnull(above_50) and int(above_50) == 6:
-            return "Exceptional", "#D4AF37", "black"
-        if pd.notnull(score) and float(score) >= 50:
-            return "Strong", "#4CAF50", "white"
-        if pd.notnull(score):
-            return "Weak", "#F44336", "white"
-        return "—", "#E0E0E0", "black"
-
-    def classify_yield(yield_score):
-        if yield_score is None:
-            return "—", "#E0E0E0", "black"
-        if yield_score == 4:
-            return "Exceptional Value", "#D4AF37", "black"
-        if yield_score == 3:
-            return "Undervalued", "#4CAF50", "white"
-        if yield_score in (1, 2):
-            return "Fairly Valued", "#2196F3", "white"
-        return "Overvalued", "#F44336", "white"
-
-    import textwrap
-
-    def render_company_card(ticker: str):
+    @st.cache_data(ttl=300)
+    def build_home_bundle(ticker: str):
+        snap = get_latest_snapshot(ticker)
         info = get_company_info(ticker)
+        gfv_df = get_latest_gfv(ticker)
+        first_trade = fetch_first_trade_date(ticker)
+        trans = get_star_transition_dates(ticker)
+
+        bundle = {
+            "ticker": ticker,
+            "found": not snap.empty,
+            "snapshot": snap,
+            "info": info,
+            "gfv": gfv_df,
+            "first_trade": first_trade,
+            "transition": trans,
+            "sector_context": pd.DataFrame(),
+            "company_cycle": {},
+            "sector_cycle": {},
+        }
+
+        if snap.empty:
+            return bundle
+
+        row = snap.iloc[0]
+        info_row = info.iloc[0] if not info.empty else None
+        sector = first_non_null(
+            info_row.get("sector") if info_row is not None else None,
+            row.get("sector"),
+        )
+        sector_df = get_latest_sector_context(sector) if pd.notnull(sector) else pd.DataFrame()
+        bundle["sector_context"] = sector_df
+
+        sector_direction_pct = 50.0
+        sector_gmi = None
+        sector_phase = None
+        sector_conf = None
+
+        if not sector_df.empty:
+            srow = sector_df.iloc[0]
+            sector_buyzone_pct = float(srow["buyzone_pct"]) if pd.notnull(srow["buyzone_pct"]) else 50.0
+            sector_direction_pct = round(100.0 - sector_buyzone_pct, 1)
+            sector_gmi = safe_round(srow.get("greer_market_index"), 2)
+
+            gv_score = row.get("greer_value_score")
+            above_50_count = row.get("above_50_count")
+            ys_score = row.get("greer_yield_score")
+
+            gfv_status = None
+            if not gfv_df.empty:
+                gfv_status = gfv_df.iloc[0].get("gfv_status")
+
+            health_pct = compute_health_pct(gv_score, above_50_count)
+            opportunity_pct = compute_opportunity_pct(ys_score, gfv_status)
+            company_direction_pct = compute_direction_pct(
+                row.get("buyzone_flag"),
+                row.get("fvg_last_direction"),
+                sector_direction_pct,
+            )
+
+            sector_opportunity_pct = opportunity_pct
+
+            sector_phase, sector_conf = classify_phase_with_confidence(
+                health_pct,
+                sector_buyzone_pct,
+                sector_opportunity_pct,
+            )
+
+        gfv_status = None
+        gfv_price = None
+        current_price = row.get("current_price")
+
+        if not gfv_df.empty:
+            gfv_row = gfv_df.iloc[0]
+            gfv_status = gfv_row.get("gfv_status")
+            gfv_price = gfv_row.get("gfv_price")
+
+        health_pct = compute_health_pct(row.get("greer_value_score"), row.get("above_50_count"))
+        direction_pct = compute_direction_pct(
+            row.get("buyzone_flag"),
+            row.get("fvg_last_direction"),
+            sector_direction_pct,
+        )
+        opportunity_pct = compute_opportunity_pct(row.get("greer_yield_score"), gfv_status)
+        company_index = compute_company_index(health_pct, direction_pct, opportunity_pct)
+
+        company_phase, company_conf = classify_phase_with_confidence(
+            health_pct,
+            compute_company_buyzone_proxy(direction_pct),
+            opportunity_pct,
+        )
+
+        bundle["company_cycle"] = {
+            "health_pct": health_pct,
+            "direction_pct": direction_pct,
+            "opportunity_pct": opportunity_pct,
+            "greer_company_index": company_index,
+            "phase": company_phase,
+            "confidence": round(company_conf, 4),
+            "transition_risk": transition_risk_label(company_conf),
+        }
+
+        bundle["sector_cycle"] = {
+            "sector_direction_pct": sector_direction_pct,
+            "sector_phase": sector_phase,
+            "sector_confidence": round(sector_conf, 4) if sector_conf is not None else None,
+            "sector_greer_market_index": sector_gmi,
+        }
+
+        return bundle
+
+    # ----------------------------------------------------------
+    # Card renderers
+    # ----------------------------------------------------------
+    def render_metric_card(label: str, main_html: str, sub_html: str, bg: str, fg: str):
+        st.markdown(
+            f"""
+            <div class="metric-card" style="background:{bg}; color:{fg};">
+                <div class="metric-label">{label}</div>
+                <div class="metric-main">{main_html}</div>
+                <div class="metric-sub">{sub_html}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    def render_company_card(bundle: dict):
+        ticker = bundle["ticker"]
+        info = bundle["info"]
+        trans = bundle["transition"]
+
         if info.empty:
             return
 
         r = info.iloc[0]
-        name     = r["name"] if pd.notnull(r["name"]) else "—"
-        sector   = r["sector"] if pd.notnull(r["sector"]) else "—"
+        name = r["name"] if pd.notnull(r["name"]) else "—"
+        sector = r["sector"] if pd.notnull(r["sector"]) else "—"
         industry = r["industry"] if pd.notnull(r["industry"]) else "—"
         exchange = r["exchange"] if pd.notnull(r["exchange"]) else "—"
 
@@ -294,32 +588,25 @@ def render_home():
         if stars > 0:
             star_icons = "★" * stars + "☆" * (3 - stars)
             star_html = (
-                f"<div style='font-size:1.3rem; color:#D4AF37; margin-top:4px;'>"
+                f"<div style='font-size:1.3rem; color:#D4AF37; margin-top:6px;'>"
                 f"{star_icons} &nbsp; {stars} Gold Star{'s' if stars>1 else ''}"
                 f"</div>"
             )
 
-        # ----------------------------------------------------------
-        # 3⭐ Entered + Days @ 3⭐ (Active/Exited) — latest run
-        # ----------------------------------------------------------
         became_line = ""
-        trans = get_star_transition_dates(ticker)
-
         if not trans.empty:
             entered = trans.loc[0, "entered_3star_date"]
-            exited  = trans.loc[0, "exited_3star_date"]
-            days    = trans.loc[0, "days_in_3star"]
+            exited = trans.loc[0, "exited_3star_date"]
+            days = trans.loc[0, "days_in_3star"]
             tracking_start = trans.loc[0, "tracking_start_date"]
 
             entered_d = pd.to_datetime(entered).date() if pd.notnull(entered) else None
-            exited_d  = pd.to_datetime(exited).date() if pd.notnull(exited) else None
+            exited_d = pd.to_datetime(exited).date() if pd.notnull(exited) else None
 
-            # If already 3⭐ when tracking began
             if entered_d is None and stars >= 3 and pd.notnull(tracking_start):
                 entered_d = pd.to_datetime(tracking_start).date()
 
             if entered_d:
-                # asof uses latest snapshot date for this ticker
                 latest_d = pd.read_sql(
                     "SELECT MAX(snapshot_date)::date AS d FROM public.company_snapshot WHERE ticker=%(t)s;",
                     get_engine(),
@@ -346,10 +633,9 @@ def render_home():
                         f"&nbsp;|&nbsp; <b>Status:</b> Active</div>"
                     )
 
-
-
         html = textwrap.dedent(f"""\
         <div class="company-card" style="color: rgb(49, 51, 63);">
+          <div class="card-section-title">Company</div>
           <div class="company-title">{ticker} — {name}</div>
           <div class="company-meta"><b>Exchange:</b> {exchange}</div>
           <div class="company-meta"><b>Sector:</b> {sector}</div>
@@ -362,118 +648,164 @@ def render_home():
 
         st.markdown(html, unsafe_allow_html=True)
 
+    def render_gfv_card(gfv_row: pd.Series):
+        gfv = gfv_row.get("gfv_price")
+        current_price = gfv_row.get("close_price")
+        gfv_status = str(gfv_row.get("gfv_status") or "gray").lower()
+        upside_pct = safe_pct_to_fair_value(current_price, gfv)
 
+        bg = {
+            "gold": "#D4AF37",
+            "green": "#4CAF50",
+            "red": "#F44336",
+            "gray": "#9CA3AF",
+        }.get(gfv_status, "#9CA3AF")
 
-    def render_metric_card(label: str, main_html: str, sub_html: str, bg: str, fg: str):
+        fg = "black" if gfv_status == "gold" else "white"
+        main = "—" if pd.isnull(gfv) else f"${float(gfv):,.2f}"
+
+        if upside_pct is None:
+            sub = f"{gfv_status.title()}"
+        else:
+            sign = "+" if upside_pct >= 0 else ""
+            sub = f"{gfv_status.title()} • {sign}{upside_pct:.1f}% vs price"
+
+        render_metric_card("Greer Fair Value", main, sub, bg, fg)
+
+    def render_price_card(current_price, snapshot_date):
+        price_main = "—" if pd.isnull(current_price) else f"${float(current_price):,.2f}"
+        price_sub = f"as of {snapshot_date}" if snapshot_date else "—"
+        render_metric_card("Price", price_main, price_sub, "#111111", "white")
+
+    def render_company_cycle_card(company_cycle: dict):
+        if not company_cycle:
+            render_metric_card("Company Cycle", "—", "No data", "#E0E0E0", "black")
+            return
+
+        phase = phase_label_with_icon(company_cycle["phase"])
+        conf = round(float(company_cycle["confidence"]) * 100)
+        risk = company_cycle["transition_risk"]
+        main = f"{company_cycle['greer_company_index']:.1f}"
+        sub = f"{phase} • {conf}% • {risk}"
+
+        def company_index_color(score):
+            if score >= 75:
+                return "#4CAF50"   # strong
+            elif score >= 55:
+                return "#5BC0DE"   # neutral/transition
+            else:
+                return "#F44336"   # weak
+        bg = company_index_color(company_cycle["greer_company_index"])
+        render_metric_card("Greer Company Index", main, sub, bg, "white")
+
+    def render_sector_backdrop_card(sector_cycle: dict):
+        if not sector_cycle:
+            render_metric_card("Greer Sector Index", "—", "No data", "#E0E0E0", "black")
+            return
+
+        phase = phase_label_with_icon(sector_cycle.get("sector_phase"))
+        gmi = sector_cycle.get("sector_greer_market_index")
+
+        bg = index_color(gmi)
+        fg = "white"
+
+        main = "—" if gmi is None or pd.isnull(gmi) else f"{float(gmi):.1f}"
+
+        if gmi is None or pd.isnull(gmi):
+            sub = f"{phase}"
+        else:
+            if float(gmi) >= 75:
+                backdrop = "Strong Backdrop"
+            elif float(gmi) >= 55:
+                backdrop = "Supportive Backdrop"
+            else:
+                backdrop = "Weak Backdrop"
+
+            sub = f"{phase} • {backdrop}"
+
+        render_metric_card("Greer Sector Index", main, sub, bg, fg)
+
+    def render_signal_summary(bundle: dict):
+        snap = bundle["snapshot"].iloc[0]
+        company_cycle = bundle["company_cycle"]
+        sector_cycle = bundle["sector_cycle"]
+
+        gv_score = snap.get("greer_value_score")
+        ys_score = snap.get("greer_yield_score")
+        in_bz = bool(snap.get("buyzone_flag", False))
+        fvg_dir = str(snap.get("fvg_last_direction") or "").lower()
+
+        quality_text = "strong fundamentals" if pd.notnull(gv_score) and float(gv_score) >= 50 else "weaker fundamentals"
+        value_text = "attractive valuation" if pd.notnull(ys_score) and float(ys_score) >= 3 else "mixed valuation"
+        bz_text = "BuyZone is active" if in_bz else "BuyZone is inactive"
+
+        if fvg_dir == "bullish":
+            fvg_text = "bullish FVG support is present"
+        elif fvg_dir == "bearish":
+            fvg_text = "bearish FVG pressure remains"
+        else:
+            fvg_text = "no strong FVG signal is present"
+
+        company_phase = phase_label_with_icon(company_cycle.get("phase"))
+        sector_phase = phase_label_with_icon(sector_cycle.get("sector_phase"))
+
         st.markdown(
             f"""
-            <div class="metric-card" style="background:{bg}; color:{fg};">
-                <div class="metric-label">{label}</div>
-                <div class="metric-main">{main_html}</div>
-                <div class="metric-sub">{sub_html}</div>
+            <div class="summary-banner">
+                <b>Signal Summary:</b>
+                {bundle['ticker']} is currently in <b>{company_phase}</b> with
+                <b>{round(float(company_cycle.get('confidence', 0)) * 100)}% confidence</b>.
+                The stock shows <b>{quality_text}</b>, <b>{value_text}</b>, and
+                <b>{bz_text}</b>. On the technical side, <b>{fvg_text}</b>.
+                Sector backdrop is <b>{sector_phase}</b>.
             </div>
             """,
             unsafe_allow_html=True
         )
 
-    def render_gfv_badge(gfv_row: pd.Series):
-        # Pull values
-        today_price = gfv_row.get("close_price")
-        gfv         = gfv_row.get("gfv_price")
-        status      = (gfv_row.get("gfv_status") or "").lower()
+    def render_snapshot_header(bundle: dict):
+        snap = bundle["snapshot"].iloc[0]
+        info = bundle["info"]
+        gfv_df = bundle["gfv"]
+        company_cycle = bundle["company_cycle"]
+        sector_cycle = bundle["sector_cycle"]
 
-        dcf_val     = gfv_row.get("dcf_value")
-        graham_val  = gfv_row.get("graham_value")
-        g_fcf       = gfv_row.get("growth_rate_fcf")
-        g_eps       = gfv_row.get("growth_rate_eps")
-        # NEW: raw (pre-cap) fields
-        g_fcf_raw   = gfv_row.get("growth_rate_fcf_raw")
-        g_eps_raw   = gfv_row.get("growth_rate_eps_raw")
+        info_row = info.iloc[0] if not info.empty else None
+        gfv_row = gfv_df.iloc[0] if not gfv_df.empty else None
 
-        r           = gfv_row.get("discount_rate")
-        tg          = gfv_row.get("terminal_growth")
-        Y           = gfv_row.get("graham_yield_y")
+        snapshot_date_raw = first_non_null(
+            gfv_row.get("date") if gfv_row is not None else None,
+            snap.get("snapshot_date"),
+            snap.get("fvg_last_date"),
+        )
+        snapshot_date = pd.to_datetime(snapshot_date_raw).date() if pd.notnull(snapshot_date_raw) else None
 
-        badge_color = {"gold": "#D4AF37", "green": "#22c55e", "red": "#ef4444"}.get(status, "#9ca3af")
+        sector = first_non_null(
+            info_row.get("sector") if info_row is not None else None,
+            snap.get("sector"),
+        )
+        sector = sector if pd.notnull(sector) else "—"
 
-        def is_num(x):
-            return (x is not None) and isinstance(x, (int, float, np.floating)) and not pd.isna(x)
-
-        def yield_pp_str(y):
-            return f"{float(y):.1f}%" if is_num(y) else "—"
-
-        def money(x):
-            return f"${float(x):,.2f}" if is_num(x) else "—"
-
-        def pct(x):
-            return f"{float(x)*100:.1f}%" if is_num(x) else "—"
-
-        fcfps = gfv_row.get("fcf_per_share")
-        eps = gfv_row.get("eps")
-
-        reason_dcf = ""
-        if dcf_val is None:
-            if is_num(fcfps) and float(fcfps) <= 0:
-                reason_dcf = " (unavailable: negative FCF/share)"
-            else:
-                reason_dcf = " (unavailable)"
-
-        reason_graham = ""
-        if graham_val is None:
-            if is_num(eps) and float(eps) <= 0:
-                reason_graham = " (unavailable: negative EPS)"
-            else:
-                reason_graham = " (unavailable)"
-
-        def growth_str(capped, raw):
-            if not is_num(capped):
-                return "—"
-            if is_num(raw) and round(float(raw), 4) != round(float(capped), 4):
-                return f"{pct(capped)} (capped from {pct(raw)})"
-            return pct(capped)
-
-        g_fcf_str = growth_str(g_fcf, g_fcf_raw)
-        g_eps_str = growth_str(g_eps, g_eps_raw)
-
-        header_line = "⚠️ Incomplete signal: one or both models unavailable." if status == "gray" else None
-
-        tooltip_lines = []
-        if header_line:
-            tooltip_lines.append(header_line)
-        tooltip_lines += [
-            f"Today’s Price: {money(today_price)}",
-            f"GFV Status: {status or '—'}",
-            "",
-            f"DCF FV: {money(dcf_val)}{reason_dcf}  |  FCF/Share: {money(fcfps)}  | FCF growth: {g_fcf_str}  |  r: {pct(r)}  |  terminal g: {pct(tg)}",
-            f"Graham FV: {money(graham_val)}{reason_graham}  |  EPS: {money(eps)} | EPS growth: {g_eps_str}  |  AAA Y: {yield_pp_str(Y)}",
+        parts = [
+            f"Snapshot: {snapshot_date}" if snapshot_date else "Snapshot: —",
+            f"Sector: {sector}",
         ]
 
-        from html import escape
-        tooltip_attr = escape("\n".join(tooltip_lines), quote=True).replace("\n", "&#10;")
+        if company_cycle:
+            parts.append(f"Company: {phase_label_with_icon(company_cycle.get('phase'))}")
+        if sector_cycle and sector_cycle.get("sector_phase"):
+            parts.append(f"Sector Phase: {phase_label_with_icon(sector_cycle.get('sector_phase'))}")
 
-        st.markdown(f"""
-        <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:10px;">
-          <div class="metric-card" style="background:#111; color:#fff; min-height:auto; padding:8px 12px;">
-            <div class="metric-label" style="opacity:.7;">Today’s Price</div>
-            <div class="metric-main" style="font-size:18px;">{money(today_price)}</div>
-          </div>
-
-          <span title="{tooltip_attr}">
-            <div class="metric-card" style="background:{badge_color}; color:#111; min-height:auto; padding:8px 12px; cursor:help;">
-              <div class="metric-label" style="opacity:.9; display:flex; align-items:center; gap:6px;">
-                Greer Fair Value <span style="font-weight:700;">ⓘ</span>
-              </div>
-              <div class="metric-main" style="font-size:18px;">{money(gfv)}</div>
-            </div>
-          </span>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='greer-subheader'>{' &nbsp;•&nbsp; '.join(parts)}</div>",
+            unsafe_allow_html=True
+        )
 
     # ----------------------------------------------------------
-    # Detail Renderers
+    # Existing detail renderers
+    # - Kept from your current page so we can plug them into tabs
     # ----------------------------------------------------------
     def render_gv_details(ticker, engine):
-        # Fetch latest Greer Value Score
         df = pd.read_sql(
             """
             SELECT *
@@ -489,7 +821,6 @@ def render_home():
             st.warning("No Greer Value data for this ticker.")
             return
 
-        # Display latest score and grade
         greer_score = df["greer_score"].iloc[0]
         above_50 = df["above_50_count"].iloc[0]
         grade, grade_color, txt_color = classify_greer(greer_score, above_50)
@@ -511,7 +842,6 @@ def render_home():
             unsafe_allow_html=True,
         )
 
-        # Small radar chart in top-left corner
         col1, col2 = st.columns([1, 3])
         with col1:
             labels = ["Book", "FCF", "Margin", "Revenue", "Income", "Shares"]
@@ -536,7 +866,6 @@ def render_home():
             ax.set_title(f"{ticker.upper()} – Component Radar", fontsize=10, y=1.08)
             st.pyplot(fig)
 
-        # Fetch 180 days data for price and score chart
         hist = pd.read_sql(
             """
             SELECT g.date, g.greer_score, g.above_50_count, p.close
@@ -551,7 +880,6 @@ def render_home():
             parse_dates=['date']
         )
         if hist.empty:
-            st.warning("No Greer Value data for the last 180 days. Falling back to greer_scores.")
             hist = pd.read_sql(
                 """
                 SELECT g.report_date AS date, g.greer_score, g.above_50_count, p.close
@@ -585,38 +913,15 @@ def render_home():
         weak_mask = (hist["greer_score"] < 50) & (hist["greer_score"].notnull())
         none_mask = hist["greer_score"].isnull()
 
-        ax_ribbon.fill_between(hist["date"], 0, 1, where=exceptional_mask, color="#D4AF37", alpha=0.7, label="Exceptional")
-        ax_ribbon.fill_between(hist["date"], 0, 1, where=strong_mask, color="#4CAF50", alpha=0.7, label="Strong")
-        ax_ribbon.fill_between(hist["date"], 0, 1, where=weak_mask, color="#F44336", alpha=0.7, label="Weak")
-        ax_ribbon.fill_between(hist["date"], 0, 1, where=none_mask, color="#E0E0E0", alpha=0.7, label="None")
+        ax_ribbon.fill_between(hist["date"], 0, 1, where=exceptional_mask, color="#D4AF37", alpha=0.7)
+        ax_ribbon.fill_between(hist["date"], 0, 1, where=strong_mask, color="#4CAF50", alpha=0.7)
+        ax_ribbon.fill_between(hist["date"], 0, 1, where=weak_mask, color="#F44336", alpha=0.7)
+        ax_ribbon.fill_between(hist["date"], 0, 1, where=none_mask, color="#E0E0E0", alpha=0.7)
 
         ax_ribbon.set_yticks([])
         ax_ribbon.set_ylim(0, 1)
         ax_ribbon.set_xlabel("Date")
         st.pyplot(fig)
-
-        total = len(hist)
-        counts = {
-            "Exceptional": exceptional_mask.sum(),
-            "Strong": strong_mask.sum(),
-            "Weak": weak_mask.sum(),
-            "None": none_mask.sum()
-        }
-        stats_lines = []
-        for grade, count in counts.items():
-            pct = (count / total * 100) if total > 0 else 0
-            stats_lines.append(f"**{grade}:** {count} days ({pct:.1f}%)")
-        st.markdown("**Greer Score Distribution (last 180 days):** " + " | ".join(stats_lines))
-
-        with st.expander("ℹ️ Greer Value grade legend"):
-            st.markdown(
-                """
-                - **Exceptional**: Above 50% in all six components (Above_50_count = 6)
-                - **Strong**: Greer Score ≥ 50%
-                - **Weak**: Greer Score < 50%
-                - **None**: No score available
-                """
-            )
 
     def render_yield_details(ticker, engine):
         snap = pd.read_sql(
@@ -702,25 +1007,6 @@ def render_home():
         ax_ribbon.set_xlabel("Date")
         st.pyplot(fig)
 
-        total = len(df)
-        counts = df['score'].value_counts().sort_index(ascending=False)
-        stats_lines = []
-        for sc in range(4, -1, -1):
-            days = counts.get(sc, 0)
-            pct = (days / total * 100) if total > 0 else 0
-            stats_lines.append(f"**{sc}:** {days} days ({pct:.1f}%)")
-        st.markdown("**Yield Score Distribution (last 180 days):** " + " | ".join(stats_lines))
-
-        with st.expander("ℹ️ Yield grade legend"):
-            st.markdown(
-                """
-                - **Exceptional Value**: All four yields above historical average
-                - **Undervalued**: 3 of 4 above average
-                - **Fairly Valued**: 1–2 above average
-                - **Overvalued**: 0 above average
-                """
-            )
-
     def render_buyzone_details(ticker, engine):
         df = pd.read_sql(
             """
@@ -755,17 +1041,6 @@ def render_home():
         ax_ribbon.set_xlabel("Date")
         st.pyplot(fig)
 
-        total = len(df)
-        days_bz = mask.sum()
-        pct = 100 * days_bz / total
-        st.markdown(f"**Days in BuyZone:** {days_bz} / {total} ({pct:.1f} %)")
-
-        with st.expander("ℹ️ How to read this chart"):
-            st.markdown(
-                "The green ribbon shows every day the Greer model flagged the stock as inside its BuyZone. "
-                "Gray blocks are neutral days. The price line above provides context."
-            )
-
     def render_fvg_details(ticker, engine):
         gaps = pd.read_sql(
             """
@@ -798,23 +1073,6 @@ def render_home():
 
         open_bull = gaps[(gaps["direction"] == "bullish") & (~gaps["mitigated"])]
         open_bear = gaps[(gaps["direction"] == "bearish") & (~gaps["mitigated"])]
-        unmitigated_gaps = gaps[gaps['mitigated'] == False]
-        if unmitigated_gaps.empty:
-            avg_days = 0
-        else:
-            avg_days = int(
-                unmitigated_gaps
-                .assign(days=(pd.Timestamp('now') - unmitigated_gaps['date']).dt.days)
-                ['days']
-                .mean()
-                or 0
-            )
-
-        st.markdown(
-            f"**Open bullish gaps:** {len(open_bull)} &nbsp;|&nbsp; "
-            f"**Open bearish gaps:** {len(open_bear)} &nbsp;|&nbsp; "
-            f"**Avg days open:** {avg_days}"
-        )
 
         fig, (ax_price, ax_ribbon) = plt.subplots(
             2, 1, sharex=True, figsize=(9, 5), gridspec_kw={"height_ratios": [4, 0.6]}
@@ -836,18 +1094,12 @@ def render_home():
         ax_ribbon.set_xlabel("Date")
         st.pyplot(fig)
 
-        gaps['days_open'] = (pd.Timestamp('now') - gaps['date']).dt.days.where(~gaps['mitigated'])
-        st.markdown("### Gap detail")
-        st.dataframe(
-            gaps[['date','direction','gap_min','gap_max','mitigated','days_open']]
-            .sort_values('date', ascending=False)
-        )
-
     # ----------------------------------------------------------
-    # Main UI (Greer Value Search)
+    # Search Header
     # ----------------------------------------------------------
-    st.markdown('<div class="greer-header">Greer Value Search</div>', unsafe_allow_html=True)
+    st.markdown('<div class="greer-header">Greer Company Snapshot</div>', unsafe_allow_html=True)
 
+    # Read URL param once
     qp = st.query_params
     ticker_param = qp.get("ticker")
 
@@ -858,122 +1110,240 @@ def render_home():
     else:
         url_ticker = ""
 
+    # Initialize session state only once
+    if "ticker_input" not in st.session_state:
+        st.session_state["ticker_input"] = url_ticker.upper().strip() if url_ticker else ""
+
+    # Input is controlled by session state only
     user_ticker = st.text_input(
         "Search",
         placeholder="Enter ticker (e.g., AAPL)",
         key="ticker_input",
         label_visibility="collapsed",
-        value=url_ticker
     )
 
-    ticker = user_ticker.strip().upper() if user_ticker else None
+    ticker = st.session_state["ticker_input"].strip().upper()
 
-    if ticker:
-        ticker = ticker.upper().strip()
-        engine = get_engine()
+    if not ticker:
+        return
 
-        first_trade = fetch_first_trade_date(ticker)
-        snap = get_latest_snapshot(ticker)
+    # Keep URL synced, but do not use it to keep resetting the widget
+    st.query_params["ticker"] = ticker
 
-        if snap.empty:
-            cols = st.columns([2, 1, 1, 1, 1])
-            with cols[0]:
-                render_company_card(ticker)
+    bundle = build_home_bundle(ticker)
 
-            st.error(f"Ticker '{ticker}' not found in latest snapshot.")
+    if not bundle["found"]:
+        cols = st.columns([2, 1, 1, 1, 1])
+        with cols[0]:
+            if not bundle["info"].empty:
+                render_company_card(bundle)
 
-            st.session_state["pending_add_ticker"] = ticker
-            st.query_params["ticker"] = ticker
+        st.error(f"Ticker '{ticker}' not found in latest snapshot.")
+        st.session_state["pending_add_ticker"] = ticker
 
-            from app_nav import build_pages
-            _, PAGE_MAP = build_pages()
+        from app_nav import build_pages
+        _, PAGE_MAP = build_pages()
 
-            st.page_link(
-                PAGE_MAP["Add Company"],
-                label="Would you like to add this company? Click here.",
-                icon="➕",
-                use_container_width=True
-            )
-            return
+        st.page_link(
+            PAGE_MAP["Add Company"],
+            label="Would you like to add this company? Click here.",
+            icon="➕",
+            use_container_width=True
+        )
+        return
 
-        row = snap.iloc[0]
+    # ----------------------------------------------------------
+    # Top Snapshot Layout
+    # ----------------------------------------------------------
+    render_snapshot_header(bundle)
 
-        col_company, col_gv, col_yield, col_bz, col_fvg = st.columns([2, 1, 1, 1, 1])
+    snap = bundle["snapshot"].iloc[0]
+    gfv_df = bundle["gfv"]
+    company_cycle = bundle["company_cycle"]
+    sector_cycle = bundle["sector_cycle"]
 
-        with col_company:
-            render_company_card(ticker)
+    top_left, top_right = st.columns([2.2, 4.0])
 
-            gfv_df = get_latest_gfv(ticker)
+    with top_left:
+        render_company_card(bundle)
+
+    with top_right:
+        row1 = st.columns(4)
+        row2 = st.columns(4)
+
+        gfv_row = gfv_df.iloc[0] if not gfv_df.empty else None
+
+        current_price = first_non_null(
+            gfv_row.get("close_price") if gfv_row is not None else None,
+            snap.get("current_price"),
+        )
+
+        snapshot_date_raw = first_non_null(
+            gfv_row.get("date") if gfv_row is not None else None,
+            snap.get("snapshot_date"),
+            snap.get("fvg_last_date"),
+        )
+        snapshot_date = pd.to_datetime(snapshot_date_raw).date() if pd.notnull(snapshot_date_raw) else None
+        
+        with row1[0]:
+            render_price_card(current_price, snapshot_date)
+
+        with row1[1]:
             if not gfv_df.empty:
-                render_gfv_badge(gfv_df.iloc[0])
+                render_gfv_card(gfv_df.iloc[0])
             else:
-                st.info("No Greer Fair Value yet for this ticker.")
+                render_metric_card("Greer Fair Value", "—", "No data", "#9CA3AF", "white")
 
-        gv_score = row.get("greer_value_score")
-        grade, gv_bg, gv_txt = classify_greer(gv_score, row.get("above_50_count"))
-        gv_main = "—" if gv_score is None else f"{gv_score:.2f}%"
-        gv_sub = grade if gv_score is not None else "—"
-        with col_gv:
+        gv_score = snap.get("greer_value_score")
+        gv_grade, gv_bg, gv_txt = classify_greer(gv_score, snap.get("above_50_count"))
+        gv_main = "—" if pd.isnull(gv_score) else f"{float(gv_score):.2f}%"
+        gv_sub = gv_grade if pd.notnull(gv_score) else "—"
+        with row1[2]:
             render_metric_card("Greer Value", gv_main, gv_sub, gv_bg, gv_txt)
-            if st.button("🔍 Show Details", key="gv_details"):
-                st.session_state["view"] = "GV"
 
-        ys_score = row.get("greer_yield_score")
+        ys_score = snap.get("greer_yield_score")
         ys_score = int(ys_score) if pd.notnull(ys_score) else None
         y_grade, y_bg, y_txt = classify_yield(ys_score)
         y_main = "—" if ys_score is None else f"{ys_score}/4"
         y_sub = y_grade if ys_score is not None else "—"
-        with col_yield:
+        with row1[3]:
             render_metric_card("Yield Score", y_main, y_sub, y_bg, y_txt)
-            if st.button("🔍 Show Details", key="gy_details"):
-                st.session_state["view"] = "GY"
-            if ys_score is None:
-                cutoff = date.today().replace(month=12, day=31, year=date.today().year - 1)
-                if first_trade and first_trade > cutoff:
-                    st.info(f"📈 First traded on {first_trade} — too new for historical yields.")
-                else:
-                    st.warning("⛔ No historical yield data available for this ticker.")
 
-        in_bz = bool(row.get("buyzone_flag", False))
+        in_bz = bool(snap.get("buyzone_flag", False))
         bz_bg = "#4CAF50" if in_bz else "#E0E0E0"
         bz_txt = "white" if in_bz else "black"
         if in_bz:
             bz_main = "Triggered"
-            bz_sub = f"since {pd.to_datetime(row.get('bz_start_date')).strftime('%Y-%m-%d')}" if row.get('bz_start_date') else ""
+            bz_sub = f"since {pd.to_datetime(snap.get('bz_start_date')).strftime('%Y-%m-%d')}" if snap.get("bz_start_date") else ""
         else:
             bz_main = "No Signal"
-            bz_sub = f"left {pd.to_datetime(row.get('bz_end_date')).strftime('%Y-%m-%d')}" if row.get('bz_end_date') else ""
-        with col_bz:
+            bz_sub = f"left {pd.to_datetime(snap.get('bz_end_date')).strftime('%Y-%m-%d')}" if snap.get("bz_end_date") else ""
+        with row2[0]:
             render_metric_card("BuyZone", bz_main, bz_sub, bz_bg, bz_txt)
-            if st.button("🔍 Show Details", key="bz_details"):
-                st.session_state["view"] = "BZ"
 
-        fvg_dir = row.get("fvg_last_direction")
-        fvg_date = pd.to_datetime(row.get("fvg_last_date")).strftime('%Y-%m-%d') if row.get('fvg_last_date') else "—"
+        fvg_dir = snap.get("fvg_last_direction")
+        fvg_date = pd.to_datetime(snap.get("fvg_last_date")).strftime('%Y-%m-%d') if snap.get("fvg_last_date") else "—"
         fvg_bg = "#4CAF50" if fvg_dir == "bullish" else "#F44336" if fvg_dir == "bearish" else "#90CAF9"
-        fvg_txt = "white"
         fvg_main = (fvg_dir or "No Gap").capitalize()
         fvg_sub = f"last {fvg_date}"
-        with col_fvg:
-            render_metric_card("Fair Value Gap", fvg_main, fvg_sub, fvg_bg, fvg_txt)
-            if st.button("🔍 Show Details", key="fvg_details"):
-                st.session_state["view"] = "FVG"
+        with row2[1]:
+            render_metric_card("Fair Value Gap", fvg_main, fvg_sub, fvg_bg, "white")
 
-        query_view = st.query_params.get("view")
-        if query_view:
-            st.session_state["view"] = query_view
+        with row2[2]:
+            render_company_cycle_card(company_cycle)
 
-        view = st.session_state.get("view")
-        if view:
-            st.markdown("---")
-            if view == "GV":
-                render_gv_details(ticker, engine)
-            elif view == "GY":
-                render_yield_details(ticker, engine)
-            elif view == "BZ":
-                render_buyzone_details(ticker, engine)
-            elif view == "FVG":
-                render_fvg_details(ticker, engine)
+        with row2[3]:
+            render_sector_backdrop_card(sector_cycle)
+
+    render_signal_summary(bundle)
+
+    # ----------------------------------------------------------
+    # Detail Tabs
+    # ----------------------------------------------------------
+    engine = get_engine()
+
+    tab_overview, tab_valuation, tab_technicals, tab_cycle = st.tabs([
+        "Overview",
+        "Valuation",
+        "Technicals",
+        "Cycle",
+    ])
+
+    with tab_overview:
+        st.subheader("Overview")
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            st.metric(
+                "Greer Company Index",
+                f"{company_cycle.get('greer_company_index', 0):.2f}" if company_cycle else "—",
+                help="Average of company health, direction, and opportunity."
+            )
+
+        with c2:
+            conf_pct = round(float(company_cycle.get("confidence", 0)) * 100) if company_cycle else None
+            st.metric(
+                "Company Confidence",
+                f"{conf_pct}%" if conf_pct is not None else "—",
+            )
+
+        with c3:
+            st.metric(
+                "Transition Risk",
+                company_cycle.get("transition_risk", "—") if company_cycle else "—",
+            )
+
+        st.markdown("---")
+        st.markdown("### Current Phase")
+        if company_cycle:
+            phase_badge_inline(company_cycle["phase"], company_cycle["confidence"], label_prefix="Company Phase")
+            st.caption(phase_interpretation_text(company_cycle["phase"], company_cycle["confidence"]))
+            st.caption(phase_confidence_note(company_cycle["confidence"]))
+
+        st.markdown("---")
+        st.markdown("### At-a-glance Notes")
+        notes = []
+
+        if pd.notnull(gv_score):
+            notes.append(f"- **Greer Value:** {float(gv_score):.1f}% ({gv_grade})")
+        if ys_score is not None:
+            notes.append(f"- **Yield Score:** {ys_score}/4 ({y_grade})")
+        if not gfv_df.empty:
+            gfv_row = gfv_df.iloc[0]
+            upside_pct = safe_pct_to_fair_value(gfv_row.get("close_price"), gfv_row.get("gfv_price"))
+            if upside_pct is not None:
+                sign = "+" if upside_pct >= 0 else ""
+                notes.append(f"- **GFV Upside:** {sign}{upside_pct:.1f}%")
+        notes.append(f"- **BuyZone:** {'Triggered' if in_bz else 'Not active'}")
+        notes.append(f"- **FVG:** {(fvg_dir or 'None').capitalize()}")
+
+        st.markdown("\n".join(notes))
+
+    with tab_valuation:
+        st.subheader("Valuation")
+        render_gv_details(ticker, engine)
+        st.markdown("---")
+        render_yield_details(ticker, engine)
+
+    with tab_technicals:
+        st.subheader("Technicals")
+        render_buyzone_details(ticker, engine)
+        st.markdown("---")
+        render_fvg_details(ticker, engine)
+
+    with tab_cycle:
+        st.subheader("Company & Sector Cycle")
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.markdown("### Company Cycle")
+            if company_cycle:
+                st.write(
+                    {
+                        "Ticker": ticker,
+                        "Health %": company_cycle.get("health_pct"),
+                        "Direction %": company_cycle.get("direction_pct"),
+                        "Opportunity %": company_cycle.get("opportunity_pct"),
+                        "Greer Company Index": company_cycle.get("greer_company_index"),
+                        "Phase": company_cycle.get("phase"),
+                        "Confidence %": round(float(company_cycle.get("confidence", 0)) * 100, 1),
+                        "Transition Risk": company_cycle.get("transition_risk"),
+                    }
+                )
+
+        with c2:
+            st.markdown("### Sector Backdrop")
+            if sector_cycle:
+                st.write(
+                    {
+                        "Sector": snap.get("sector"),
+                        "Sector Direction %": sector_cycle.get("sector_direction_pct"),
+                        "Sector Phase": sector_cycle.get("sector_phase"),
+                        "Sector Confidence %": round(float(sector_cycle.get("sector_confidence", 0)) * 100, 1) if sector_cycle.get("sector_confidence") is not None else None,
+                        "Sector Greer Market Index": sector_cycle.get("sector_greer_market_index"),
+                    }
+                )
 
 
 # ----------------------------------------------------------
