@@ -1,5 +1,7 @@
 # Home.py
 import streamlit as st
+import plotly.graph_objects as go
+import streamlit.components.v1 as components
 
 # ----------------------------------------------------------
 # HOME UI
@@ -137,6 +139,233 @@ def render_home():
     # ----------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------
+    def render_cycle_strip(current_phase: str):
+        phase = str(current_phase).strip().upper()
+
+        phases = ["RECOVERY", "EXPANSION", "EUPHORIA", "CONTRACTION"]
+
+        colors = {
+            "RECOVERY": "#5BC0DE",
+            "EXPANSION": "#5CB85C",
+            "EUPHORIA": "#F0AD4E",
+            "CONTRACTION": "#D9534F",
+        }
+
+        icons = {
+            "RECOVERY": "🩹",
+            "EXPANSION": "📈",
+            "EUPHORIA": "🔥",
+            "CONTRACTION": "📉",
+        }
+
+        if phase not in phases:
+            phase = phases[0]
+
+        st.markdown(
+            """
+            <style>
+              .cycle-wrap{
+                display:flex;
+                align-items:center;
+                gap:10px;
+                flex-wrap:wrap;
+                margin-top:6px;
+                margin-bottom:6px;
+              }
+              .cycle-step{
+                display:flex;
+                align-items:center;
+                gap:8px;
+                padding:8px 12px;
+                border-radius:999px;
+                border:1px solid rgba(0,0,0,0.08);
+                background: rgba(255,255,255,0.65);
+                font-size:12px;
+                font-weight:700;
+                letter-spacing:0.2px;
+                color:#1F2937;
+              }
+              .cycle-step .dot{
+                width:10px; height:10px;
+                border-radius:50%;
+                display:inline-block;
+              }
+              .cycle-arrow{
+                font-size:18px;
+                opacity:0.55;
+                user-select:none;
+              }
+              .cycle-active{
+                box-shadow: 0 6px 18px rgba(0,0,0,0.10);
+                border: 2px solid rgba(0,0,0,0.08);
+                transform: translateY(-1px);
+              }
+              .cycle-sub{
+                margin-top:2px;
+                opacity:0.75;
+                font-size:12px;
+              }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        parts = ['<div class="cycle-wrap">']
+        for i, p in enumerate(phases):
+            is_active = (p == phase)
+            dot = colors.get(p, "#999999")
+            icon = icons.get(p, "•")
+            cls = "cycle-step cycle-active" if is_active else "cycle-step"
+
+            parts.append(
+                f"""
+                <div class="{cls}">
+                  <span class="dot" style="background:{dot};"></span>
+                  <span>{icon} {p.title()}</span>
+                </div>
+                """
+            )
+
+            if i < len(phases) - 1:
+                parts.append('<div class="cycle-arrow">→</div>')
+
+        parts.append("</div>")
+        parts.append(
+            f"""
+            <div class="cycle-sub">
+              You are here: <b>{phase.title()}</b>
+            </div>
+            """
+        )
+
+        st.markdown("".join(parts), unsafe_allow_html=True)
+
+    def dial_bucket(value: float) -> str:
+        x = float(value)
+        if x <= 24:
+            return "weak"
+        if x <= 49:
+            return "mixed"
+        if 49 < x < 51:
+            return "neutral"
+        if x <= 74:
+            return "strong"
+        return "very_strong"
+
+
+    def dial_label(bucket: str) -> str:
+        return {
+            "weak": "Weak 🔴",
+            "mixed": "Mixed 🟡",
+            "neutral": "Neutral ⚪",
+            "strong": "Strong 🟢",
+            "very_strong": "Very Strong 🟩",
+        }.get(bucket, "Mixed 🟡")
+
+    def bar_color(value: float) -> str:
+        v = float(value)
+        if v <= 24:
+            return "#D9534F"
+        if v <= 49:
+            return "#F0AD4E"
+        if v < 51:
+            return "#DDDDDD"
+        if v <= 74:
+            return "#A6D96A"
+        return "#5CB85C"
+
+    def render_horizontal_score_bar(title: str, value: float, subtitle: str = ""):
+        v = clamp(float(value), 0.0, 100.0)
+        color = bar_color(v)
+        bucket = dial_bucket(v)
+
+        html = f"""
+        <div style="margin-bottom:14px; font-family: sans-serif;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <div style="font-weight:700; font-size:15px;">{title}</div>
+                <div style="font-weight:700; font-size:15px;">{v:.1f}%</div>
+            </div>
+
+            <div style="width:100%; background:#E5E7EB; border-radius:999px; height:14px; overflow:hidden; border:1px solid rgba(0,0,0,0.06);">
+                <div style="width:{v}%; background:{color}; height:100%; border-radius:999px;"></div>
+            </div>
+
+            <div style="
+                margin-top:5px;
+                font-size:12px;
+                color:#6B7280;
+            ">
+                {subtitle} <span style="opacity:0.5;">•</span> <span style="font-weight:600;">{dial_label(bucket)}</span>
+            </div>
+        </div>
+        """
+
+        components.html(html, height=80)
+
+    def render_semicircle_gauge(title: str, value: float, subtitle: str, chart_key: str):
+        v = clamp(float(value), 0.0, 100.0)
+        b = dial_bucket(v)
+
+        fig = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=v,
+                number={"suffix": "%", "font": {"size": 28}},
+                gauge={
+                    "shape": "angular",
+                    "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#999999"},
+                    "bar": {"color": "#777777", "thickness": 0.28},
+                    "bgcolor": "white",
+                    "borderwidth": 0,
+                    "steps": [
+                        {"range": [0, 24], "color": "#D9534F"},
+                        {"range": [25, 49], "color": "#F0AD4E"},
+                        {"range": [50, 50], "color": "#DDDDDD"},
+                        {"range": [51, 74], "color": "#A6D96A"},
+                        {"range": [75, 100], "color": "#5CB85C"},
+                    ],
+                    "threshold": {
+                        "line": {"color": "#666666", "width": 6},
+                        "thickness": 0.8,
+                        "value": v,
+                    },
+                },
+            )
+        )
+
+        fig.update_layout(
+            height=180,
+            margin=dict(l=10, r=10, t=10, b=10),
+            paper_bgcolor="white",
+            font=dict(color="#222222"),
+        )
+
+        st.subheader(title)
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=chart_key,
+        )
+
+        st.caption(f"Status: **{dial_label(b)}**")
+
+        if subtitle:
+            st.markdown(
+                f"""
+                <div style="
+                    margin-top: -2px;
+                    font-size: 12px;
+                    line-height: 1.35;
+                    color: #6B7280;
+                ">
+                    {subtitle}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        
     def index_color(score):
         if score is None or pd.isnull(score):
             return "#9CA3AF"
@@ -1314,36 +1543,117 @@ def render_home():
     with tab_cycle:
         st.subheader("Company & Sector Cycle")
 
-        c1, c2 = st.columns(2)
+        # ----------------------------------------------------------
+        # Phase strips
+        # ----------------------------------------------------------
+        strip_c1, strip_c2 = st.columns(2)
 
-        with c1:
-            st.markdown("### Company Cycle")
+        with strip_c1:
+            st.markdown("### Company Phase")
             if company_cycle:
-                st.write(
-                    {
-                        "Ticker": ticker,
-                        "Health %": company_cycle.get("health_pct"),
-                        "Direction %": company_cycle.get("direction_pct"),
-                        "Opportunity %": company_cycle.get("opportunity_pct"),
-                        "Greer Company Index": company_cycle.get("greer_company_index"),
-                        "Phase": company_cycle.get("phase"),
-                        "Confidence %": round(float(company_cycle.get("confidence", 0)) * 100, 1),
-                        "Transition Risk": company_cycle.get("transition_risk"),
-                    }
+                render_cycle_strip(company_cycle.get("phase"))
+
+        with strip_c2:
+            st.markdown("### Sector Phase")
+            if sector_cycle and sector_cycle.get("sector_phase"):
+                render_cycle_strip(sector_cycle.get("sector_phase"))
+
+        st.divider()
+
+        # ----------------------------------------------------------
+        # Main gauges
+        # ----------------------------------------------------------
+        g1, g2 = st.columns(2)
+
+        with g1:
+            if company_cycle:
+                render_semicircle_gauge(
+                    "🏢 Greer Company Index",
+                    company_cycle.get("greer_company_index", 0.0),
+                    "Overall company cycle score based on Health, Direction, and Opportunity.",
+                    chart_key=f"{ticker}_company_index_gauge",
                 )
 
-        with c2:
-            st.markdown("### Sector Backdrop")
-            if sector_cycle:
-                st.write(
-                    {
-                        "Sector": snap.get("sector"),
-                        "Sector Direction %": sector_cycle.get("sector_direction_pct"),
-                        "Sector Phase": sector_cycle.get("sector_phase"),
-                        "Sector Confidence %": round(float(sector_cycle.get("sector_confidence", 0)) * 100, 1) if sector_cycle.get("sector_confidence") is not None else None,
-                        "Sector Greer Market Index": sector_cycle.get("sector_greer_market_index"),
-                    }
+        with g2:
+            if sector_cycle and sector_cycle.get("sector_greer_market_index") is not None:
+                render_semicircle_gauge(
+                    "🏭 Greer Sector Index",
+                    sector_cycle.get("sector_greer_market_index", 0.0),
+                    "Overall sector backdrop score for this company’s sector.",
+                    chart_key=f"{ticker}_sector_index_gauge",
                 )
+
+        st.divider()
+
+        # ----------------------------------------------------------
+        # Component gauges
+        # ----------------------------------------------------------
+        st.markdown("### Company Cycle Components")
+
+        if company_cycle:
+            render_horizontal_score_bar(
+                "🟢 Health",
+                company_cycle.get("health_pct", 0.0),
+                "Fundamental quality",
+            )
+
+            render_horizontal_score_bar(
+                "📉 Direction",
+                company_cycle.get("direction_pct", 0.0),
+                "Technical + sector backdrop",
+            )
+
+            render_horizontal_score_bar(
+                "💰 Opportunity",
+                company_cycle.get("opportunity_pct", 0.0),
+                "Valuation opportunity",
+            )
+
+        st.divider()
+
+        # ----------------------------------------------------------
+        # Summary stats
+        # ----------------------------------------------------------
+        def render_mini_metric(label: str, value: str):
+            st.markdown(
+                f"""
+                <div style="padding:6px 4px;">
+                    <div style="font-size:12px; color:#6B7280; margin-bottom:2px;">
+                        {label}
+                    </div>
+                    <div style="font-size:20px; font-weight:600; color:#111827;">
+                        {value}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        s1, s2, s3, s4 = st.columns(4)
+
+        with s1:
+            render_mini_metric(
+                "Company Phase",
+                phase_label_with_icon(company_cycle.get("phase")) if company_cycle else "—"
+            )
+
+        with s2:
+            conf = round(float(company_cycle.get("confidence", 0)) * 100) if company_cycle else None
+            render_mini_metric(
+                "Company Confidence",
+                f"{conf}%" if conf is not None else "—"
+            )
+
+        with s3:
+            render_mini_metric(
+                "Transition Risk",
+                company_cycle.get("transition_risk", "—") if company_cycle else "—"
+            )
+
+        with s4:
+            render_mini_metric(
+                "Sector Phase",
+                phase_label_with_icon(sector_cycle.get("sector_phase")) if sector_cycle else "—"
+            )
 
 
 # ----------------------------------------------------------
