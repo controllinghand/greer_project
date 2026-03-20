@@ -732,6 +732,12 @@ def render_home():
               summary_date,
               sector,
               total_companies,
+
+              gv_gold, gv_green, gv_red,
+              ys_gold, ys_green, ys_red,
+              gfv_gold, gfv_green, gfv_red, gfv_gray,
+
+              buyzone_count,
               buyzone_pct,
               greer_market_index
             FROM sector_summary_daily
@@ -781,31 +787,42 @@ def render_home():
         bundle["sector_context"] = sector_df
 
         sector_direction_pct = 50.0
+        sector_health_pct = None
+        sector_opportunity_pct = None
         sector_gmi = None
         sector_phase = None
         sector_conf = None
 
         if not sector_df.empty:
             srow = sector_df.iloc[0]
+            total = int(srow["total_companies"]) if pd.notnull(srow["total_companies"]) else 0
+
             sector_buyzone_pct = float(srow["buyzone_pct"]) if pd.notnull(srow["buyzone_pct"]) else 50.0
             sector_direction_pct = round(100.0 - sector_buyzone_pct, 1)
             sector_gmi = srow.get("greer_market_index")
 
-            gv_score = row.get("greer_value_score")
-            above_50_count = row.get("above_50_count")
-            ys_score = row.get("greer_yield_score")
+            gv_bullish_pct = (
+                ((int(srow["gv_green"]) + int(srow["gv_gold"])) / total) * 100.0
+                if total else 0.0
+            )
 
-            gfv_status = None
-            if not gfv_df.empty:
-                gfv_status = gfv_df.iloc[0].get("gfv_status")
+            ys_bullish_pct = (
+                ((int(srow["ys_green"]) + int(srow["ys_gold"])) / total) * 100.0
+                if total else 0.0
+            )
 
-            health_pct = compute_health_pct(gv_score, above_50_count)
-            opportunity_pct = compute_opportunity_pct(ys_score, gfv_status)
+            gfv_bullish_pct = (
+                ((int(srow["gfv_green"]) + int(srow["gfv_gold"])) / total) * 100.0
+                if total else 0.0
+            )
+
+            sector_health_pct = round(gv_bullish_pct, 1)
+            sector_opportunity_pct = round((ys_bullish_pct + gfv_bullish_pct) / 2.0, 1)
 
             sector_phase, sector_conf = classify_phase_with_confidence(
-                health_pct,
+                sector_health_pct,
                 sector_buyzone_pct,
-                opportunity_pct,
+                sector_opportunity_pct,
             )
 
         gfv_status = None
@@ -839,7 +856,9 @@ def render_home():
         }
 
         bundle["sector_cycle"] = {
+            "sector_health_pct": sector_health_pct,
             "sector_direction_pct": sector_direction_pct,
+            "sector_opportunity_pct": sector_opportunity_pct,
             "sector_phase": sector_phase,
             "sector_confidence": round(sector_conf, 4) if sector_conf is not None else None,
             "sector_greer_market_index": sector_gmi,
@@ -1472,14 +1491,21 @@ def render_home():
         )
 
         sector_gmi = sector_cycle.get("sector_greer_market_index") if sector_cycle else None
-        sector_backdrop_label = "Weak Backdrop"
-        if sector_gmi is not None and pd.notnull(sector_gmi) and float(sector_gmi) >= 55:
-            sector_backdrop_label = "Supportive Backdrop"
+        sector_conf = sector_cycle.get("sector_confidence") if sector_cycle else None
+
+        sector_subtitle = "No data"
+        if sector_cycle and sector_gmi is not None and pd.notnull(sector_gmi):
+            conf_pct = round(float(sector_conf or 0) * 100)
+
+            sector_subtitle = (
+                f"{phase_label_with_icon(sector_cycle.get('sector_phase'))} "
+                f"• {conf_pct}% confidence"
+            )
 
         render_top_score_bar(
             "Greer Sector Index",
             float(sector_gmi) if sector_gmi is not None and pd.notnull(sector_gmi) else 0.0,
-            f"{phase_label_with_icon(sector_cycle.get('sector_phase'))} • {sector_backdrop_label}" if sector_cycle else "No data",
+            sector_subtitle,
         )
     with top_right:
         st.markdown("**Status**")
@@ -1648,27 +1674,52 @@ def render_home():
                 )
 
         st.divider()
+        st.markdown("### Cycle Components")
 
-        st.markdown("### Company Cycle Components")
+        comp_col, sect_col = st.columns(2)
 
-        if company_cycle:
-            render_horizontal_score_bar(
-                "🟢 Health",
-                company_cycle.get("health_pct", 0.0),
-                "Fundamental quality",
-            )
+        with comp_col:
+            st.markdown("#### Company")
+            if company_cycle:
+                render_horizontal_score_bar(
+                    "🟢 Health",
+                    company_cycle.get("health_pct", 0.0),
+                    "Fundamental quality",
+                )
 
-            render_horizontal_score_bar(
-                "📉 Direction",
-                company_cycle.get("direction_pct", 0.0),
-                "Technical + sector backdrop",
-            )
+                render_horizontal_score_bar(
+                    "📉 Direction",
+                    company_cycle.get("direction_pct", 0.0),
+                    "Technical + sector backdrop",
+                )
 
-            render_horizontal_score_bar(
-                "💰 Opportunity",
-                company_cycle.get("opportunity_pct", 0.0),
-                "Valuation opportunity",
-            )
+                render_horizontal_score_bar(
+                    "💰 Opportunity",
+                    company_cycle.get("opportunity_pct", 0.0),
+                    "Valuation opportunity",
+                )
+
+        with sect_col:
+            st.markdown("#### Sector")
+            if sector_cycle:
+                render_horizontal_score_bar(
+                    "🟢 Health",
+                    sector_cycle.get("sector_health_pct", 0.0) or 0.0,
+                    "Sector fundamental breadth",
+                )
+
+                render_horizontal_score_bar(
+                    "📉 Direction",
+                    sector_cycle.get("sector_direction_pct", 0.0) or 0.0,
+                    "100 - sector BuyZone %",
+                )
+
+                render_horizontal_score_bar(
+                    "💰 Opportunity",
+                    sector_cycle.get("sector_opportunity_pct", 0.0) or 0.0,
+                    "Sector valuation breadth",
+                )
+
 
         st.divider()
 
