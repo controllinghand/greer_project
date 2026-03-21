@@ -34,6 +34,166 @@ WEBHOOK_YR3G_TRADES = os.getenv("DISCORD_WEBHOOK_YR3G_TRADES")
 WEBHOOK_YROG_TRADES = os.getenv("DISCORD_WEBHOOK_YROG_TRADES")
 WEBHOOK_YRVG_TRADES = os.getenv("DISCORD_WEBHOOK_YRVG_TRADES")
 
+WEBHOOK_GOI_WEEKLY = os.getenv("DISCORD_WEBHOOK_GOI_WEEKLY")
+
+# ----------------------------------------------------------
+# Load latest and prior-week Greer Opportunity Index rows
+# ----------------------------------------------------------
+def load_goi_weekly_rows(asof: date) -> tuple[dict | None, dict | None]:
+    sql = """
+        WITH latest_row AS (
+            SELECT
+                date,
+                buyzone_count,
+                total_tickers,
+                buyzone_pct
+            FROM buyzone_breadth
+            WHERE date <= :asof
+            ORDER BY date DESC
+            LIMIT 1
+        ),
+        prior_row AS (
+            SELECT
+                date,
+                buyzone_count,
+                total_tickers,
+                buyzone_pct
+            FROM buyzone_breadth
+            WHERE date <= :prior_asof
+            ORDER BY date DESC
+            LIMIT 1
+        )
+        SELECT
+            'latest' AS row_type,
+            date,
+            buyzone_count,
+            total_tickers,
+            buyzone_pct
+        FROM latest_row
+
+        UNION ALL
+
+        SELECT
+            'prior' AS row_type,
+            date,
+            buyzone_count,
+            total_tickers,
+            buyzone_pct
+        FROM prior_row
+    """
+
+    prior_asof = asof - timedelta(days=7)
+
+    with get_engine().connect() as conn:
+        df = pd.read_sql(
+            text(sql),
+            conn,
+            params={"asof": asof, "prior_asof": prior_asof},
+            parse_dates=["date"],
+        )
+
+    if df.empty:
+        return None, None
+
+    latest_row = df[df["row_type"] == "latest"]
+    prior_row = df[df["row_type"] == "prior"]
+
+    latest = latest_row.iloc[0].to_dict() if not latest_row.empty else None
+    prior = prior_row.iloc[0].to_dict() if not prior_row.empty else None
+
+    return latest, prior
+
+
+# ----------------------------------------------------------
+# Determine GOI zone
+# ----------------------------------------------------------
+def get_goi_zone(pct: float) -> str:
+    if pct < 10:
+        return "Extreme Greed"
+    if pct < 14:
+        return "Low Opportunity"
+    if pct < 46:
+        return "Normal Range"
+    if pct < 66:
+        return "Elevated Opportunity"
+    return "Extreme Opportunity"
+
+
+# ----------------------------------------------------------
+# GOI interpretation text
+# ----------------------------------------------------------
+def get_goi_interpretation(zone: str) -> str:
+    if zone == "Extreme Opportunity":
+        return "Broad opportunity is very high. Historically this has aligned with panic-style conditions."
+    if zone == "Elevated Opportunity":
+        return "Opportunity is expanding across the market. Conditions are becoming more attractive."
+    if zone == "Normal Range":
+        return "Market is in a typical environment. Selectivity matters most here."
+    if zone == "Low Opportunity":
+        return "Market is relatively strong. Good opportunities are more limited."
+    return "Market is overheated. Opportunity is scarce and risk is elevated."
+
+
+# ----------------------------------------------------------
+# Build weekly GOI Discord message
+# ----------------------------------------------------------
+def build_goi_weekly_message(latest: dict, prior: dict | None) -> str:
+    current_pct = float(latest["buyzone_pct"])
+    current_count = int(latest["buyzone_count"])
+    total_tickers = int(latest["total_tickers"])
+    latest_date = pd.to_datetime(latest["date"]).strftime("%b %-d, %Y")
+
+    zone = get_goi_zone(current_pct)
+    interpretation = get_goi_interpretation(zone)
+
+    change_line = "N/A"
+    trend_line = "N/A"
+
+    if prior is not None:
+        prior_pct = float(prior["buyzone_pct"])
+        delta = round(current_pct - prior_pct, 1)
+
+        if delta > 0:
+            trend_line = "Rising 📈"
+        elif delta < 0:
+            trend_line = "Falling 📉"
+        else:
+            trend_line = "Flat ➡️"
+
+        change_line = f"{delta:+.1f} pts"
+
+    lines = []
+    lines.append("🎯 **Greer Opportunity Index — Weekly Update**")
+    lines.append(f"**As of:** {latest_date}")
+    lines.append("")
+    lines.append(f"Current: **{current_pct:.1f}%**")
+    lines.append(f"Zone: **{zone}**")
+    lines.append(f"Companies in BuyZone: **{current_count:,} / {total_tickers:,}**")
+    lines.append(f"Weekly Change: **{change_line}**")
+    lines.append(f"Trend: **{trend_line}**")
+    lines.append("")
+    lines.append(f"💡 **What it means:** {interpretation}")
+
+    return "\n".join(lines)
+
+
+# ----------------------------------------------------------
+# Post weekly GOI update on Mondays only
+# ----------------------------------------------------------
+def post_weekly_goi_update(asof: date) -> None:
+    if asof.weekday() != 0:
+        print("[INFO] Skipping GOI weekly update - not Monday")
+        return
+
+    print("[INFO] Loading Greer Opportunity Index weekly data")
+    latest, prior = load_goi_weekly_rows(asof)
+
+    if latest is None:
+        print("[WARNING] No GOI data found")
+        return
+
+    message = build_goi_weekly_message(latest, prior)
+    post_to_discord(message, WEBHOOK_GOI_WEEKLY, "GOI Weekly Update")
 
 # ----------------------------------------------------------
 # Growth fund trade webhooks
@@ -644,6 +804,7 @@ def post_all_discord_updates() -> None:
     post_to_discord(comparison_msg, WEBHOOK_FUND_COMPARISON, "Fund Comparison")
     post_to_discord(leaderboard_msg, WEBHOOK_FUND_LEADERBOARD, "Fund Leaderboard")
     post_recent_fund_trades(asof)
+    post_weekly_goi_update(asof)
 
     # ----------------------------------------------------------
     # Optional: only post weekly on Fridays
