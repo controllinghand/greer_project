@@ -22,12 +22,12 @@ def load_buyzone_history(days: int = 365) -> pd.DataFrame:
     return pd.read_sql(
         f"""
         SELECT
-            summary_date,
-            total_companies,
+            date AS summary_date,
+            total_tickers AS total_companies,
             buyzone_count,
             buyzone_pct
-        FROM dashboard_summary_daily
-        ORDER BY summary_date DESC
+        FROM buyzone_breadth
+        ORDER BY date DESC
         LIMIT {days};
         """,
         engine
@@ -63,7 +63,7 @@ def classify_buyzone_count(value: float) -> tuple[str, str]:
     if value < LOW_THRESHOLD:
         return "🟢 Low Participation", "Few stocks are in BuyZone. Market stress looks contained."
     if value < NORMAL_THRESHOLD:
-        return "🔵 Normal Range", "BuyZone count is within a typical working range."
+        return "🔵Normal Range", "BuyZone count is within a typical working range."
     if value < ELEVATED_THRESHOLD:
         return "🟠 Elevated Opportunity", "A larger-than-normal group of stocks is entering BuyZone."
     return "🔴 Broad Stress", "BuyZone participation is unusually high across the universe."
