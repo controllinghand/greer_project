@@ -192,7 +192,7 @@ def save_to_db(ticker: str, df: pd.DataFrame) -> None:
 
 
 # ----------------------------------------------------------
-# Refresh buyzone_breadth from greer_buyzone_daily + prices
+# Refresh buyzone_breadth from greer_buyzone_daily
 # This powers the Greer Opportunity Index
 # ----------------------------------------------------------
 def refresh_buyzone_breadth() -> None:
@@ -203,32 +203,16 @@ def refresh_buyzone_breadth() -> None:
             total_tickers,
             buyzone_pct
         )
-        WITH daily_buyzone AS (
-            SELECT
-                date,
-                COUNT(*) AS buyzone_count
-            FROM greer_buyzone_daily
-            WHERE in_buyzone = TRUE
-            GROUP BY date
-        ),
-        daily_universe AS (
-            SELECT
-                date,
-                COUNT(DISTINCT ticker) AS total_tickers
-            FROM prices
-            GROUP BY date
-        )
         SELECT
-            u.date,
-            COALESCE(b.buyzone_count, 0) AS buyzone_count,
-            u.total_tickers,
+            date,
+            COUNT(*) FILTER (WHERE in_buyzone = TRUE) AS buyzone_count,
+            COUNT(*) AS total_tickers,
             ROUND(
-                100.0 * COALESCE(b.buyzone_count, 0) / u.total_tickers,
+                100.0 * COUNT(*) FILTER (WHERE in_buyzone = TRUE) / NULLIF(COUNT(*), 0),
                 4
             ) AS buyzone_pct
-        FROM daily_universe u
-        LEFT JOIN daily_buyzone b
-            ON u.date = b.date
+        FROM greer_buyzone_daily
+        GROUP BY date
         ON CONFLICT (date) DO UPDATE SET
             buyzone_count = EXCLUDED.buyzone_count,
             total_tickers = EXCLUDED.total_tickers,
