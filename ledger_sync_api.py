@@ -16,6 +16,24 @@ app = Flask(__name__)
 
 SYNC_SECRET = os.getenv("GSHEET_SYNC_SECRET")
 
+# ----------------------------------------------------------
+# Health Check Endpoint
+# ----------------------------------------------------------
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/health/db")
+def health_db():
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+
 print(f"LOADED FILE: {__file__}")
 print("REGISTERED ROUTES:")
 for rule in app.url_map.iter_rules():
