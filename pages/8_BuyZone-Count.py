@@ -46,8 +46,8 @@ df["buyzone_count"] = pd.to_numeric(df["buyzone_count"], errors="coerce").fillna
 df["buyzone_pct"] = pd.to_numeric(df["buyzone_pct"], errors="coerce").fillna(0)
 df["total_companies"] = pd.to_numeric(df["total_companies"], errors="coerce").fillna(0)
 
-df["bz_7dma"] = df["buyzone_count"].rolling(7, min_periods=1).mean()
-df["bz_pct_7dma"] = df["buyzone_pct"].rolling(7, min_periods=1).mean()
+df["bz_50dma"] = df["buyzone_count"].rolling(50, min_periods=1).mean()
+df["bz_pct_50dma"] = df["buyzone_pct"].rolling(50, min_periods=1).mean()
 
 latest = df.iloc[-1]
 prev = df.iloc[-2] if len(df) > 1 else latest
@@ -121,8 +121,8 @@ with c2:
 
 with c3:
     st.metric(
-        "7-Day Avg Count",
-        f"{latest['bz_7dma']:.1f}",
+        "50-Day Avg Count",
+        f"{latest['bz_50dma']:.1f}",
         f"{week_delta:+.0f} vs ~5 days ago"
     )
 
@@ -152,9 +152,9 @@ fig.add_trace(
 fig.add_trace(
     go.Scatter(
         x=df["summary_date"],
-        y=df["bz_7dma"],
+        y=df["bz_50dma"],
         mode="lines",
-        name="7-Day Avg",
+        name="50-Day Avg",
         line=dict(dash="dash")
     )
 )
@@ -210,9 +210,9 @@ fig_pct.add_trace(
 fig_pct.add_trace(
     go.Scatter(
         x=df["summary_date"],
-        y=df["bz_pct_7dma"],
+        y=df["bz_pct_50dma"],
         mode="lines",
-        name="7-Day Avg %",
+        name="50-Day Avg %",
         line=dict(dash="dash")
     )
 )
@@ -231,8 +231,8 @@ st.plotly_chart(fig_pct, use_container_width=True)
 # ----------------------------------------------------------
 st.subheader("Recent Readings")
 
-show = df[["summary_date", "buyzone_count", "buyzone_pct", "bz_7dma", "bz_pct_7dma", "total_companies"]].copy()
-show.columns = ["Date", "BuyZone Count", "BuyZone %", "7-Day Avg Count", "7-Day Avg %", "Universe"]
+show = df[["summary_date", "buyzone_count", "buyzone_pct", "bz_50dma", "bz_pct_50dma", "total_companies"]].copy()
+show.columns = ["Date", "BuyZone Count", "BuyZone %", "50-Day Avg Count", "50-Day Avg %", "Universe"]
 show = show.sort_values("Date", ascending=False)
 
 st.dataframe(show, use_container_width=True, hide_index=True)
