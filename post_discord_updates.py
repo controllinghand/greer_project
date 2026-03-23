@@ -694,6 +694,78 @@ def build_fund_leaderboard_message(df: pd.DataFrame, asof: date) -> str:
 
     return "\n".join(lines)
 
+# ----------------------------------------------------------
+# Build weekly narrative sections for scorecard
+# ----------------------------------------------------------
+def build_weekly_narrative(df: pd.DataFrame, asof: date) -> tuple[list[str], list[str], list[str]]:
+    worked: list[str] = []
+    didnt: list[str] = []
+    focus: list[str] = []
+
+    if df.empty:
+        return worked, didnt, focus
+
+    income_df = df[df["Type"] == "Income"].copy()
+    growth_df = df[df["Type"] == "Growth"].copy()
+    baseline_df = df[df["Type"] == "Baseline"].copy()
+
+    income_avg = income_df["Return"].mean() if not income_df.empty else None
+    growth_avg = growth_df["Return"].mean() if not growth_df.empty else None
+    baseline_avg = baseline_df["Return"].mean() if not baseline_df.empty else None
+
+    best = df.iloc[0]
+    worst = df.iloc[-1]
+
+    # ----------------------------------------------------------
+    # What Worked
+    # ----------------------------------------------------------
+    if income_avg is not None and income_avg > 0:
+        worked.append("Income strategies held up well and benefited from premium capture.")
+
+    if growth_avg is not None and baseline_avg is not None and growth_avg > baseline_avg:
+        worked.append("Growth portfolios outperformed the baseline group on a relative basis.")
+
+    if pd.notna(best["Return"]) and float(best["Return"]) > 0:
+        worked.append(f"{best['Code']} led the week and helped anchor overall performance.")
+
+    # ----------------------------------------------------------
+    # What Didn't
+    # ----------------------------------------------------------
+    if growth_avg is not None and growth_avg < 0:
+        didnt.append("Growth exposure struggled as market conditions remained uneven.")
+
+    if baseline_avg is not None and baseline_avg < 0:
+        didnt.append("Broader market weakness created a tougher backdrop for risk assets.")
+
+    if pd.notna(worst["Return"]) and float(worst["Return"]) < 0:
+        didnt.append(f"{worst['Code']} was the weakest performer this week and weighed on results.")
+
+    # ----------------------------------------------------------
+    # Next Week Focus
+    # ----------------------------------------------------------
+    focus.append("Continue monitoring the highest-quality setups across both income and growth strategies.")
+
+    latest_goi, prior_goi = load_goi_weekly_rows(asof)
+    if latest_goi is not None:
+        current_pct = float(latest_goi["buyzone_pct"])
+        zone = get_goi_zone(current_pct)
+        focus.append(f"GOI is currently **{current_pct:.1f}%** ({zone}), which will help guide overall opportunity levels.")
+
+        if prior_goi is not None:
+            prior_pct = float(prior_goi["buyzone_pct"])
+            delta = round(current_pct - prior_pct, 1)
+
+            if delta > 0:
+                focus.append("GOI is rising, so market-wide opportunity may be expanding.")
+            elif delta < 0:
+                focus.append("GOI is falling, so selectivity and patience remain important.")
+            else:
+                focus.append("GOI is flat week-over-week, so discipline remains the priority.")
+
+    if not growth_df.empty and not income_df.empty:
+        focus.append("Use YRVI positioning to help identify the strongest equity candidates for YRVG.")
+
+    return worked, didnt, focus
 
 # ----------------------------------------------------------
 # Build weekly performance message
@@ -715,9 +787,30 @@ def build_weekly_performance_message(df: pd.DataFrame, asof: date) -> str:
     if not df.empty:
         best = df.iloc[0]
         worst = df.iloc[-1]
+
         lines.append("")
         lines.append(f"🏆 Best This Week: **{best['Code']}** {fmt_return_plain(best['Return'])}")
         lines.append(f"📉 Worst This Week: **{worst['Code']}** {fmt_return_plain(worst['Return'])}")
+
+        worked, didnt, focus = build_weekly_narrative(df, asof)
+
+        if worked:
+            lines.append("")
+            lines.append("## 🧠 What Worked")
+            for item in worked:
+                lines.append(f"* {item}")
+
+        if didnt:
+            lines.append("")
+            lines.append("## ⚠️ What Didn’t")
+            for item in didnt:
+                lines.append(f"* {item}")
+
+        if focus:
+            lines.append("")
+            lines.append("## 🔄 Next Week Focus")
+            for item in focus:
+                lines.append(f"* {item}")
 
     return "\n".join(lines)
 
