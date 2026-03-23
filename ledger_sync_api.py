@@ -469,6 +469,51 @@ def sync_ledger():
 
     return jsonify({"error": "invalid sync_type"}), 400
 
+# ----------------------------------------------------------
+# Latest GOI Endpoint
+# ----------------------------------------------------------
+@app.get("/api/goi/latest")
+def get_latest_goi():
+
+    secret = request.args.get("secret")
+    if secret != SYNC_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+
+    engine = get_engine()
+
+    query = text("""
+        SELECT
+            date,
+            buyzone_pct
+        FROM buyzone_breadth
+        ORDER BY date DESC
+        LIMIT 1
+    """)
+
+    with engine.connect() as conn:
+        row = conn.execute(query).mappings().first()
+
+    if not row:
+        return jsonify({"error": "no data"}), 404
+
+    buyzone_pct = float(row["buyzone_pct"])
+
+    if buyzone_pct < 10:
+        zone = "Extreme Greed"
+    elif buyzone_pct < 14:
+        zone = "Low Opportunity"
+    elif buyzone_pct < 46:
+        zone = "Normal Range"
+    elif buyzone_pct < 66:
+        zone = "Elevated Opportunity"
+    else:
+        zone = "Extreme Opportunity"
+
+    return jsonify({
+        "as_of": row["date"].isoformat(),
+        "buyzone_pct": round(buyzone_pct, 1),
+        "zone": zone
+    })
 
 # ----------------------------------------------------------
 # Weekly CSP Targets Endpoint
