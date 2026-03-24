@@ -47,12 +47,19 @@ def build_pages():
             st.Page("pages/12_SPY-26.py", title="  SPY-26", icon="📐"),
         ],
         "Tools": [
-            st.Page("pages/10_Opportunities_IV.py", title="Opportunities (IV)", icon="🎯"),
+            st.Page("pages/0_Fund_Build_Guide.py", title="Fund Build Guide", icon="🗺️"),
+
+            st.Page("pages/_spacer.py", title="— Fund Builders —", url_path="spacer-builders"),
+            st.Page("pages/10_Opportunities_IV.py", title="Opportunities", icon="🎯"),
             st.Page("pages/11_WK_IV_Targets.py", title="Weekly IV Targets", icon="🧲"),
-            st.Page("pages/6_Backtesting.py", title="Backtesting", icon="🧪"),
-            st.Page("pages/add_company.py", title="Add Company", icon="➕"),
             st.Page("pages/8_all_stars.py", title="All 3-Stars", icon="⭐"),
+
+            st.Page("pages/_spacer.py", title="— Research —", url_path="spacer-research"),
+            st.Page("pages/6_Backtesting.py", title="Backtesting", icon="🧪"),
             st.Page("pages/9_all_star_alumni.py", title="All 3-Stars Alumni", icon="⭐"),
+
+            st.Page("pages/_spacer.py", title="— Utilities —", url_path="spacer-utilities"),
+            st.Page("pages/add_company.py", title="Add Company", icon="➕"),
         ],
     }
 
