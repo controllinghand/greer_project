@@ -38,6 +38,61 @@ WEBHOOK_YRRG_TRADES = os.getenv("DISCORD_WEBHOOK_YRRG_TRADES")
 WEBHOOK_GOI_WEEKLY = os.getenv("DISCORD_WEBHOOK_GOI_WEEKLY")
 
 # ----------------------------------------------------------
+# Check whether a trade was already posted to a Discord channel
+# ----------------------------------------------------------
+def was_trade_posted(event_id: int, channel_key: str) -> bool:
+    sql = """
+        SELECT 1
+        FROM discord_trade_posts
+        WHERE event_id = :event_id
+          AND channel_key = :channel_key
+        LIMIT 1
+    """
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            text(sql),
+            {"event_id": int(event_id), "channel_key": channel_key},
+        ).first()
+
+    return row is not None
+
+
+# ----------------------------------------------------------
+# Record a successful Discord trade post
+# ----------------------------------------------------------
+def record_trade_post(
+    event_id: int,
+    channel_key: str,
+    discord_status_code: int | None = None,
+    discord_response_text: str | None = None,
+) -> None:
+    sql = """
+        INSERT INTO discord_trade_posts (
+            event_id,
+            channel_key,
+            discord_status_code,
+            discord_response_text
+        )
+        VALUES (
+            :event_id,
+            :channel_key,
+            :discord_status_code,
+            :discord_response_text
+        )
+        ON CONFLICT (event_id, channel_key) DO NOTHING
+    """
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(sql),
+            {
+                "event_id": int(event_id),
+                "channel_key": channel_key,
+                "discord_status_code": discord_status_code,
+                "discord_response_text": discord_response_text,
+            },
+        )
+        
+# ----------------------------------------------------------
 # Load latest and prior-week Greer Opportunity Index rows
 # ----------------------------------------------------------
 def load_goi_weekly_rows(asof: date) -> tuple[dict | None, dict | None]:
@@ -504,7 +559,7 @@ def build_growth_trade_message(row: pd.Series) -> str:
 # ----------------------------------------------------------
 def post_recent_fund_trades(asof: date) -> None:
     print("[INFO] Loading recent public fund trades")
-    trades_df = load_recent_fund_trades(asof=asof, days_back=1)
+    trades_df = load_recent_fund_trades(asof=asof, days_back=7)
 
     if trades_df.empty:
         print("[INFO] No recent public fund trades found")
@@ -516,12 +571,32 @@ def post_recent_fund_trades(asof: date) -> None:
     # Post all public trades to the main fund-trades channel
     # ----------------------------------------------------------
     for _, row in trades_df.iterrows():
+        event_id = row.get("event_id")
+        if event_id is None or pd.isna(event_id):
+            continue
+
+        if was_trade_posted(int(event_id), "fund-trades"):
+            print(f"[INFO] Skipping event_id {int(event_id)} for fund-trades (already posted)")
+            continue
+
         if row.get("signal_id") is not None and not pd.isna(row.get("signal_id")):
             message = build_growth_trade_message(row)
         else:
             message = build_fund_trade_message(row)
 
-        post_to_discord(message, WEBHOOK_FUND_TRADES, "Fund Trades")
+        success, status_code, response_text = post_to_discord(
+            message,
+            WEBHOOK_FUND_TRADES,
+            "Fund Trades",
+        )
+
+        if success:
+            record_trade_post(
+                event_id=int(event_id),
+                channel_key="fund-trades",
+                discord_status_code=status_code,
+                discord_response_text=response_text,
+            )
 
     # ----------------------------------------------------------
     # Post each growth fund only to its own channel
@@ -542,12 +617,32 @@ def post_recent_fund_trades(asof: date) -> None:
         print(f"[INFO] Posting {len(fund_df)} recent trade(s) to {fund_code}")
 
         for _, row in fund_df.iterrows():
+            event_id = row.get("event_id")
+            if event_id is None or pd.isna(event_id):
+                continue
+
+            if was_trade_posted(int(event_id), fund_code):
+                print(f"[INFO] Skipping event_id {int(event_id)} for {fund_code} (already posted)")
+                continue
+
             if row.get("signal_id") is not None and not pd.isna(row.get("signal_id")):
                 message = build_growth_trade_message(row)
             else:
                 message = build_fund_trade_message(row)
 
-            post_to_discord(message, webhook_url, f"{fund_code} Trades")
+            success, status_code, response_text = post_to_discord(
+                message,
+                webhook_url,
+                f"{fund_code} Trades",
+            )
+
+            if success:
+                record_trade_post(
+                    event_id=int(event_id),
+                    channel_key=fund_code,
+                    discord_status_code=status_code,
+                    discord_response_text=response_text,
+                )
 
 
 # ----------------------------------------------------------
@@ -895,10 +990,10 @@ def build_weekly_performance_message(df: pd.DataFrame, asof: date) -> str:
 # ----------------------------------------------------------
 # Post to Discord
 # ----------------------------------------------------------
-def post_to_discord(message: str, webhook_url: str | None, label: str) -> None:
+def post_to_discord(message: str, webhook_url: str | None, label: str) -> tuple[bool, int | None, str | None]:
     if not webhook_url:
         print(f"[WARNING] {label} webhook is not set")
-        return
+        return False, None, "Webhook not set"
 
     try:
         response = requests.post(
@@ -909,13 +1004,16 @@ def post_to_discord(message: str, webhook_url: str | None, label: str) -> None:
 
         if response.status_code == 204:
             print(f"[INFO] {label} Discord post successful")
-        else:
-            print(f"[ERROR] {label} Discord post failed: {response.status_code}")
-            print(response.text)
+            return True, response.status_code, None
+
+        print(f"[ERROR] {label} Discord post failed: {response.status_code}")
+        print(response.text)
+        return False, response.status_code, response.text
 
     except Exception as e:
         print(f"[ERROR] Exception sending {label} Discord message")
         print(str(e))
+        return False, None, str(e)
 
 
 # ----------------------------------------------------------
