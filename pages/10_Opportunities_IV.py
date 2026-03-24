@@ -5,6 +5,7 @@ import pandas as pd
 from sqlalchemy import text
 from db import get_engine  # ✅ Centralized DB connection
 from market_cycle_utils import classify_phase_with_confidence
+from company_cycle_helpers import enrich_company_cycle_dataframe
 
 # Page config — update tab title
 # st.set_page_config(page_title="⭐ Opportunities with IV", layout="wide")
@@ -74,77 +75,6 @@ st.markdown(
 # --------------------------------------------------
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
-
-
-# ----------------------------------------------------------
-# Company cycle scoring helpers
-# ----------------------------------------------------------
-def compute_health_pct(gv_score, above_50_count) -> float:
-    gv = float(gv_score) if pd.notnull(gv_score) else 0.0
-    a50 = float(above_50_count) if pd.notnull(above_50_count) else 0.0
-    a50_pct = (a50 / 6.0) * 100.0
-
-    score = (gv * 0.85) + (a50_pct * 0.15)
-    return round(clamp(score, 0.0, 100.0), 1)
-
-
-def compute_buyzone_score(buyzone_flag) -> float:
-    return 25.0 if bool(buyzone_flag) else 75.0
-
-
-def compute_fvg_score(fvg_last_direction) -> float:
-    s = str(fvg_last_direction).strip().lower() if pd.notnull(fvg_last_direction) else ""
-
-    if s in ["bullish", "up", "green"]:
-        return 100.0
-    if s in ["bearish", "down", "red"]:
-        return 0.0
-    return 50.0
-
-
-def compute_direction_pct(buyzone_flag, fvg_last_direction, sector_direction_pct) -> float:
-    buyzone_score = compute_buyzone_score(buyzone_flag)
-    fvg_score = compute_fvg_score(fvg_last_direction)
-    sector_score = float(sector_direction_pct) if pd.notnull(sector_direction_pct) else 50.0
-
-    score = (
-        (buyzone_score * 0.35) +
-        (fvg_score * 0.35) +
-        (sector_score * 0.30)
-    )
-
-    return round(clamp(score, 0.0, 100.0), 1)
-
-
-def compute_gfv_score(gfv_status) -> float:
-    s = str(gfv_status).strip().lower() if pd.notnull(gfv_status) else "gray"
-
-    if s == "gold":
-        return 100.0
-    if s == "green":
-        return 75.0
-    if s == "gray":
-        return 50.0
-    return 0.0
-
-
-def compute_opportunity_pct(greer_yield_score, gfv_status) -> float:
-    ys = float(greer_yield_score) if pd.notnull(greer_yield_score) else 0.0
-    ys_pct = (ys / 4.0) * 100.0
-    gfv_pct = compute_gfv_score(gfv_status)
-
-    score = (ys_pct * 0.5) + (gfv_pct * 0.5)
-    return round(clamp(score, 0.0, 100.0), 1)
-
-
-def compute_company_index(health_pct, direction_pct, opportunity_pct) -> float:
-    score = (float(health_pct) + float(direction_pct) + float(opportunity_pct)) / 3.0
-    return round(clamp(score, 0.0, 100.0), 2)
-
-
-def compute_company_buyzone_proxy(direction_pct: float) -> float:
-    return round(clamp(100.0 - float(direction_pct), 0.0, 100.0), 2)
-
 
 def signal_emoji(value: float) -> str:
     x = float(value)
@@ -287,53 +217,26 @@ def load_filtered_companies() -> pd.DataFrame:
     if df.empty:
         return df
 
-    company_rows = []
+    df = df.rename(
+        columns={
+            "greer_value": "greer_value_score",
+            "yield_score": "greer_yield_score",
+        }
+    )
 
-    for _, row in df.iterrows():
-        health_pct = compute_health_pct(
-            row["greer_value"],
-            row["above_50_count"],
-        )
+    df = enrich_company_cycle_dataframe(df, classify_phase_with_confidence)
 
-        direction_pct = compute_direction_pct(
-            row["buyzone_flag"],
-            row["fvg_last_direction"],
-            row["sector_direction_pct"],
-        )
+    df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce") * 100.0
+    df["confidence"] = df["confidence"].round(1)
 
-        opportunity_pct = compute_opportunity_pct(
-            row["yield_score"],
-            row["gfv_status"],
-        )
+    df = df.rename(
+        columns={
+            "greer_value_score": "greer_value",
+            "greer_yield_score": "yield_score",
+        }
+    )
 
-        gci = compute_company_index(
-            health_pct,
-            direction_pct,
-            opportunity_pct,
-        )
-
-        company_buyzone_proxy = compute_company_buyzone_proxy(direction_pct)
-
-        phase, confidence = classify_phase_with_confidence(
-            health_pct,
-            company_buyzone_proxy,
-            opportunity_pct,
-        )
-
-        row_dict = row.to_dict()
-        row_dict.update(
-            {
-                "health_pct": health_pct,
-                "direction_pct": direction_pct,
-                "opportunity_pct": opportunity_pct,
-                "greer_company_index": gci,
-                "phase": phase,
-                "confidence": round(float(confidence) * 100.0, 1),
-            }
-        )
-        company_rows.append(row_dict)
-
-    return pd.DataFrame(company_rows)
+    return df
 
 
 # --------------------------------------------------

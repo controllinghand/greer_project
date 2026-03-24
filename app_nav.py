@@ -37,6 +37,7 @@ def build_pages():
             st.Page("pages/_spacer.py", title="— Growth Funds —", url_path="spacer-growth"),
             st.Page("pages/12_YR3G-26.py", title="  YR3G-26", icon="⭐"),
             st.Page("pages/12_YROG-26.py", title="  YROG-26", icon="🪨"),
+            st.Page("pages/12_YRRG-26.py", title="  YRRG-26", icon="🔄"),
             st.Page("pages/12_YRVG-26.py", title="  YRVG-26", icon="🌪️"),
 
             # ---- Baseline ----
@@ -53,6 +54,7 @@ def build_pages():
             st.Page("pages/10_Opportunities_IV.py", title="Opportunities", icon="🎯"),
             st.Page("pages/11_WK_IV_Targets.py", title="Weekly IV Targets", icon="🧲"),
             st.Page("pages/8_all_stars.py", title="All 3-Stars", icon="⭐"),
+            st.Page("pages/13_Cycle_Recovery.py", title="Cycle Recovery", icon="🔄"),
 
             st.Page("pages/_spacer.py", title="— Research —", url_path="spacer-research"),
             st.Page("pages/6_Backtesting.py", title="Backtesting", icon="🧪"),

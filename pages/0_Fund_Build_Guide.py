@@ -47,6 +47,7 @@ This page explains which tools are used to build each YouRock fund.
 Use this as the quick reference for the system:
 
 - **Opportunities** builds **YROG-26**
+- **Cycle Recovery** builds **YRRG-26**
 - **Weekly IV Targets** builds **YRVI-26**, **YRSI-26**, and **YRVG-26**
 - **All 3-Stars** builds **YR3G-26**
 """
@@ -68,6 +69,12 @@ builder_rows = [
         "Primary Use": "Growth fund builder",
         "Builds": "YROG-26",
         "Style": "Opportunity-driven stock selection",
+    },
+    {
+        "Tool": "🔄 Cycle Recovery",
+        "Primary Use": "Recovery phase growth builder",
+        "Builds": "YRRG-26",
+        "Style": "Cycle-based selection (Recovery phase)",
     },
     {
         "Tool": "🧲 Weekly IV Targets",
@@ -111,6 +118,30 @@ render_fund_card(
         "Best for opportunity-driven growth ideas",
         "Now improved with Greer Company Index, Health, Direction, Opportunity, and Phase",
         "Useful when building or refreshing YROG positions",
+    ],
+)
+
+render_fund_card(
+    fund_name="🔄 YRRG-26",
+    fund_type="Recovery Growth Fund",
+    build_tool="🔄 Cycle Recovery",
+    description=(
+        "YRRG is built from companies in the Recovery phase of the Greer Market Cycle. "
+        "This fund focuses on names with strong opportunity and improving direction, "
+        "before they transition into full expansion."
+    ),
+    process=[
+        "Open **Cycle Recovery**",
+        "Filter for companies in Recovery phase with strong Greer Company Index",
+        "Focus on high Opportunity with improving Direction and solid Health",
+        "Select stock positions for the YRRG portfolio",
+        "Enter the trades into the portfolio system",
+    ],
+    key_notes=[
+        "Focuses on Recovery phase companies",
+        "Uses Greer Company Index (Health, Direction, Opportunity)",
+        "Targets early-stage trend reversals and improving setups",
+        "Complements YROG by focusing on timing within the cycle",
     ],
 )
 
@@ -235,6 +266,7 @@ st.markdown(
 
 ### Tool-to-fund shortcut
 - **YROG** → Opportunities
+- **YRRG** → Cycle Recovery
 - **YRVI** → Weekly IV Targets
 - **YRSI** → Weekly IV Targets
 - **YRVG** → Weekly IV Targets

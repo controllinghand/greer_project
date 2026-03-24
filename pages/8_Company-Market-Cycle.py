@@ -11,6 +11,15 @@ from market_cycle_utils import (
     phase_confidence_note,
     get_ranked_phase_scores,
 )
+from company_cycle_helpers import (
+    safe_round,
+    compute_health_pct,
+    compute_direction_pct,
+    compute_opportunity_pct,
+    compute_company_index,
+    compute_company_buyzone_proxy,
+    transition_risk_label,
+)
 
 st.set_page_config(
     page_title="Greer Company Market Cycle",
@@ -319,72 +328,7 @@ def render_semicircle_gauge(title: str, value: float, subtitle: str, chart_key: 
     )
     st.caption(f"Status: **{dial_label(b)}**")
 
-# ----------------------------------------------------------
-# Company scoring helpers
-# ----------------------------------------------------------
-def compute_health_pct(gv_score, above_50_count) -> float:
-    gv = float(gv_score) if pd.notnull(gv_score) else 0.0
-    a50 = float(above_50_count) if pd.notnull(above_50_count) else 0.0
-    a50_pct = (a50 / 6.0) * 100.0
 
-    score = (gv * 0.85) + (a50_pct * 0.15)
-    return round(clamp(score, 0.0, 100.0), 1)
-
-def compute_buyzone_score(buyzone_flag) -> float:
-    return 25.0 if bool(buyzone_flag) else 75.0
-
-def compute_fvg_score(fvg_last_direction) -> float:
-    s = str(fvg_last_direction).strip().lower() if pd.notnull(fvg_last_direction) else ""
-
-    if s in ["bullish", "up", "green"]:
-        return 100.0
-    if s in ["bearish", "down", "red"]:
-        return 0.0
-    return 50.0
-
-def compute_direction_pct(buyzone_flag, fvg_last_direction, sector_direction_pct) -> float:
-    buyzone_score = compute_buyzone_score(buyzone_flag)
-    fvg_score = compute_fvg_score(fvg_last_direction)
-    sector_score = float(sector_direction_pct) if pd.notnull(sector_direction_pct) else 50.0
-
-    score = (
-        (buyzone_score * 0.35) +
-        (fvg_score * 0.35) +
-        (sector_score * 0.30)
-    )
-
-    return round(clamp(score, 0.0, 100.0), 1)
-
-def compute_gfv_score(gfv_status) -> float:
-    s = str(gfv_status).strip().lower() if pd.notnull(gfv_status) else "gray"
-
-    if s == "gold":
-        return 100.0
-    if s == "green":
-        return 75.0
-    if s == "gray":
-        return 50.0
-    return 0.0
-
-def compute_opportunity_pct(greer_yield_score, gfv_status) -> float:
-    ys = float(greer_yield_score) if pd.notnull(greer_yield_score) else 0.0
-    ys_pct = (ys / 4.0) * 100.0
-    gfv_pct = compute_gfv_score(gfv_status)
-
-    score = (ys_pct * 0.5) + (gfv_pct * 0.5)
-    return round(clamp(score, 0.0, 100.0), 1)
-
-def compute_company_index(health_pct, direction_pct, opportunity_pct) -> float:
-    score = (float(health_pct) + float(direction_pct) + float(opportunity_pct)) / 3.0
-    return round(clamp(score, 0.0, 100.0), 2)
-
-def compute_company_buyzone_proxy(direction_pct: float) -> float:
-    """
-    Existing classifier expects buyzone-style input where
-    higher buyzone pressure = weaker direction.
-    Convert direction back into inverse pullback pressure.
-    """
-    return round(clamp(100.0 - float(direction_pct), 0.0, 100.0), 2)
 
 # ----------------------------------------------------------
 # Build company metrics
