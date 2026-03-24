@@ -17,6 +17,8 @@ from portfolio_common import (
     render_year_summary_blocks,
     fmt_money,
     fmt_pct_ratio,
+    load_growth_rule_status,
+    load_growth_trade_signals,
 )
 
 # ----------------------------------------------------------
@@ -308,6 +310,94 @@ def main():
                 file_name=f"{portfolio_code.lower()}_nav.csv",
                 mime="text/csv",
             )
+    # ----------------------------------------------------------
+    # Growth Rules Section (YROG only)
+    # ----------------------------------------------------------
+    st.divider()
+    st.subheader("🚀 Growth Rule Status")
 
+    growth_status = load_growth_rule_status(portfolio_code)
+
+    if growth_status.empty:
+        st.info("No growth rule data available yet. (Run greer_growth_scaler.py)")
+    else:
+        show = growth_status.copy()
+
+        show["avg_cost_basis"] = show["avg_cost_basis"].apply(fmt_money)
+        show["current_price"] = show["current_price"].apply(fmt_money)
+        show["stop_price"] = show["stop_price"].apply(fmt_money)
+
+        # IMPORTANT: these are already percentages (not ratios)
+        show["unrealized_pl_pct"] = show["unrealized_pl_pct"].apply(
+            lambda x: f"{float(x):.2f}%" if pd.notna(x) else "—"
+        )
+        show["capital_recovered_pct"] = show["capital_recovered_pct"].apply(
+            lambda x: f"{float(x):.2f}%" if pd.notna(x) else "—"
+        )
+
+        show["next_gain_trigger_pct"] = show["next_gain_trigger_pct"].apply(
+            lambda x: f"{float(x):.0f}%" if pd.notna(x) else "—"
+        )
+        show["next_sell_pct"] = show["next_sell_pct"].apply(
+            lambda x: f"{float(x):.0f}%" if pd.notna(x) else "—"
+        )
+
+        st.dataframe(
+            show[
+                [
+                    "ticker",
+                    "initial_shares",
+                    "current_shares",
+                    "avg_cost_basis",
+                    "current_price",
+                    "unrealized_pl_pct",
+                    "capital_recovered_pct",
+                    "stop_price",
+                    "next_gain_trigger_pct",
+                    "next_sell_pct",
+                    "position_status",
+                ]
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    st.divider()
+    st.subheader("📣 Growth Rule Alerts")
+
+    growth_alerts = load_growth_trade_signals(portfolio_code)
+
+    if growth_alerts.empty:
+        st.info("No growth alerts yet.")
+    else:
+        show_alerts = growth_alerts.copy()
+
+        show_alerts["market_price"] = show_alerts["market_price"].apply(fmt_money)
+
+        show_alerts["trigger_gain_pct"] = show_alerts["trigger_gain_pct"].apply(
+            lambda x: f"{float(x):.0f}%" if pd.notna(x) else "—"
+        )
+        show_alerts["sell_pct"] = show_alerts["sell_pct"].apply(
+            lambda x: f"{float(x):.0f}%" if pd.notna(x) else "—"
+        )
+
+        st.dataframe(
+            show_alerts[
+                [
+                    "created_at",
+                    "ticker",
+                    "signal_type",
+                    "trigger_gain_pct",
+                    "sell_pct",
+                    "shares_before",
+                    "shares_to_sell",
+                    "expected_shares_after",
+                    "market_price",
+                    "status",
+                ]
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
 if __name__ == "__main__":
     main()

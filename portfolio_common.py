@@ -239,6 +239,67 @@ def load_latest_prices_and_names(tickers: list[str]) -> pd.DataFrame:
         return pd.read_sql(q, conn, params={"tickers": tickers})
 
 # ----------------------------------------------------------
+# DB: Growth rule helpers
+# ----------------------------------------------------------
+@st.cache_data(ttl=300)
+def load_growth_rule_status(portfolio_code: str) -> pd.DataFrame:
+    engine = get_engine()
+    q = text("""
+        SELECT
+            ticker,
+            first_buy_date,
+            initial_shares,
+            current_shares,
+            avg_cost_basis,
+            current_price,
+            unrealized_pl_pct,
+            capital_recovered_pct,
+            stop_price,
+            next_gain_trigger_pct,
+            next_sell_pct,
+            position_status
+        FROM growth_position_state
+        WHERE portfolio_code = :portfolio_code
+        ORDER BY ticker
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(
+            q,
+            conn,
+            params={"portfolio_code": safe_upper(portfolio_code)},
+        )
+
+
+@st.cache_data(ttl=300)
+def load_growth_trade_signals(portfolio_code: str, limit: int = 25) -> pd.DataFrame:
+    engine = get_engine()
+    q = text("""
+        SELECT
+            created_at,
+            ticker,
+            signal_type,
+            trigger_gain_pct,
+            sell_pct,
+            shares_before,
+            shares_to_sell,
+            expected_shares_after,
+            market_price,
+            status
+        FROM growth_trade_signals
+        WHERE portfolio_code = :portfolio_code
+        ORDER BY created_at DESC
+        LIMIT :limit
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(
+            q,
+            conn,
+            params={
+                "portfolio_code": safe_upper(portfolio_code),
+                "limit": int(limit),
+            },
+        )
+# ----------------------------------------------------------
 # Share-equivalent event types (wheel support)
 # ----------------------------------------------------------
 SHARE_BUY_TYPES = {

@@ -254,10 +254,21 @@ def load_recent_fund_trades(asof: date, days_back: int = 1) -> pd.DataFrame:
             pe.cash_delta,
             pe.notes,
             p.code AS portfolio_code,
-            p.name AS portfolio_name
+            p.name AS portfolio_name,
+
+            gts.signal_id,
+            gts.signal_type AS growth_signal_type,
+            gts.trigger_gain_pct,
+            gts.sell_pct,
+            gts.shares_before,
+            gts.shares_to_sell,
+            gts.expected_shares_after,
+            gts.market_price AS growth_market_price
         FROM portfolio_events pe
         JOIN portfolios p
           ON p.portfolio_id = pe.portfolio_id
+        LEFT JOIN growth_trade_signals gts
+          ON gts.execution_event_id = pe.event_id
         WHERE pe.event_time >= :start_ts
           AND pe.event_time < :end_ts
           AND p.is_public = TRUE
@@ -427,7 +438,63 @@ def build_fund_trade_message(row: pd.Series) -> str:
 
     return "\n".join(lines)
 
+# ----------------------------------------------------------
+# Build one auto-growth trade Discord message
+# ----------------------------------------------------------
+def build_growth_trade_message(row: pd.Series) -> str:
+    portfolio_code = str(row.get("portfolio_code") or "UNKNOWN")
+    ticker = str(row.get("ticker") or "N/A")
+    signal_type = str(row.get("growth_signal_type") or "").strip().upper()
+    trigger_gain_pct = row.get("trigger_gain_pct")
+    sell_pct = row.get("sell_pct")
+    shares_before = row.get("shares_before")
+    shares_to_sell = row.get("shares_to_sell")
+    expected_shares_after = row.get("expected_shares_after")
+    market_price = row.get("growth_market_price") or row.get("price")
+    notes = str(row.get("notes") or "").strip()
+    event_time = row.get("event_time")
 
+    lines = []
+
+    if signal_type == "STOP_LOSS":
+        lines.append(f"🚨 **{portfolio_code} Stop Loss Trigger Executed**")
+        lines.append(f"Ticker: **{ticker}**")
+        lines.append(f"Current Price: **{fmt_money(market_price)}**")
+        lines.append("Rule: Sell **100%** below **-10%**")
+        lines.append("Action: **SELL ALL SHARES**")
+
+        if shares_to_sell is not None and not pd.isna(shares_to_sell):
+            lines.append(f"Shares to Sell: **{fmt_quantity(shares_to_sell)}**")
+
+    else:
+        lines.append(f"📈 **{portfolio_code} Profit Trigger Executed**")
+        lines.append(f"Ticker: **{ticker}**")
+
+        if trigger_gain_pct is not None and not pd.isna(trigger_gain_pct):
+            lines.append(f"Gain Level Hit: **+{float(trigger_gain_pct):.0f}%**")
+
+        lines.append(f"Current Price: **{fmt_money(market_price)}**")
+
+        if sell_pct is not None and not pd.isna(sell_pct):
+            lines.append(f"Action: Sell **{float(sell_pct):.0f}%** of current position")
+
+        if shares_before is not None and not pd.isna(shares_before):
+            lines.append(f"Shares Before: **{fmt_quantity(shares_before)}**")
+
+        if shares_to_sell is not None and not pd.isna(shares_to_sell):
+            lines.append(f"Shares to Sell: **{fmt_quantity(shares_to_sell)}**")
+
+        if expected_shares_after is not None and not pd.isna(expected_shares_after):
+            lines.append(f"Expected Shares After: **{fmt_quantity(expected_shares_after)}**")
+
+    lines.append("✅ Recorded automatically in portfolio_events")
+    lines.append(f"Trade Time: **{fmt_event_time(event_time)}**")
+
+    if notes:
+        lines.append(f"Notes: {notes}")
+
+    return "\n".join(lines)
+    
 # ----------------------------------------------------------
 # Post recent fund trades
 # - all public trades -> fund-trades channel
@@ -447,7 +514,11 @@ def post_recent_fund_trades(asof: date) -> None:
     # Post all public trades to the main fund-trades channel
     # ----------------------------------------------------------
     for _, row in trades_df.iterrows():
-        message = build_fund_trade_message(row)
+        if row.get("signal_id") is not None and not pd.isna(row.get("signal_id")):
+            message = build_growth_trade_message(row)
+        else:
+            message = build_fund_trade_message(row)
+
         post_to_discord(message, WEBHOOK_FUND_TRADES, "Fund Trades")
 
     # ----------------------------------------------------------
@@ -469,7 +540,11 @@ def post_recent_fund_trades(asof: date) -> None:
         print(f"[INFO] Posting {len(fund_df)} recent trade(s) to {fund_code}")
 
         for _, row in fund_df.iterrows():
-            message = build_fund_trade_message(row)
+            if row.get("signal_id") is not None and not pd.isna(row.get("signal_id")):
+                message = build_growth_trade_message(row)
+            else:
+                message = build_fund_trade_message(row)
+
             post_to_discord(message, webhook_url, f"{fund_code} Trades")
 
 

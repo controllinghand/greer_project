@@ -51,6 +51,7 @@ etl_commands = [
     ["python", "earnings_loader.py"],
     ["python", "fetch_financials.py"],
     ["python", "price_loader.py"],
+    ["python", "greer_growth_scaler.py"],
     ["python", "fetch_iv_summary.py"],
     ["python", "greer_value_score.py"],
     ["python", "greer_value_yield_score.py"],
