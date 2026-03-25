@@ -517,7 +517,6 @@ def evaluate_growth_rules(engine) -> None:
     reconcile_open_signals(engine, positions_df)
 
     rules = load_rules(engine)
-    last_executed_map = load_last_executed_steps(engine)
     open_signals_map = load_open_signals(engine)
 
     for _, row in positions_df.iterrows():
@@ -542,7 +541,11 @@ def evaluate_growth_rules(engine) -> None:
             logger.warning("Skipping %s %s due to incomplete data", portfolio_code, ticker)
             continue
 
-        gain_pct = ((current_price - avg_cost_basis) / avg_cost_basis) * 100.0
+        executed = False
+
+        # ----------------------------------------------------------
+        # Calculate current state before any new signal/execution
+        # ----------------------------------------------------------
         stop_price = avg_cost_basis * (1.0 - (rule["stop_loss_pct"] / 100.0))
         runner_floor_shares = initial_shares * (rule["runner_floor_pct"] / 100.0)
 
@@ -550,13 +553,19 @@ def evaluate_growth_rules(engine) -> None:
         cost_basis_value = current_shares * avg_cost_basis
         unrealized_pl = market_value - cost_basis_value
         unrealized_pl_pct = ((current_price - avg_cost_basis) / avg_cost_basis) * 100.0
+        gain_pct = unrealized_pl_pct
 
         key = (portfolio_id, ticker)
+
+        last_executed_map = load_last_executed_steps(engine)
         last_executed_gain_pct = last_executed_map.get(key)
         next_step = get_next_step(rule["steps"], last_executed_gain_pct)
 
         capital_recovered_amt = max(0.0, (initial_shares - current_shares) * avg_cost_basis)
-        capital_recovered_pct = (capital_recovered_amt / (initial_shares * avg_cost_basis)) * 100.0 if initial_shares > 0 else 0.0
+        capital_recovered_pct = (
+            (capital_recovered_amt / (initial_shares * avg_cost_basis)) * 100.0
+            if initial_shares > 0 else 0.0
+        )
 
         position_status = "ACTIVE"
         if current_price <= stop_price:
@@ -567,6 +576,156 @@ def evaluate_growth_rules(engine) -> None:
         next_gain_trigger_pct = next_step["gain_trigger_pct"] if next_step else None
         next_sell_pct = next_step["sell_pct"] if next_step else None
 
+        open_signal = open_signals_map.get(key)
+
+        # ----------------------------------------------------------
+        # If an open signal already exists, do not create another one
+        # ----------------------------------------------------------
+        if open_signal:
+            logger.info("Open signal already exists for %s %s", portfolio_code, ticker)
+
+        else:
+            # ----------------------------------------------------------
+            # Stop-loss alert
+            # ----------------------------------------------------------
+            if current_price <= stop_price:
+                payload = {
+                    "portfolio_id": portfolio_id,
+                    "portfolio_code": portfolio_code,
+                    "ticker": ticker,
+                    "signal_type": "STOP_LOSS",
+                    "trigger_gain_pct": rule["stop_loss_pct"],
+                    "sell_pct": 100.0,
+                    "shares_before": current_shares,
+                    "shares_to_sell": current_shares,
+                    "expected_shares_after": 0.0,
+                    "trigger_price": stop_price,
+                    "market_price": current_price,
+                    "avg_cost_basis": avg_cost_basis,
+                    "notes": "Growth stop-loss rule hit",
+                }
+
+                signal_id = insert_trade_signal(engine, payload)
+
+                if rule["auto_execute_enabled"]:
+                    execution_event_id = auto_execute_signal(engine, signal_id, payload)
+                    executed = True
+                    logger.info(
+                        "Auto-executed STOP_LOSS for %s %s with event_id=%s",
+                        portfolio_code,
+                        ticker,
+                        execution_event_id,
+                    )
+
+                logger.info("Created STOP_LOSS signal for %s %s", portfolio_code, ticker)
+
+            # ----------------------------------------------------------
+            # Runner protection: stop scaling once shares are already at floor
+            # ----------------------------------------------------------
+            elif position_status == "RUNNER":
+                logger.info("Runner floor reached for %s %s", portfolio_code, ticker)
+
+            # ----------------------------------------------------------
+            # Profit-scale alert
+            # ----------------------------------------------------------
+            elif next_step and gain_pct >= next_step["gain_trigger_pct"]:
+                shares_to_sell = math.floor(current_shares * (next_step["sell_pct"] / 100.0))
+                shares_to_sell = max(1, shares_to_sell)
+
+                expected_shares_after = current_shares - shares_to_sell
+                if expected_shares_after < 0:
+                    expected_shares_after = 0
+
+                payload = {
+                    "portfolio_id": portfolio_id,
+                    "portfolio_code": portfolio_code,
+                    "ticker": ticker,
+                    "signal_type": "PROFIT_SCALE",
+                    "trigger_gain_pct": next_step["gain_trigger_pct"],
+                    "sell_pct": next_step["sell_pct"],
+                    "shares_before": current_shares,
+                    "shares_to_sell": shares_to_sell,
+                    "expected_shares_after": expected_shares_after,
+                    "trigger_price": avg_cost_basis * (1.0 + next_step["gain_trigger_pct"] / 100.0),
+                    "market_price": current_price,
+                    "avg_cost_basis": avg_cost_basis,
+                    "notes": "Growth profit-scale rule hit",
+                }
+
+                signal_id = insert_trade_signal(engine, payload)
+
+                if rule["auto_execute_enabled"]:
+                    execution_event_id = auto_execute_signal(engine, signal_id, payload)
+                    executed = True
+                    logger.info(
+                        "Auto-executed PROFIT_SCALE for %s %s with event_id=%s",
+                        portfolio_code,
+                        ticker,
+                        execution_event_id,
+                    )
+
+                logger.info("Created PROFIT_SCALE signal for %s %s", portfolio_code, ticker)
+
+        # ----------------------------------------------------------
+        # If a trade was auto-executed, reload fresh position data
+        # so growth_position_state reflects the updated shares/step
+        # on the same run.
+        # ----------------------------------------------------------
+        if executed:
+            refreshed_positions = load_growth_positions(engine)
+            refreshed_row = refreshed_positions[
+                (refreshed_positions["portfolio_id"] == portfolio_id) &
+                (refreshed_positions["ticker"] == ticker)
+            ]
+
+            if not refreshed_row.empty:
+                refreshed = refreshed_row.iloc[0]
+
+                avg_cost_basis = to_float(refreshed["avg_cost_basis"])
+                current_price = to_float(refreshed["current_price"])
+                current_shares = to_float(refreshed["current_shares"])
+                initial_shares = to_float(refreshed["total_buy_shares"])
+                first_buy_date = refreshed["first_buy_date"]
+                price_date = refreshed["price_date"]
+
+                stop_price = avg_cost_basis * (1.0 - (rule["stop_loss_pct"] / 100.0))
+                runner_floor_shares = initial_shares * (rule["runner_floor_pct"] / 100.0)
+
+                market_value = current_shares * current_price
+                cost_basis_value = current_shares * avg_cost_basis
+                unrealized_pl = market_value - cost_basis_value
+                unrealized_pl_pct = ((current_price - avg_cost_basis) / avg_cost_basis) * 100.0
+
+                last_executed_map = load_last_executed_steps(engine)
+                last_executed_gain_pct = last_executed_map.get(key)
+                next_step = get_next_step(rule["steps"], last_executed_gain_pct)
+
+                capital_recovered_amt = max(0.0, (initial_shares - current_shares) * avg_cost_basis)
+                capital_recovered_pct = (
+                    (capital_recovered_amt / (initial_shares * avg_cost_basis)) * 100.0
+                    if initial_shares > 0 else 0.0
+                )
+
+                position_status = "ACTIVE"
+                if current_price <= stop_price:
+                    position_status = "STOP_TRIGGERED"
+                elif current_shares <= runner_floor_shares + 0.01:
+                    position_status = "RUNNER"
+
+                next_gain_trigger_pct = next_step["gain_trigger_pct"] if next_step else None
+                next_sell_pct = next_step["sell_pct"] if next_step else None
+
+                logger.info(
+                    "STATE UPDATED | %s %s | shares=%s | next_trigger=%s",
+                    portfolio_code,
+                    ticker,
+                    current_shares,
+                    next_gain_trigger_pct,
+                )
+
+        # ----------------------------------------------------------
+        # Final state upsert
+        # ----------------------------------------------------------
         upsert_growth_position_state(
             engine,
             {
@@ -593,88 +752,6 @@ def evaluate_growth_rules(engine) -> None:
                 "last_price_date": price_date,
             },
         )
-
-        open_signal = open_signals_map.get(key)
-        if open_signal:
-            logger.info("Open signal already exists for %s %s", portfolio_code, ticker)
-            continue
-
-        # Stop-loss alert
-        if current_price <= stop_price:
-            payload = {
-                "portfolio_id": portfolio_id,
-                "portfolio_code": portfolio_code,
-                "ticker": ticker,
-                "signal_type": "STOP_LOSS",
-                "trigger_gain_pct": rule["stop_loss_pct"],
-                "sell_pct": 100.0,
-                "shares_before": current_shares,
-                "shares_to_sell": current_shares,
-                "expected_shares_after": 0.0,
-                "trigger_price": stop_price,
-                "market_price": current_price,
-                "avg_cost_basis": avg_cost_basis,
-                "notes": "Growth stop-loss rule hit",
-            }
-
-            signal_id = insert_trade_signal(engine, payload)
-
-            if rule["auto_execute_enabled"]:
-                execution_event_id = auto_execute_signal(engine, signal_id, payload)
-                logger.info(
-                    "Auto-executed STOP_LOSS for %s %s with event_id=%s",
-                    portfolio_code,
-                    ticker,
-                    execution_event_id,
-                )
-
-            # Discord posting handled by post_discord_updates.py
-            logger.info("Created STOP_LOSS signal for %s %s", portfolio_code, ticker)
-            continue
-
-        # Runner protection: stop scaling once shares are already at floor
-        if position_status == "RUNNER":
-            logger.info("Runner floor reached for %s %s", portfolio_code, ticker)
-            continue
-
-        # Profit-scale alert
-        if next_step and gain_pct >= next_step["gain_trigger_pct"]:
-            shares_to_sell = math.floor(current_shares * (next_step["sell_pct"] / 100.0))
-            shares_to_sell = max(1, shares_to_sell)
-
-            expected_shares_after = current_shares - shares_to_sell
-            if expected_shares_after < 0:
-                expected_shares_after = 0
-
-            payload = {
-                "portfolio_id": portfolio_id,
-                "portfolio_code": portfolio_code,
-                "ticker": ticker,
-                "signal_type": "PROFIT_SCALE",
-                "trigger_gain_pct": next_step["gain_trigger_pct"],
-                "sell_pct": next_step["sell_pct"],
-                "shares_before": current_shares,
-                "shares_to_sell": shares_to_sell,
-                "expected_shares_after": expected_shares_after,
-                "trigger_price": avg_cost_basis * (1.0 + next_step["gain_trigger_pct"] / 100.0),
-                "market_price": current_price,
-                "avg_cost_basis": avg_cost_basis,
-                "notes": "Growth profit-scale rule hit",
-            }
-
-            signal_id = insert_trade_signal(engine, payload)
-
-            if rule["auto_execute_enabled"]:
-                execution_event_id = auto_execute_signal(engine, signal_id, payload)
-                logger.info(
-                    "Auto-executed PROFIT_SCALE for %s %s with event_id=%s",
-                    portfolio_code,
-                    ticker,
-                    execution_event_id,
-                )
-
-            # Discord posting handled by post_discord_updates.py
-            logger.info("Created PROFIT_SCALE signal for %s %s", portfolio_code, ticker)
 
 
 # ----------------------------------------------------------
