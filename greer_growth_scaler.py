@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from db import get_engine
 
 
@@ -47,6 +47,49 @@ def to_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+# ----------------------------------------------------------
+# Remove stale growth_position_state rows for closed positions
+# ----------------------------------------------------------
+def delete_closed_growth_position_state(engine, active_positions_df: pd.DataFrame) -> None:
+    active_keys = {
+        (int(row["portfolio_id"]), str(row["ticker"]).upper())
+        for _, row in active_positions_df.iterrows()
+    }
+
+    query = text("""
+        SELECT portfolio_id, ticker
+        FROM growth_position_state
+        WHERE portfolio_code IN :fund_codes
+    """).bindparams(bindparam("fund_codes", expanding=True))
+
+    delete_query = text("""
+        DELETE FROM growth_position_state
+        WHERE portfolio_id = :portfolio_id
+          AND ticker = :ticker
+    """)
+
+    with engine.begin() as conn:
+        existing_rows = conn.execute(
+            query,
+            {"fund_codes": GROWTH_FUNDS},
+        ).mappings().all()
+
+        for row in existing_rows:
+            key = (int(row["portfolio_id"]), str(row["ticker"]).upper())
+            if key not in active_keys:
+                conn.execute(
+                    delete_query,
+                    {
+                        "portfolio_id": int(row["portfolio_id"]),
+                        "ticker": str(row["ticker"]).upper(),
+                    },
+                )
+                logger.info(
+                    "Removed stale growth_position_state row for portfolio_id=%s ticker=%s",
+                    row["portfolio_id"],
+                    row["ticker"],
+                )
 
 # ----------------------------------------------------------
 # Insert simulated SELL_SHARES event into portfolio_events
@@ -509,7 +552,8 @@ def auto_execute_signal(engine, signal_id: int, payload: Dict[str, Any]) -> int:
 # ----------------------------------------------------------
 def evaluate_growth_rules(engine) -> None:
     positions_df = load_growth_positions(engine)
-
+    delete_closed_growth_position_state(engine, positions_df)
+    
     if positions_df.empty:
         logger.info("No active growth positions found")
         return
@@ -678,7 +722,24 @@ def evaluate_growth_rules(engine) -> None:
                 (refreshed_positions["ticker"] == ticker)
             ]
 
-            if not refreshed_row.empty:
+            if refreshed_row.empty:
+                current_shares = 0.0
+                market_value = 0.0
+                cost_basis_value = 0.0
+                unrealized_pl = 0.0
+                unrealized_pl_pct = 0.0
+
+                last_executed_map = load_last_executed_steps(engine)
+                last_executed_gain_pct = last_executed_map.get(key)
+
+                capital_recovered_amt = initial_shares * avg_cost_basis
+                capital_recovered_pct = 100.0 if initial_shares > 0 else 0.0
+
+                position_status = "CLOSED"
+                next_gain_trigger_pct = None
+                next_sell_pct = None
+
+            else:
                 refreshed = refreshed_row.iloc[0]
 
                 avg_cost_basis = to_float(refreshed["avg_cost_basis"])
