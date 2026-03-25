@@ -98,6 +98,13 @@ logger.info("Running build_sector_summary_daily.py")
 run_cmd(["python", "build_sector_summary_daily.py"])
 
 # ----------------------------------------------------------
+# Build Greer Company Index Daily History
+# ----------------------------------------------------------
+print("\n📈 Building Greer Company Index daily history …")
+logger.info("Running greer_company_index_calculator.py")
+run_cmd(["python", "greer_company_index_calculator.py"])
+
+# ----------------------------------------------------------
 # Opportunity Periods
 # ----------------------------------------------------------
 print("\n📜 Rebuilding Greer opportunity periods …")

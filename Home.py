@@ -138,6 +138,236 @@ def render_home():
     # ----------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------
+    
+    # ----------------------------------------------------------
+    # Load Greer Company Index history
+    # ----------------------------------------------------------
+    @st.cache_data(ttl=300)
+    def load_company_index_history(ticker: str):
+        engine = get_engine()
+
+        query = """
+            SELECT
+                date,
+                greer_company_index,
+                phase,
+                health_pct,
+                direction_pct,
+                opportunity_pct
+            FROM greer_company_index_daily
+            WHERE ticker = %(t)s
+            ORDER BY date;
+        """
+
+        df = pd.read_sql(
+            query,
+            engine,
+            params={"t": ticker},
+            parse_dates=["date"],
+        )
+
+        return df
+    
+    # ----------------------------------------------------------
+    # Build continuous phase bands for background shading
+    # - Merges very short runs to reduce barcode striping
+    # ----------------------------------------------------------
+    def build_phase_bands(df: pd.DataFrame, min_run_days: int = 14) -> list[dict]:
+        if df.empty or "phase" not in df.columns or "date" not in df.columns:
+            return []
+
+        phase_colors = {
+            "RECOVERY": "rgba(91,192,222,0.10)",
+            "EXPANSION": "rgba(92,184,92,0.10)",
+            "EUPHORIA": "rgba(240,173,78,0.10)",
+            "CONTRACTION": "rgba(217,83,79,0.10)",
+        }
+
+        work = (
+            df[["date", "phase"]]
+            .dropna(subset=["date", "phase"])
+            .sort_values("date")
+            .reset_index(drop=True)
+            .copy()
+        )
+
+        if work.empty:
+            return []
+
+        # ------------------------------------------
+        # First pass: build raw contiguous runs
+        # ------------------------------------------
+        runs = []
+        start_idx = 0
+        current_phase = work.loc[0, "phase"]
+
+        for i in range(1, len(work)):
+            phase = work.loc[i, "phase"]
+            if phase != current_phase:
+                runs.append(
+                    {
+                        "phase": current_phase,
+                        "start_idx": start_idx,
+                        "end_idx": i - 1,
+                        "x0": work.loc[start_idx, "date"],
+                        "x1": work.loc[i - 1, "date"],
+                    }
+                )
+                current_phase = phase
+                start_idx = i
+
+        runs.append(
+            {
+                "phase": current_phase,
+                "start_idx": start_idx,
+                "end_idx": len(work) - 1,
+                "x0": work.loc[start_idx, "date"],
+                "x1": work.loc[len(work) - 1, "date"],
+            }
+        )
+
+        # ------------------------------------------
+        # Add run lengths
+        # ------------------------------------------
+        for run in runs:
+            run["run_days"] = max((run["x1"] - run["x0"]).days + 1, 1)
+
+        # ------------------------------------------
+        # Second pass: merge short runs
+        # Rule:
+        # - if a run is shorter than min_run_days
+        # - merge it into the longer adjacent run
+        # - if both neighbors have same phase, merge into that phase
+        # ------------------------------------------
+        changed = True
+        while changed and len(runs) > 1:
+            changed = False
+            new_runs = []
+            i = 0
+
+            while i < len(runs):
+                run = runs[i]
+
+                if run["run_days"] >= min_run_days:
+                    new_runs.append(run)
+                    i += 1
+                    continue
+
+                prev_run = new_runs[-1] if new_runs else None
+                next_run = runs[i + 1] if i + 1 < len(runs) else None
+
+                # If both neighbors exist and match, absorb short run into that phase
+                if prev_run and next_run and prev_run["phase"] == next_run["phase"]:
+                    prev_run["x1"] = next_run["x1"]
+                    prev_run["end_idx"] = next_run["end_idx"]
+                    prev_run["run_days"] = max((prev_run["x1"] - prev_run["x0"]).days + 1, 1)
+                    i += 2
+                    changed = True
+                    continue
+
+                # Otherwise merge into longer neighbor
+                if prev_run and next_run:
+                    if prev_run["run_days"] >= next_run["run_days"]:
+                        prev_run["x1"] = run["x1"]
+                        prev_run["end_idx"] = run["end_idx"]
+                        prev_run["run_days"] = max((prev_run["x1"] - prev_run["x0"]).days + 1, 1)
+                    else:
+                        next_run["x0"] = run["x0"]
+                        next_run["start_idx"] = run["start_idx"]
+                        next_run["run_days"] = max((next_run["x1"] - next_run["x0"]).days + 1, 1)
+                    i += 1
+                    changed = True
+                    continue
+
+                # Only previous neighbor exists
+                if prev_run and not next_run:
+                    prev_run["x1"] = run["x1"]
+                    prev_run["end_idx"] = run["end_idx"]
+                    prev_run["run_days"] = max((prev_run["x1"] - prev_run["x0"]).days + 1, 1)
+                    i += 1
+                    changed = True
+                    continue
+
+                # Only next neighbor exists
+                if next_run and not prev_run:
+                    next_run["x0"] = run["x0"]
+                    next_run["start_idx"] = run["start_idx"]
+                    next_run["run_days"] = max((next_run["x1"] - next_run["x0"]).days + 1, 1)
+                    i += 1
+                    changed = True
+                    continue
+
+                new_runs.append(run)
+                i += 1
+
+            runs = new_runs
+
+        # ------------------------------------------
+        # Final output for plotly vrect bands
+        # ------------------------------------------
+        bands = []
+        for run in runs:
+            bands.append(
+                {
+                    "phase": run["phase"],
+                    "x0": run["x0"],
+                    "x1": run["x1"],
+                    "color": phase_colors.get(run["phase"], "rgba(160,160,160,0.08)"),
+                }
+            )
+
+        return bands
+
+    # ----------------------------------------------------------
+    # Load price history for company index chart
+    # ----------------------------------------------------------
+    @st.cache_data(ttl=300)
+    def load_price_history(ticker: str):
+        engine = get_engine()
+
+        query = """
+            SELECT
+                date,
+                close
+            FROM prices
+            WHERE ticker = %(t)s
+            ORDER BY date;
+        """
+
+        df = pd.read_sql(
+            query,
+            engine,
+            params={"t": ticker},
+            parse_dates=["date"],
+        )
+
+        return df
+
+    # ----------------------------------------------------------
+    # Coverage score for historical company index quality
+    # ----------------------------------------------------------
+    def add_history_coverage_flags(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        out = df.copy()
+
+        out["has_health"] = out["health_pct"].notna() & (out["health_pct"] > 0)
+        out["has_direction"] = out["direction_pct"].notna()
+        out["has_opportunity"] = out["opportunity_pct"].notna()
+
+        out["coverage_count"] = (
+            out["has_health"].astype(int)
+            + out["has_direction"].astype(int)
+            + out["has_opportunity"].astype(int)
+        )
+
+        out["is_full_coverage"] = out["coverage_count"] >= 3
+        out["is_partial_coverage"] = out["coverage_count"] >= 2
+
+        return out
+
+
     def gv_bucket_label(score, above_50):
         if pd.notnull(above_50) and int(above_50) == 6:
             return "Gold"
@@ -1567,11 +1797,12 @@ def render_home():
     # ----------------------------------------------------------
     engine = get_engine()
 
-    tab_overview, tab_valuation, tab_technicals, tab_cycle = st.tabs([
+    tab_overview, tab_valuation, tab_technicals, tab_cycle, tab_history = st.tabs([
         "Overview",
         "Valuation",
         "Technicals",
         "Cycle",
+        "History 📈",
     ])
 
     with tab_overview:
@@ -1749,6 +1980,292 @@ def render_home():
                 "Sector Phase",
                 phase_label_with_icon(sector_cycle.get("sector_phase")) if sector_cycle else "—"
             )
+
+    with tab_history:
+        st.subheader("📈 Greer Company Index History")
+
+        df_hist = load_company_index_history(ticker)
+
+        if df_hist.empty:
+            st.warning("No historical data available.")
+        else:
+            df_hist = add_history_coverage_flags(df_hist).copy()
+            df_hist = df_hist.sort_values("date").reset_index(drop=True)
+
+            range_col1, range_col2 = st.columns([1.2, 2.8])
+
+            with range_col1:
+                history_range = st.radio(
+                    "Range",
+                    ["3Y", "5Y", "All"],
+                    index=1,  # 👈 this makes 5Y the default
+                    horizontal=True,
+                    key=f"{ticker}_history_range",
+                )
+
+            with range_col2:
+                include_partial = st.checkbox(
+                    "Include partial-history periods",
+                    value=False,
+                    key=f"{ticker}_include_partial_history",
+                    help="When off, history starts only once all major components are available.",
+                )
+
+            latest_date = df_hist["date"].max()
+
+            if history_range == "3Y":
+                cutoff = latest_date - pd.DateOffset(years=3)
+                df_plot = df_hist[df_hist["date"] >= cutoff].copy()
+            elif history_range == "5Y":
+                cutoff = latest_date - pd.DateOffset(years=5)
+                df_plot = df_hist[df_hist["date"] >= cutoff].copy()
+            else:
+                df_plot = df_hist.copy()
+
+            if include_partial:
+                df_plot = df_plot[df_plot["is_partial_coverage"]].copy()
+            else:
+                df_plot = df_plot[df_plot["is_full_coverage"]].copy()
+
+            price_hist = load_price_history(ticker)
+
+            if not price_hist.empty:
+                df_plot = df_plot.merge(price_hist, on="date", how="left")
+
+            if df_plot.empty:
+                st.info("No historical rows match the selected coverage/range settings.")
+            else:
+                df_plot["company_index_50dma"] = (
+                    df_plot["greer_company_index"]
+                    .rolling(50, min_periods=10)
+                    .mean()
+                )
+
+                phase_bands = build_phase_bands(df_plot, min_run_days=14)
+
+                fig = go.Figure()
+
+                # ------------------------------------------
+                # Background regime bands
+                # ------------------------------------------
+                for band in phase_bands:
+                    fig.add_vrect(
+                        x0=band["x0"],
+                        x1=band["x1"],
+                        fillcolor=band["color"],
+                        line_width=0,
+                        layer="below",
+                    )
+
+                # ------------------------------------------
+                # Price line on secondary axis
+                # ------------------------------------------
+                if "close" in df_plot.columns and df_plot["close"].notna().any():
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df_plot["date"],
+                            y=df_plot["close"],
+                            mode="lines",
+                            name="Price",
+                            line=dict(width=2, color="black"),
+                            opacity=0.5,
+                            yaxis="y2",
+                            hovertemplate=(
+                                "<b>%{x|%Y-%m-%d}</b><br>"
+                                "Price: $%{y:,.2f}<extra></extra>"
+                            ),
+                        )
+                    )
+
+                # ------------------------------------------
+                # Raw company index line
+                # ------------------------------------------
+                fig.add_trace(
+                    go.Scatter(
+                        x=df_plot["date"],
+                        y=df_plot["greer_company_index"],
+                        mode="lines",
+                        name="Company Index",
+                        line=dict(width=1.5, color="rgba(72,99,255,0.55)"),
+                        hovertemplate=(
+                            "<b>%{x|%Y-%m-%d}</b><br>"
+                            "Company Index: %{y:.2f}<br>"
+                            "Phase: %{customdata[0]}<extra></extra>"
+                        ),
+                        customdata=df_plot[["phase"]].values,
+                    )
+                )
+
+                # ------------------------------------------
+                # 50-day average as primary signal
+                # ------------------------------------------
+                fig.add_trace(
+                    go.Scatter(
+                        x=df_plot["date"],
+                        y=df_plot["company_index_50dma"],
+                        mode="lines",
+                        name="50-Day Avg",
+                        line=dict(width=2.5, dash="dash", color="#FF5A36"),
+                        hovertemplate=(
+                            "<b>%{x|%Y-%m-%d}</b><br>"
+                            "50-Day Avg: %{y:.2f}<extra></extra>"
+                        ),
+                    )
+                )
+
+                # ------------------------------------------
+                # High / Low markers
+                # ------------------------------------------
+                high_row = df_plot.loc[df_plot["greer_company_index"].idxmax()]
+                low_row = df_plot.loc[df_plot["greer_company_index"].idxmin()]
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=[high_row["date"]],
+                        y=[high_row["greer_company_index"]],
+                        mode="markers+text",
+                        name="High",
+                        text=["High"],
+                        textposition="top center",
+                        marker=dict(size=9, symbol="diamond"),
+                        showlegend=False,
+                    )
+                )
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=[low_row["date"]],
+                        y=[low_row["greer_company_index"]],
+                        mode="markers+text",
+                        name="Low",
+                        text=["Low"],
+                        textposition="bottom center",
+                        marker=dict(size=9, symbol="diamond"),
+                        showlegend=False,
+                    )
+                )
+                # ------------------------------------------
+                # Today marker (current position)
+                # ------------------------------------------
+                latest_row = df_plot.iloc[-1]
+
+                # Keep the dot
+                fig.add_trace(
+                    go.Scatter(
+                        x=[latest_row["date"]],
+                        y=[latest_row["greer_company_index"]],
+                        mode="markers",
+                        marker=dict(
+                            size=10,
+                            color="black",
+                            symbol="circle"
+                        ),
+                        showlegend=False,
+                    )
+                )
+
+                # Add annotation to the RIGHT
+                fig.add_annotation(
+                    x=latest_row["date"],
+                    y=latest_row["greer_company_index"],
+                    text=f"{latest_row['phase']} • {latest_row['greer_company_index']:.0f}",
+                    showarrow=True,
+                    arrowhead=2,
+                    ax=50,
+                    ay=0,
+                    font=dict(
+                        size=12,
+                        color="#333"
+                    )
+                )
+
+                fig.add_vline(
+                    x=latest_row["date"],
+                    line_dash="dot",
+                    line_color="black",
+                    opacity=0.4
+                )
+
+                fig.update_layout(
+                    height=500,
+                    template="plotly_white",
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    xaxis=dict(title="Date"),
+                    yaxis=dict(
+                        title="Greer Company Index",
+                        range=[0, max(100, float(df_plot["greer_company_index"].max()) + 5)],
+                    ),
+                    yaxis2=dict(
+                        title="Price",
+                        overlaying="y",
+                        side="right",
+                        showgrid=False,
+                    ),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1,
+                    ),
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.markdown("### 🔍 Key Levels")
+                st.markdown(
+                    f"""
+                    - **High:** {high_row['greer_company_index']:.2f} on {high_row['date'].date()} ({high_row['phase']})
+                    - **Low:** {low_row['greer_company_index']:.2f} on {low_row['date'].date()} ({low_row['phase']})
+                    - **Rows Shown:** {len(df_plot):,}
+                    """
+                )
+
+                st.markdown("### 🧠 Component Breakdown")
+
+                fig2 = go.Figure()
+
+                fig2.add_trace(
+                    go.Scatter(
+                        x=df_plot["date"],
+                        y=df_plot["health_pct"],
+                        name="Health",
+                        mode="lines",
+                        line=dict(width=2),
+                    )
+                )
+
+                fig2.add_trace(
+                    go.Scatter(
+                        x=df_plot["date"],
+                        y=df_plot["direction_pct"],
+                        name="Direction",
+                        mode="lines",
+                        line=dict(width=2),
+                    )
+                )
+
+                fig2.add_trace(
+                    go.Scatter(
+                        x=df_plot["date"],
+                        y=df_plot["opportunity_pct"],
+                        name="Opportunity",
+                        mode="lines",
+                        line=dict(width=2),
+                    )
+                )
+
+                fig2.update_layout(
+                    height=360,
+                    template="plotly_white",
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    yaxis_title="Component %",
+                    xaxis_title="Date",
+                    yaxis=dict(range=[0, 100]),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                )
+
+                st.plotly_chart(fig2, use_container_width=True)
 
 
 # ----------------------------------------------------------
