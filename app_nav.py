@@ -23,6 +23,7 @@ def build_pages():
             st.Page("pages/3_Market-Breadth.py", title="Market Breadth", icon="🌐"),
             st.Page("pages/1_Dashboard.py", title="Dashboard", icon="📊"),
             st.Page("pages/2_Dashboard-mini.py", title="Dashboard Mini", icon="🧩"),
+            st.Page("pages/14_Divergence_Dashboard.py", title="Divergence Dashboard", icon="↔️"),
         ],
         "Portfolios": [
             st.Page("pages/12_Fund_Compare_YTD.py", title="Fund Compare (YTD)", icon="🆚"),
