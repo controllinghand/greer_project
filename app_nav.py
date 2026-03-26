@@ -63,6 +63,7 @@ def build_pages():
             st.Page("pages/9_all_star_alumni.py", title="All 3-Stars Alumni", icon="⭐"),
 
             st.Page("pages/_spacer.py", title="— Utilities —", url_path="spacer-utilities"),
+            st.Page("pages/10_Prediction_Accuracy.py", title="Prediction Accuracy", icon="🔮"),
             st.Page("pages/add_company.py", title="Add Company", icon="➕"),
         ],
     }
