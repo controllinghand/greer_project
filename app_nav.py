@@ -23,7 +23,7 @@ def build_pages():
             st.Page("pages/3_Market-Breadth.py", title="Market Breadth", icon="🌐"),
             st.Page("pages/1_Dashboard.py", title="Dashboard", icon="📊"),
             st.Page("pages/2_Dashboard-mini.py", title="Dashboard Mini", icon="🧩"),
-            st.Page("pages/14_Divergence_Dashboard.py", title="Divergence Dashboard", icon="↔️"),
+            
         ],
         "Portfolios": [
             st.Page("pages/12_Fund_Compare_YTD.py", title="Fund Compare (YTD)", icon="🆚"),
@@ -52,15 +52,16 @@ def build_pages():
             st.Page("pages/0_Fund_Build_Guide.py", title="Fund Build Guide", icon="🗺️"),
 
             st.Page("pages/_spacer.py", title="— Fund Builders —", url_path="spacer-builders"),
+            st.Page("pages/8_all_stars.py", title="3-Stars Model", icon="⭐"),
+            st.Page("pages/14_Divergence_Dashboard.py", title="Divergence Model", icon="↔️"),
+            st.Page("pages/10_Opportunities_IV.py", title="Opportunity Model", icon="🪨"),
             st.Page("pages/9_Prediction.py", title="Prediction Model", icon="🔮"),
-            st.Page("pages/10_Opportunities_IV.py", title="Opportunities", icon="🎯"),
-            st.Page("pages/11_WK_IV_Targets.py", title="Weekly IV Targets", icon="🧲"),
-            st.Page("pages/8_all_stars.py", title="All 3-Stars", icon="⭐"),
-            st.Page("pages/13_Cycle_Recovery.py", title="Cycle Recovery", icon="🔄"),
-
+            st.Page("pages/13_Cycle_Recovery.py", title="Recovery Model", icon="🔄"),
+            st.Page("pages/11_WK_IV_Targets.py", title="Volatility Model", icon="🌪️"),
+            
             st.Page("pages/_spacer.py", title="— Research —", url_path="spacer-research"),
             st.Page("pages/6_Backtesting.py", title="Backtesting", icon="🧪"),
-            st.Page("pages/9_all_star_alumni.py", title="All 3-Stars Alumni", icon="⭐"),
+            st.Page("pages/9_all_star_alumni.py", title="3-Stars Alumni", icon="⭐"),
 
             st.Page("pages/_spacer.py", title="— Utilities —", url_path="spacer-utilities"),
             st.Page("pages/10_Prediction_Accuracy.py", title="Prediction Accuracy", icon="🔮"),
