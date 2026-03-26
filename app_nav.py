@@ -52,6 +52,7 @@ def build_pages():
             st.Page("pages/0_Fund_Build_Guide.py", title="Fund Build Guide", icon="🗺️"),
 
             st.Page("pages/_spacer.py", title="— Fund Builders —", url_path="spacer-builders"),
+            st.Page("pages/9_Prediction.py", title="Prediction Model", icon="🔮"),
             st.Page("pages/10_Opportunities_IV.py", title="Opportunities", icon="🎯"),
             st.Page("pages/11_WK_IV_Targets.py", title="Weekly IV Targets", icon="🧲"),
             st.Page("pages/8_all_stars.py", title="All 3-Stars", icon="⭐"),
