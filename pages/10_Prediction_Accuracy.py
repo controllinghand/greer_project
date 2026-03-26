@@ -151,6 +151,7 @@ def load_accuracy_20d_by_bucket() -> pd.DataFrame:
             COUNT(*) AS samples,
             AVG(expected_win_rate_60d) AS expected_win_rate_reference,
             AVG(CASE WHEN actual_win_20d THEN 1.0 ELSE 0.0 END) AS actual_win_rate_20d,
+            AVG(CASE WHEN actual_win_20d THEN 1.0 ELSE 0.0 END) - AVG(expected_win_rate_60d) AS calibration_drift_20d,
             AVG(actual_return_20d) AS actual_return_20d
         FROM prediction_tracking
         WHERE actual_win_20d IS NOT NULL
@@ -175,6 +176,7 @@ def load_accuracy_60d_by_bucket() -> pd.DataFrame:
             COUNT(*) AS samples,
             AVG(expected_win_rate_60d) AS expected_win_rate_60d,
             AVG(CASE WHEN actual_win_60d THEN 1.0 ELSE 0.0 END) AS actual_win_rate_60d,
+            AVG(CASE WHEN actual_win_60d THEN 1.0 ELSE 0.0 END) - AVG(expected_win_rate_60d) AS calibration_drift_60d,
             AVG(actual_return_60d) AS actual_return_60d
         FROM prediction_tracking
         WHERE actual_win_60d IS NOT NULL
@@ -199,6 +201,7 @@ def load_accuracy_90d_by_bucket() -> pd.DataFrame:
             COUNT(*) AS samples,
             AVG(expected_win_rate_60d) AS expected_win_rate_reference,
             AVG(CASE WHEN actual_win_90d THEN 1.0 ELSE 0.0 END) AS actual_win_rate_90d,
+            AVG(CASE WHEN actual_win_90d THEN 1.0 ELSE 0.0 END) - AVG(expected_win_rate_60d) AS calibration_drift_90d,
             AVG(actual_return_90d) AS actual_return_90d
         FROM prediction_tracking
         WHERE actual_win_90d IS NOT NULL
@@ -223,6 +226,7 @@ def load_accuracy_60d_by_tier() -> pd.DataFrame:
             COUNT(*) AS samples,
             AVG(expected_win_rate_60d) AS expected_win_rate_60d,
             AVG(CASE WHEN actual_win_60d THEN 1.0 ELSE 0.0 END) AS actual_win_rate_60d,
+            AVG(CASE WHEN actual_win_60d THEN 1.0 ELSE 0.0 END) - AVG(expected_win_rate_60d) AS calibration_drift_60d,
             AVG(actual_return_60d) AS actual_return_60d
         FROM prediction_tracking
         WHERE actual_win_60d IS NOT NULL
@@ -246,6 +250,7 @@ def load_accuracy_60d_by_setup() -> pd.DataFrame:
             COUNT(*) AS samples,
             AVG(expected_win_rate_60d) AS expected_win_rate_60d,
             AVG(CASE WHEN actual_win_60d THEN 1.0 ELSE 0.0 END) AS actual_win_rate_60d,
+            AVG(CASE WHEN actual_win_60d THEN 1.0 ELSE 0.0 END) - AVG(expected_win_rate_60d) AS calibration_drift_60d,
             AVG(actual_return_60d) AS actual_return_60d
         FROM prediction_tracking
         WHERE actual_win_60d IS NOT NULL
@@ -371,12 +376,13 @@ def main():
         else:
             show_df = format_pct_columns(
                 acc20_df,
-                ["expected_win_rate_reference", "actual_win_rate_20d", "actual_return_20d"]
+                ["expected_win_rate_reference", "actual_win_rate_20d", "calibration_drift_20d", "actual_return_20d"]
             ).rename(columns={
                 "calibration_bucket": "Calibration Bucket",
                 "samples": "Samples",
                 "expected_win_rate_reference": "Expected Win Rate Ref %",
                 "actual_win_rate_20d": "Actual Win Rate 20d %",
+                "calibration_drift_20d": "Drift 20d %",
                 "actual_return_20d": "Actual Return 20d %",
             })
             st.dataframe(show_df, use_container_width=True, hide_index=True)
@@ -388,12 +394,13 @@ def main():
         else:
             show_df = format_pct_columns(
                 acc60_bucket_df,
-                ["expected_win_rate_60d", "actual_win_rate_60d", "actual_return_60d"]
+                ["expected_win_rate_60d", "actual_win_rate_60d", "calibration_drift_60d", "actual_return_60d"]
             ).rename(columns={
                 "calibration_bucket": "Calibration Bucket",
                 "samples": "Samples",
                 "expected_win_rate_60d": "Expected Win Rate 60d %",
                 "actual_win_rate_60d": "Actual Win Rate 60d %",
+                "calibration_drift_60d": "Drift 60d %",
                 "actual_return_60d": "Actual Return 60d %",
             })
             st.dataframe(show_df, use_container_width=True, hide_index=True)
@@ -404,12 +411,13 @@ def main():
         else:
             show_df = format_pct_columns(
                 acc90_df,
-                ["expected_win_rate_reference", "actual_win_rate_90d", "actual_return_90d"]
+                ["expected_win_rate_reference", "actual_win_rate_90d", "calibration_drift_90d", "actual_return_90d"]
             ).rename(columns={
                 "calibration_bucket": "Calibration Bucket",
                 "samples": "Samples",
                 "expected_win_rate_reference": "Expected Win Rate Ref %",
                 "actual_win_rate_90d": "Actual Win Rate 90d %",
+                "calibration_drift_90d": "Drift 90d %",
                 "actual_return_90d": "Actual Return 90d %",
             })
             st.dataframe(show_df, use_container_width=True, hide_index=True)
@@ -421,12 +429,13 @@ def main():
         else:
             show_df = format_pct_columns(
                 acc60_tier_df,
-                ["expected_win_rate_60d", "actual_win_rate_60d", "actual_return_60d"]
+                ["expected_win_rate_60d", "actual_win_rate_60d", "calibration_drift_60d", "actual_return_60d"]
             ).rename(columns={
                 "signal_tier": "Signal Tier",
                 "samples": "Samples",
                 "expected_win_rate_60d": "Expected Win Rate 60d %",
                 "actual_win_rate_60d": "Actual Win Rate 60d %",
+                "calibration_drift_60d": "Drift 60d %",
                 "actual_return_60d": "Actual Return 60d %",
             })
             st.dataframe(show_df, use_container_width=True, hide_index=True)
@@ -438,12 +447,13 @@ def main():
         else:
             show_df = format_pct_columns(
                 acc60_setup_df,
-                ["expected_win_rate_60d", "actual_win_rate_60d", "actual_return_60d"]
+                ["expected_win_rate_60d", "actual_win_rate_60d", "calibration_drift_60d", "actual_return_60d"]
             ).rename(columns={
                 "setup_label": "Setup",
                 "samples": "Samples",
                 "expected_win_rate_60d": "Expected Win Rate 60d %",
                 "actual_win_rate_60d": "Actual Win Rate 60d %",
+                "calibration_drift_60d": "Drift 60d %",
                 "actual_return_60d": "Actual Return 60d %",
             })
             st.dataframe(show_df, use_container_width=True, hide_index=True)
