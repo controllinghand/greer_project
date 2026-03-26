@@ -24,6 +24,7 @@ def render_home():
         phase_confidence_note,
         phase_interpretation_text,
     )
+    from prediction_utils import calculate_prediction_score
 
     # ----------------------------------------------------------
     # Page CSS
@@ -138,7 +139,191 @@ def render_home():
     # ----------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------
-    
+    # ----------------------------------------------------------
+    # Load current prediction inputs for one ticker
+    # ----------------------------------------------------------
+    @st.cache_data(ttl=300)
+    def load_company_prediction_input(ticker: str):
+        engine = get_engine()
+
+        query = """
+            WITH latest_market AS (
+                SELECT
+                    date,
+                    buyzone_pct,
+                    CASE
+                        WHEN buyzone_pct >= 66 THEN 'EXTREME_OPPORTUNITY'
+                        WHEN buyzone_pct >= 46 THEN 'ELEVATED_OPPORTUNITY'
+                        WHEN buyzone_pct >= 14 THEN 'NORMAL'
+                        WHEN buyzone_pct >= 10 THEN 'LOW_OPPORTUNITY'
+                        ELSE 'EXTREME_GREED'
+                    END AS goi_zone
+                FROM buyzone_breadth
+                ORDER BY date DESC
+                LIMIT 1
+            ),
+            company_phase_history AS (
+                SELECT
+                    g.ticker,
+                    g.date,
+                    g.phase,
+                    g.confidence,
+                    LAG(g.phase) OVER (PARTITION BY g.ticker ORDER BY g.date) AS prior_phase,
+                    ROW_NUMBER() OVER (PARTITION BY g.ticker ORDER BY g.date DESC) AS rn
+                FROM greer_company_index_daily g
+                WHERE g.ticker = %(t)s
+            ),
+            latest_company_phase AS (
+                SELECT
+                    ticker,
+                    date AS snapshot_date,
+                    phase,
+                    prior_phase,
+                    confidence
+                FROM company_phase_history
+                WHERE rn = 1
+            )
+            SELECT
+                ds.ticker,
+                ds.name,
+                ds.sector,
+                ds.industry,
+                ds.current_price,
+                ds.greer_star_rating,
+                ds.greer_value_score,
+                ds.greer_yield_score,
+                ds.buyzone_flag,
+                ds.gfv_price,
+                ds.gfv_status,
+                lcp.snapshot_date,
+                lcp.phase,
+                lcp.prior_phase,
+                lcp.confidence,
+                lm.buyzone_pct AS market_buyzone_pct,
+                lm.goi_zone
+            FROM dashboard_snapshot ds
+            JOIN latest_company_phase lcp
+              ON lcp.ticker = ds.ticker
+            CROSS JOIN latest_market lm
+            WHERE ds.ticker = %(t)s
+            LIMIT 1;
+        """
+
+        return pd.read_sql(query, engine, params={"t": ticker})
+    # ----------------------------------------------------------
+    # Render company prediction section
+    # ----------------------------------------------------------
+    def render_company_prediction_section(ticker: str):
+        pred_df = load_company_prediction_input(ticker)
+
+        if pred_df.empty:
+            st.info("No prediction data available for this company.")
+            return
+
+        row = pred_df.iloc[0]
+        score = calculate_prediction_score(row)
+
+        prediction_score = float(score["prediction_score"])
+        raw_bucket = score["score_bucket"]
+        calibration_bucket = score["calibration_bucket"]
+        signal_tier = score["signal_tier"]
+        expected_win_rate = score["expected_win_rate_60d"]
+        expected_return = score["expected_return_60d"]
+        setup_label = score["setup_label"]
+
+        current_goi_zone = row.get("goi_zone", "UNKNOWN")
+        current_goi_label = str(current_goi_zone).replace("_", " ").title()
+
+        # ----------------------------------------------------------
+        # Signal color / explanation / guidance
+        # ----------------------------------------------------------
+        signal_color_map = {
+            "High Conviction": "#2E7D32",   # green
+            "Strong": "#1565C0",            # blue
+            "Constructive": "#EF6C00",      # orange
+            "Watchlist": "#9E9E9E",         # gray
+        }
+        score_color = signal_color_map.get(signal_tier, "#9E9E9E")
+
+        signal_explanations = {
+            "High Conviction": "Historically strong setup with the best probability and return profile.",
+            "Strong": "Solid setup with good historical probabilities, though less powerful than the top bucket.",
+            "Constructive": "Positive setup, but with lower consistency and a weaker return profile.",
+            "Watchlist": "No strong statistical edge right now. Better treated as a monitor-only setup.",
+        }
+        signal_explanation = signal_explanations.get(
+            signal_tier,
+            "No strong statistical edge right now."
+        )
+
+        if signal_tier == "High Conviction":
+            positioning_guidance = "✅ Favorable entry conditions — consider initiating or adding to a position."
+        elif signal_tier == "Strong":
+            positioning_guidance = "👍 Good setup — selective entries and normal sizing may make sense."
+        elif signal_tier == "Constructive":
+            positioning_guidance = "⚠️ Moderate setup — smaller sizing or patience may be appropriate."
+        else:
+            positioning_guidance = "👀 No strong edge — monitor for a better setup before acting."
+
+        st.markdown("### 🔮 Prediction")
+
+        st.caption(
+            "Probability-based 60-day outlook using phase, transitions, GOI regime, BuyZone, confidence, and fundamentals."
+        )
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            st.metric("Prediction Score", f"{prediction_score:.1f}")
+            st.caption(f"Raw Bucket: {raw_bucket}")
+
+            # Color emphasis for the score / tier
+            st.markdown(
+                f"""
+                <div style="margin-top: 0.25rem; font-weight: 600; color: {score_color};">
+                    {signal_tier}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with c2:
+            if expected_win_rate is not None:
+                st.metric("Expected 60d Win Rate", f"{expected_win_rate * 100:.1f}%")
+                st.caption(f"Calibration Bucket: {calibration_bucket}")
+            else:
+                st.metric("Expected 60d Win Rate", "N/A")
+                st.caption("Calibration Bucket: —")
+
+        with c3:
+            if expected_return is not None:
+                st.metric("Expected 60d Return", f"{expected_return * 100:.1f}%")
+                st.caption(signal_tier)
+            else:
+                st.metric("Expected 60d Return", "N/A")
+                st.caption(signal_tier)
+
+        st.markdown(
+            f"""
+            <div class="summary-banner">
+                <b>Setup:</b> {setup_label} <br>
+                <b>GOI:</b> {current_goi_label} <br>
+                <b>Phase Transition:</b> {(row.get("prior_phase") or "Unknown").title()} → {(row.get("phase") or "Unknown").title()}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # ----------------------------------------------------------
+        # Signal explanation
+        # ----------------------------------------------------------
+        st.caption(f"🔍 {signal_explanation}")
+
+        # ----------------------------------------------------------
+        # Positioning guidance
+        # ----------------------------------------------------------
+        st.info(positioning_guidance)
+
     # ----------------------------------------------------------
     # Load Greer Company Index history
     # ----------------------------------------------------------
@@ -1797,8 +1982,9 @@ def render_home():
     # ----------------------------------------------------------
     engine = get_engine()
 
-    tab_overview, tab_valuation, tab_technicals, tab_cycle, tab_history = st.tabs([
+    tab_overview, tab_prediction, tab_valuation, tab_technicals, tab_cycle, tab_history = st.tabs([
         "Overview",
+        "Prediction 🔮",
         "Valuation",
         "Technicals",
         "Cycle",
@@ -1855,6 +2041,9 @@ def render_home():
 
         st.markdown("\n".join(notes))
 
+    with tab_prediction:
+        render_company_prediction_section(ticker)
+    
     with tab_valuation:
         st.subheader("Valuation")
         render_gv_details(ticker, engine)

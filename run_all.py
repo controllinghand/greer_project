@@ -105,6 +105,13 @@ logger.info("Running greer_company_index_calculator.py")
 run_cmd(["python", "greer_company_index_calculator.py"])
 
 # ----------------------------------------------------------
+# Track Daily Predictions
+# ----------------------------------------------------------
+print("\n🔮 Tracking daily prediction snapshots …")
+logger.info("Running prediction_tracker.py")
+run_cmd(["python", "prediction_tracker.py"])
+
+# ----------------------------------------------------------
 # Opportunity Periods
 # ----------------------------------------------------------
 print("\n📜 Rebuilding Greer opportunity periods …")
