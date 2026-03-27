@@ -10,23 +10,25 @@ from prediction_utils import calculate_prediction_score
 # ----------------------------------------------------------
 # Page config
 # ----------------------------------------------------------
-st.set_page_config(page_title="Prediction", layout="wide")
+st.set_page_config(page_title="Prediction", page_icon="🔮", layout="wide")
 
 PREDICTION_PAGE_DESCRIPTION = """
-The Prediction model estimates the probability that a stock will be higher in roughly 60 trading days.
+The Prediction model estimates the probability that a stock will be higher over a multi-month horizon.
 
 It combines company phase, phase transitions, market opportunity regime (GOI),
 BuyZone state, confidence, and fundamentals as a light quality overlay.
 
 Key findings from historical testing:
-- The score is not linear. Higher is not always better.
-- The strongest high-conviction bucket was around score 90.
-- The best scalable bucket was around score 110.
-- The best recurring regime was Contraction + Elevated Opportunity.
-- Extreme Greed was a dangerous environment for contraction names.
+- The model is NOT a short-term trading system.
+- The strongest signals are in the 110 score bucket.
+- Performance improves with time (60 → 90 → 120 → 180 days).
+- Best results occur when positions are held 120–180 trading days.
+- Typical drawdowns of ~10% are normal before a trend develops.
+- Tight stop losses reduce performance by cutting winning trends early.
 
-This is a probability tool, not a certainty tool.
+This is a probability tool designed for trend capture, not short-term timing.
 """
+
 
 # ----------------------------------------------------------
 # DB connection
@@ -106,12 +108,13 @@ def load_prediction_inputs() -> pd.DataFrame:
 
     return pd.read_sql(query, engine)
 
+
 # ----------------------------------------------------------
 # Main
 # ----------------------------------------------------------
 def main():
     st.title("🔮 Prediction")
-    st.caption("Probability-based 60-day outlook for current company setups.")
+    st.caption("Probability-based multi-month outlook for current company setups.")
     st.markdown(PREDICTION_PAGE_DESCRIPTION)
 
     df = load_prediction_inputs()
@@ -133,6 +136,15 @@ Interpretation:
 - Extreme Greed → Risk of overextension
 """)
 
+    st.warning("""
+⚠️ **How to interpret this model**
+
+- This is a medium-term trend system (not a quick trade)
+- Many winners experience ~10% drawdowns before moving higher
+- A 10% stop loss may exit strong future winners too early
+- Best results come from patience and holding through volatility
+""")
+
     # Optional filters: exclude known weak/noisy setups
     df = df[df["buyzone_flag"].notna()].copy()
     df = df[~((df["phase"] == "CONTRACTION") & (df["goi_zone"] == "EXTREME_GREED"))].copy()
@@ -143,21 +155,21 @@ Interpretation:
     # Top summary
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("Best Historical Bucket", "90")
-        st.caption("~73.4% 60d win rate")
+        st.metric("Optimal Signal Bucket", "110+")
+        st.caption("Best balance of return and win rate")
     with c2:
-        st.metric("Best Scalable Bucket", "110")
-        st.caption("~68.1% 60d win rate")
+        st.metric("Target Holding Period", "120–180 Days")
+        st.caption("Edge improves with time")
     with c3:
-        st.metric("Best Core Regime", "Contraction + Elevated")
-        st.caption("Strongest recurring setup")
+        st.metric("Expected Drawdown", "~10% typical")
+        st.caption("Temporary dips are normal")
 
     st.divider()
 
     # Filters
     col1, col2, col3 = st.columns(3)
     with col1:
-        min_score = st.slider("Minimum Prediction Score", min_value=0, max_value=150, value=80, step=10)
+        min_score = st.slider("Minimum Prediction Score", min_value=0, max_value=150, value=100, step=10)
     with col2:
         selected_phase = st.multiselect(
             "Phase",
@@ -177,8 +189,8 @@ Interpretation:
         (df["goi_zone"].isin(selected_goi))
     ].copy()
 
-    filtered["expected_win_rate_60d_pct"] = (filtered["expected_win_rate_60d"] * 100).round(1)
-    filtered["expected_return_60d_pct"] = (filtered["expected_return_60d"] * 100).round(1)
+    filtered["expected_win_rate_trend_pct"] = (filtered["expected_win_rate_trend"] * 100).round(1)
+    filtered["expected_return_trend_pct"] = (filtered["expected_return_trend"] * 100).round(1)
     filtered["confidence_pct"] = (filtered["confidence"] * 100).round(1)
     filtered["prediction_score"] = filtered["prediction_score"].round(1)
 
@@ -192,8 +204,9 @@ Interpretation:
         "score_bucket",
         "calibration_bucket",
         "signal_tier",
-        "expected_win_rate_60d_pct",
-        "expected_return_60d_pct",
+        "signal_horizon",
+        "expected_win_rate_trend_pct",
+        "expected_return_trend_pct",
         "setup_label",
         "phase",
         "prior_phase",
@@ -205,7 +218,7 @@ Interpretation:
     ]
 
     display_df = filtered[show_cols].sort_values(
-        ["expected_win_rate_60d_pct", "prediction_score"],
+        ["expected_win_rate_trend_pct", "prediction_score"],
         ascending=[False, False]
     ).rename(columns={
         "ticker": "Ticker",
@@ -215,8 +228,9 @@ Interpretation:
         "score_bucket": "Raw Bucket",
         "calibration_bucket": "Calibration Bucket",
         "signal_tier": "Signal Tier",
-        "expected_win_rate_60d_pct": "Expected 60d Win Rate %",
-        "expected_return_60d_pct": "Expected 60d Return %",
+        "signal_horizon": "Signal Horizon",
+        "expected_win_rate_trend_pct": "Expected Win Rate (Trend) %",
+        "expected_return_trend_pct": "Expected Return (Trend) %",
         "setup_label": "Setup",
         "phase": "Phase",
         "prior_phase": "Prior Phase",
@@ -226,15 +240,14 @@ Interpretation:
         "greer_value_score": "GV",
         "greer_yield_score": "GY",
     })
+
     # ----------------------------------------------------------
     # Clean up display formatting
     # ----------------------------------------------------------
     display_df["Price"] = display_df["Price"].round(2)
-
     display_df["Prediction Score"] = display_df["Prediction Score"].round(1)
-
-    display_df["Expected 60d Win Rate %"] = display_df["Expected 60d Win Rate %"].round(1)
-    display_df["Expected 60d Return %"] = display_df["Expected 60d Return %"].round(1)
+    display_df["Expected Win Rate (Trend) %"] = display_df["Expected Win Rate (Trend) %"].round(1)
+    display_df["Expected Return (Trend) %"] = display_df["Expected Return (Trend) %"].round(1)
 
     # Buckets should be integers
     display_df["Raw Bucket"] = display_df["Raw Bucket"].astype("Int64")
@@ -245,10 +258,12 @@ Interpretation:
     display_df["GY"] = display_df["GY"].round(0)
 
     def highlight_rows(row):
-        if row["Signal Tier"] == "High Conviction":
+        if row["Signal Tier"] == "Optimal":
+            return ["background-color: rgba(0, 150, 255, 0.12)"] * len(row)
+        if row["Signal Tier"] == "High Opportunity":
             return ["background-color: rgba(0, 200, 0, 0.15)"] * len(row)
-        if row["Signal Tier"] == "Strong":
-            return ["background-color: rgba(0, 150, 255, 0.10)"] * len(row)
+        if row["Signal Tier"] == "Over-Filtered":
+            return ["background-color: rgba(255, 165, 0, 0.10)"] * len(row)
         return [""] * len(row)
 
     st.dataframe(
@@ -256,8 +271,8 @@ Interpretation:
         .format({
             "Price": "{:.2f}",
             "Prediction Score": "{:.1f}",
-            "Expected 60d Win Rate %": "{:.1f}",
-            "Expected 60d Return %": "{:.1f}",
+            "Expected Win Rate (Trend) %": "{:.1f}",
+            "Expected Return (Trend) %": "{:.1f}",
             "GV": "{:.0f}",
             "GY": "{:.0f}",
             "Raw Bucket": "{:.0f}",
@@ -273,9 +288,27 @@ Interpretation:
 
     st.markdown("### Calibration Guide")
     calibration_df = pd.DataFrame([
-        {"Calibration Bucket": 90, "Tier": "High Conviction", "Expected 60d Win Rate": "73.4%", "Expected 60d Return": "11.3%"},
-        {"Calibration Bucket": 110, "Tier": "Strong", "Expected 60d Win Rate": "68.1%", "Expected 60d Return": "8.3%"},
-        {"Calibration Bucket": 130, "Tier": "Constructive", "Expected 60d Win Rate": "64.6%", "Expected 60d Return": "6.8%"},
+        {
+            "Calibration Bucket": 110,
+            "Tier": "Optimal",
+            "Expected 180d Win Rate": "~73%",
+            "Expected 180d Return": "~20%",
+            "Notes": "Best balance of return and consistency",
+        },
+        {
+            "Calibration Bucket": 90,
+            "Tier": "High Opportunity",
+            "Expected 180d Win Rate": "~71%",
+            "Expected 180d Return": "~19%",
+            "Notes": "More signals, slightly more noise",
+        },
+        {
+            "Calibration Bucket": 130,
+            "Tier": "Over-Filtered",
+            "Expected 180d Win Rate": "~71%",
+            "Expected 180d Return": "~18%",
+            "Notes": "Too selective, reduces opportunity",
+        },
     ])
     st.dataframe(calibration_df, use_container_width=True, hide_index=True)
 

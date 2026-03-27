@@ -227,8 +227,9 @@ def render_home():
         raw_bucket = score["score_bucket"]
         calibration_bucket = score["calibration_bucket"]
         signal_tier = score["signal_tier"]
-        expected_win_rate = score["expected_win_rate_60d"]
-        expected_return = score["expected_return_60d"]
+        signal_horizon = score["signal_horizon"]
+        expected_win_rate = score["expected_win_rate_trend"]
+        expected_return = score["expected_return_trend"]
         setup_label = score["setup_label"]
 
         current_goi_zone = row.get("goi_zone", "UNKNOWN")
@@ -238,17 +239,17 @@ def render_home():
         # Signal color / explanation / guidance
         # ----------------------------------------------------------
         signal_color_map = {
-            "High Conviction": "#2E7D32",   # green
-            "Strong": "#1565C0",            # blue
-            "Constructive": "#EF6C00",      # orange
-            "Watchlist": "#9E9E9E",         # gray
+            "Optimal": "#1565C0",            # blue
+            "High Opportunity": "#2E7D32",   # green
+            "Over-Filtered": "#EF6C00",      # orange
+            "Watchlist": "#9E9E9E",          # gray
         }
         score_color = signal_color_map.get(signal_tier, "#9E9E9E")
 
         signal_explanations = {
-            "High Conviction": "Historically strong setup with the best probability and return profile.",
-            "Strong": "Solid setup with good historical probabilities, though less powerful than the top bucket.",
-            "Constructive": "Positive setup, but with lower consistency and a weaker return profile.",
+            "Optimal": "Historically the best balance of return and win rate. This is the strongest calibrated trend bucket.",
+            "High Opportunity": "Strong setup with attractive upside, but slightly noisier than the optimal bucket.",
+            "Over-Filtered": "Very selective setup, but historical testing suggests too much filtering reduces opportunity.",
             "Watchlist": "No strong statistical edge right now. Better treated as a monitor-only setup.",
         }
         signal_explanation = signal_explanations.get(
@@ -256,20 +257,28 @@ def render_home():
             "No strong statistical edge right now."
         )
 
-        if signal_tier == "High Conviction":
-            positioning_guidance = "✅ Favorable entry conditions — consider initiating or adding to a position."
-        elif signal_tier == "Strong":
-            positioning_guidance = "👍 Good setup — selective entries and normal sizing may make sense."
-        elif signal_tier == "Constructive":
-            positioning_guidance = "⚠️ Moderate setup — smaller sizing or patience may be appropriate."
+        if signal_tier == "Optimal":
+            positioning_guidance = "✅ Best used as a 120–180 day trend position. Patience matters more than tight risk management."
+        elif signal_tier == "High Opportunity":
+            positioning_guidance = "👍 Attractive setup with strong historical edge. Best treated as a medium-term trend hold."
+        elif signal_tier == "Over-Filtered":
+            positioning_guidance = "⚠️ Selective setup, but research suggests this bucket can miss opportunity. Use with caution."
         else:
             positioning_guidance = "👀 No strong edge — monitor for a better setup before acting."
 
         st.markdown("### 🔮 Prediction")
 
         st.caption(
-            "Probability-based 60-day outlook using phase, transitions, GOI regime, BuyZone, confidence, and fundamentals."
+            "Probability-based trend outlook using phase, transitions, GOI regime, BuyZone, confidence, and fundamentals."
         )
+
+        st.warning("""
+This is a medium-term trend system, not a quick trade.
+
+- Best historical results came from holding 120–180 trading days
+- Many winners experience ~10% drawdowns before moving higher
+- Tight stop losses can exit strong future winners too early
+""")
 
         c1, c2, c3 = st.columns(3)
 
@@ -277,7 +286,6 @@ def render_home():
             st.metric("Prediction Score", f"{prediction_score:.1f}")
             st.caption(f"Raw Bucket: {raw_bucket}")
 
-            # Color emphasis for the score / tier
             st.markdown(
                 f"""
                 <div style="margin-top: 0.25rem; font-weight: 600; color: {score_color};">
@@ -289,40 +297,44 @@ def render_home():
 
         with c2:
             if expected_win_rate is not None:
-                st.metric("Expected 60d Win Rate", f"{expected_win_rate * 100:.1f}%")
+                st.metric("Expected Trend Win Rate", f"{expected_win_rate * 100:.1f}%")
                 st.caption(f"Calibration Bucket: {calibration_bucket}")
             else:
-                st.metric("Expected 60d Win Rate", "N/A")
+                st.metric("Expected Trend Win Rate", "N/A")
                 st.caption("Calibration Bucket: —")
 
         with c3:
             if expected_return is not None:
-                st.metric("Expected 60d Return", f"{expected_return * 100:.1f}%")
-                st.caption(signal_tier)
+                st.metric("Expected Trend Return", f"{expected_return * 100:.1f}%")
+                st.caption(signal_horizon)
             else:
-                st.metric("Expected 60d Return", "N/A")
-                st.caption(signal_tier)
+                st.metric("Expected Trend Return", "N/A")
+                st.caption(signal_horizon)
 
         st.markdown(
             f"""
             <div class="summary-banner">
                 <b>Setup:</b> {setup_label} <br>
                 <b>GOI:</b> {current_goi_label} <br>
-                <b>Phase Transition:</b> {(row.get("prior_phase") or "Unknown").title()} → {(row.get("phase") or "Unknown").title()}
+                <b>Phase Transition:</b> {(row.get("prior_phase") or "Unknown").title()} → {(row.get("phase") or "Unknown").title()} <br>
+                <b>Signal Horizon:</b> {signal_horizon}
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # ----------------------------------------------------------
-        # Signal explanation
-        # ----------------------------------------------------------
         st.caption(f"🔍 {signal_explanation}")
 
-        # ----------------------------------------------------------
-        # Positioning guidance
-        # ----------------------------------------------------------
         st.info(positioning_guidance)
+
+        st.markdown("### Historical Research Snapshot")
+        research_df = pd.DataFrame([
+            {"Metric": "Optimal bucket", "Value": "110+"},
+            {"Metric": "Best holding period", "Value": "120–180 trading days"},
+            {"Metric": "Typical winner drawdown", "Value": "~10% before trend develops"},
+            {"Metric": "180d historical profile", "Value": "~73% win rate / ~20% average return"},
+        ])
+        st.dataframe(research_df, use_container_width=True, hide_index=True)
 
     # ----------------------------------------------------------
     # Load Greer Company Index history
