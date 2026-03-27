@@ -22,15 +22,23 @@ st.set_page_config(
 PAGE_DESCRIPTION = """
 The Prediction Accuracy dashboard tracks how the live prediction model performs over time.
 
-It compares:
-- Expected probabilities from the model
-- Actual outcomes after 20, 60, and 90 trading days
+This model is designed as a trend system, not a short-term trade signal.
 
-This page is designed to answer:
+It compares:
+- Expected probabilities from the model (trend-based expectations)
+- Actual outcomes over multiple horizons (20, 60, and 90 trading days)
+
+Key concepts:
+- The strongest signals occur in the 110+ bucket
+- Performance improves with time (60 → 90 → 120 → 180 days)
+- Drawdowns (~10%) are normal before trends develop
+- Tight stop-losses can reduce model performance
+
+This page helps answer:
 - Are our probabilities holding up?
-- Which signal tiers are working best?
-- Which setups are drifting over time?
 - Is the model staying calibrated?
+- Which setups are strongest?
+- How does performance evolve over time?
 """
 
 
@@ -281,6 +289,14 @@ def main():
     st.caption("Track expected vs actual outcomes for the live prediction model.")
     st.markdown(PAGE_DESCRIPTION)
 
+    st.info("""
+📊 **Model Horizon Context**
+
+- This is a trend-following system (120–180 trading days)
+- 20d and 60d results are early indicators, not final outcomes
+- Accuracy should improve as holding period increases
+""")
+
     summary_df = load_summary()
 
     if summary_df.empty:
@@ -355,6 +371,12 @@ def main():
     st.divider()
 
     st.markdown("## Accuracy vs Expected")
+    st.caption("""
+Calibration Drift = Actual Win Rate − Expected Win Rate
+
+- Positive → model is underestimating performance
+- Negative → model is overestimating performance
+""")
 
     acc20_df = load_accuracy_20d_by_bucket()
     acc60_bucket_df = load_accuracy_60d_by_bucket()
@@ -363,10 +385,10 @@ def main():
     acc60_setup_df = load_accuracy_60d_by_setup()
 
     tab1, tab2, tab3, tab4 = st.tabs([
-        "20d by Bucket",
-        "60d by Bucket",
-        "60d by Tier",
-        "60d by Setup",
+        "Early Signal (20d)",
+        "Trend Progress (60d / 90d)",
+        "By Signal Tier",
+        "By Setup",
     ])
 
     with tab1:
@@ -380,7 +402,7 @@ def main():
             ).rename(columns={
                 "calibration_bucket": "Calibration Bucket",
                 "samples": "Samples",
-                "expected_win_rate_reference": "Expected Win Rate Ref %",
+                "expected_win_rate_reference": "Expected Win Rate (Trend) %",
                 "actual_win_rate_20d": "Actual Win Rate 20d %",
                 "calibration_drift_20d": "Drift 20d %",
                 "actual_return_20d": "Actual Return 20d %",
@@ -398,7 +420,7 @@ def main():
             ).rename(columns={
                 "calibration_bucket": "Calibration Bucket",
                 "samples": "Samples",
-                "expected_win_rate_60d": "Expected Win Rate 60d %",
+                "expected_win_rate_60d": "Expected Win Rate (Trend) %",
                 "actual_win_rate_60d": "Actual Win Rate 60d %",
                 "calibration_drift_60d": "Drift 60d %",
                 "actual_return_60d": "Actual Return 60d %",
@@ -415,7 +437,7 @@ def main():
             ).rename(columns={
                 "calibration_bucket": "Calibration Bucket",
                 "samples": "Samples",
-                "expected_win_rate_reference": "Expected Win Rate Ref %",
+                "expected_win_rate_reference": "Expected Win Rate (Trend) %",
                 "actual_win_rate_90d": "Actual Win Rate 90d %",
                 "calibration_drift_90d": "Drift 90d %",
                 "actual_return_90d": "Actual Return 90d %",
@@ -433,7 +455,7 @@ def main():
             ).rename(columns={
                 "signal_tier": "Signal Tier",
                 "samples": "Samples",
-                "expected_win_rate_60d": "Expected Win Rate 60d %",
+                "expected_win_rate_60d": "Expected Win Rate (Trend) %",
                 "actual_win_rate_60d": "Actual Win Rate 60d %",
                 "calibration_drift_60d": "Drift 60d %",
                 "actual_return_60d": "Actual Return 60d %",
@@ -451,12 +473,26 @@ def main():
             ).rename(columns={
                 "setup_label": "Setup",
                 "samples": "Samples",
-                "expected_win_rate_60d": "Expected Win Rate 60d %",
+                "expected_win_rate_60d": "Expected Win Rate (Trend) %",
                 "actual_win_rate_60d": "Actual Win Rate 60d %",
                 "calibration_drift_60d": "Drift 60d %",
                 "actual_return_60d": "Actual Return 60d %",
             })
             st.dataframe(show_df, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    st.markdown("### 🧠 Key Insight")
+    st.success("""
+The Prediction model performs best when treated as a trend system:
+
+- Higher scores (110+) show the strongest consistency
+- Win rates improve as holding period increases
+- Many winners require patience through early drawdowns
+- Over-managing positions (tight stops, early exits) reduces performance
+
+➡️ The edge comes from time in the trade, not timing the trade
+""")
 
 
 if __name__ == "__main__":
