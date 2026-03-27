@@ -2,7 +2,7 @@
 # ----------------------------------------------------------
 # Dashboard Guide / Definitions Page
 # Explains the purpose of each dashboard and how to read
-# the Greer Market Cycle phases.
+# the Greer dashboard ecosystem.
 # ----------------------------------------------------------
 
 import streamlit as st
@@ -10,10 +10,61 @@ import streamlit as st
 st.set_page_config(page_title="Dashboard Guide", layout="wide")
 
 # ----------------------------------------------------------
+# Small UI helpers
+# ----------------------------------------------------------
+def phase_card(color_box: str, title: str, body: str):
+    st.markdown(
+        f"""
+        <div style="
+            border: 1px solid rgba(0,0,0,0.08);
+            border-left: 8px solid {color_box};
+            border-radius: 12px;
+            padding: 0.9rem 1rem;
+            background: rgba(255,255,255,0.55);
+            min-height: 200px;
+        ">
+            <div style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.5rem;">
+                {title}
+            </div>
+            <div style="font-size: 0.95rem; line-height: 1.55;">
+                {body}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def metric_card(title: str, text: str):
+    st.markdown(
+        f"""
+        <div style="
+            border: 1px solid rgba(0,0,0,0.08);
+            border-radius: 12px;
+            padding: 0.9rem 1rem;
+            background: rgba(255,255,255,0.55);
+            min-height: 145px;
+        ">
+            <div style="font-size: 1.0rem; font-weight: 700; margin-bottom: 0.45rem;">
+                {title}
+            </div>
+            <div style="font-size: 0.95rem; line-height: 1.55;">
+                {text}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ----------------------------------------------------------
 # Page Title
 # ----------------------------------------------------------
 st.title("📘 Dashboard Guide")
-st.caption("A quick reference for understanding the You Rock dashboards and what each signal means.")
+st.caption(
+    "A practical guide to the You Rock dashboard system — what each page does, how the signals connect, "
+    "and how Rockers can use them together."
+)
 
 # ----------------------------------------------------------
 # Intro
@@ -21,15 +72,78 @@ st.caption("A quick reference for understanding the You Rock dashboards and what
 st.markdown("""
 Welcome to the **You Rock Dashboard Guide**.
 
-This page explains the purpose of each dashboard, how to interpret the main signals,
-and how the **Greer Market Cycle** phases fit together.
+The goal of the dashboard suite is simple:
 
-The goal is simple:
+- Turn a lot of market data into a few clear signals
+- Show where the market is strong, weak, or attractive
+- Help Rockers move from **macro context** to **sector focus** to **company-level action**
 
-- Turn a lot of data into a few clear signals
-- Help Rockers understand what the market is doing
-- Make the dashboards easier to act on
+This is not just a collection of pages.  
+It is a **top-down decision system**.
 """)
+
+st.divider()
+
+# ----------------------------------------------------------
+# System Map
+# ----------------------------------------------------------
+st.header("🧠 How the System Works")
+
+st.markdown("""
+The You Rock dashboards are designed to answer a sequence of questions:
+
+**1. Is opportunity broad right now?**  
+Use **🎯 Greer Opportunity Index (GOI)**
+
+**2. What phase is the market in?**  
+Use **🧭 Market Cycle**
+
+**3. Where is money flowing?**  
+Use **🏭 Sector Market Cycle**
+
+**4. Which stocks are actionable?**  
+Use **🏢 Company Market Cycle**
+
+**5. Is market stress rising or falling?**  
+Use **🎯 BuyZone Count**
+""")
+
+st.markdown("### The Decision Flow")
+st.markdown("""
+**GOI → Market Cycle → Sector Cycle → Company Cycle → Execution**
+""")
+
+flow_col1, flow_col2, flow_col3, flow_col4, flow_col5 = st.columns(5)
+
+with flow_col1:
+    metric_card(
+        "🎯 GOI",
+        "Macro opportunity map. Shows how much of the market is currently in BuyZone."
+    )
+
+with flow_col2:
+    metric_card(
+        "🧭 Market Cycle",
+        "Tells you the current regime: Recovery, Expansion, Euphoria, or Contraction."
+    )
+
+with flow_col3:
+    metric_card(
+        "🏭 Sector Cycle",
+        "Shows which sectors are leading, lagging, recovering, or stretched."
+    )
+
+with flow_col4:
+    metric_card(
+        "🏢 Company Cycle",
+        "Turns market context into stock-level action using Health, Direction, and Opportunity."
+    )
+
+with flow_col5:
+    metric_card(
+        "⚙️ Execution",
+        "Use the system read to decide whether to accumulate, ride, trim, or stay selective."
+    )
 
 st.divider()
 
@@ -41,36 +155,132 @@ st.header("🧭 Dashboard Index")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("Sentiment & Cycle")
+    st.subheader("Cycle, Opportunity & Sentiment")
     st.markdown("""
-- **🧠 Sentiment Panel**  
-  Shows the emotional tone of the market. Useful for seeing whether investors are fearful, confident, or stretched.
+- **🎯 Greer Opportunity Index (GOI)**  
+  Measures how much opportunity exists across the market based on BuyZone breadth.
 
 - **🧭 Market Cycle**  
-  Tracks the overall market phase using Greer-style signals such as health, buyzones, and opportunity.
+  Identifies the current market phase and confidence level.
 
-- **🏙️ Sector Market Cycle**  
-  Applies the same cycle logic to individual sectors so you can see which parts of the market are recovering, expanding, euphoric, or contracting.
+- **🏭 Sector Market Cycle**  
+  Applies the cycle framework to sectors so you can see rotation and leadership.
+
+- **🏢 Company Market Cycle**  
+  Breaks down each company into Health, Direction, and Opportunity.
+
+- **🧠 Sentiment Panel**  
+  Provides a higher-level read on how the market feels internally.
 
 - **📊 Fear & Greed**  
-  Measures whether the market is leaning too fearful or too greedy. Often useful as a contrarian reference.
+  A contrarian sentiment reference for identifying fear or excess optimism.
     """)
 
 with col2:
-    st.subheader("Breadth & Opportunity")
+    st.subheader("Breadth, Internals & Monitoring")
     st.markdown("""
-- **🚨 Bottom Detector**  
-  Looks for signs that selling may be washed out and conditions are improving.
+- **🎯 BuyZone Count**  
+  Tracks the number of companies in BuyZone and highlights rising or falling stress.
 
-- **📈 Market Breadth**  
-  Shows how many stocks are participating in the move. Healthy rallies usually have broad participation.
+- **🚨 Bottom Detector**  
+  Looks for signs that markets may be washed out and stabilizing.
+
+- **🌐 Market Breadth**  
+  Shows how broad participation is beneath the surface.
 
 - **📋 Dashboard**  
-  Full dashboard view with the main indicators and market internals in one place.
+  The full dashboard view with the main internal signals in one place.
 
 - **🧩 Dashboard Mini**  
-  A simplified version of the dashboard for quick monitoring.
+  A quick-look version of the full dashboard for fast monitoring.
     """)
+
+st.divider()
+
+# ----------------------------------------------------------
+# Core Signal Building Blocks
+# ----------------------------------------------------------
+st.header("🧱 Core Signal Building Blocks")
+
+b1, b2, b3, b4 = st.columns(4)
+
+with b1:
+    metric_card(
+        "🟢 Health",
+        "Measures fundamental strength. This is driven primarily by Greer Value strength and related quality support."
+    )
+
+with b2:
+    metric_card(
+        "📉 Direction",
+        "Measures technical posture and market pressure. BuyZone and related trend signals help determine whether conditions are improving or weakening."
+    )
+
+with b3:
+    metric_card(
+        "💰 Opportunity",
+        "Measures valuation attractiveness. Yield-based signals and fair-value signals help show whether a stock or market is cheap, fair, or stretched."
+    )
+
+with b4:
+    metric_card(
+        "🎯 Confidence",
+        "Measures how strongly the signals agree. High confidence means the regime is clear. Low confidence means transition risk is higher."
+    )
+
+st.divider()
+
+# ----------------------------------------------------------
+# GOI Section
+# ----------------------------------------------------------
+st.header("🎯 Greer Opportunity Index (GOI)")
+
+st.markdown("""
+The **Greer Opportunity Index** is a market-wide opportunity gauge.
+
+It measures the **percentage of tracked companies currently in BuyZone**.
+
+### In plain English
+- **High GOI** = opportunity is broad
+- **Low GOI** = opportunity is limited
+- **Extreme high readings** often happen during stress, panic, or washout periods
+- **Extreme low readings** often happen when the market is crowded or overheated
+
+### Why it matters
+GOI helps answer the first and most important question:
+
+**Is this a market where I should be hunting aggressively, or staying selective?**
+""")
+
+goi_col1, goi_col2 = st.columns(2)
+
+with goi_col1:
+    st.markdown("""
+### Typical Read
+- **Extreme Opportunity**  
+  Broad panic-style setup. Historically rare and often attractive.
+
+- **Elevated Opportunity**  
+  Opportunity is building across the market.
+
+- **Normal Range**  
+  Typical environment. Stock selection matters most.
+
+- **Low Opportunity**  
+  Fewer attractive setups available.
+
+- **Extreme Greed**  
+  Very few names in BuyZone. Risk of crowding and overstretch is higher.
+    """)
+
+with goi_col2:
+    st.info("""
+Best used for:
+- macro opportunity context
+- sizing aggression vs selectivity
+- recognizing rare market extremes
+- complementing Market Cycle and Sector Cycle
+""")
 
 st.divider()
 
@@ -80,13 +290,13 @@ st.divider()
 st.header("🔄 Greer Market Cycle")
 
 st.markdown("""
-The classic psychology chart has many emotional stages, but for automation that gets too messy.
+The classic market psychology chart is useful, but too fuzzy for automation.
 
 The You Rock system compresses the market into **4 machine-readable phases**:
 
 **Recovery → Expansion → Euphoria → Contraction**
 
-This makes it easier to classify sectors and dashboards consistently.
+This allows the system to classify the market, sectors, and even companies in a consistent way.
 """)
 
 phase_col1, phase_col2, phase_col3, phase_col4 = st.columns(4)
@@ -162,88 +372,143 @@ st.divider()
 st.header("🎯 About Confidence")
 
 st.markdown("""
-The dashboards now use **4 primary phases**:
+The dashboards always assign the **closest major phase**:
 
 **Recovery → Expansion → Euphoria → Contraction**
 
-Instead of showing a separate **Transitional** phase, the system always assigns the
-**closest main phase** and then shows a **confidence score**.
+Then they attach a **confidence score**.
 
-In plain English:
-
-- **High confidence** = the signals strongly agree on the current phase
-- **Medium confidence** = the phase is still valid, but some signals are mixed
-- **Low confidence** = the market may be between phases or close to shifting
+That means the system does not need a separate “transitional” bucket to be useful.
+Instead, transition risk shows up through **lower confidence**.
 """)
 
-st.markdown("""
-### How to interpret confidence
+conf1, conf2, conf3 = st.columns(3)
 
-- **High confidence**
-  - phase is clear
-  - signals are aligned
-  - regime is stable
+with conf1:
+    metric_card(
+        "High Confidence",
+        "Signals strongly agree. The current phase is clear and the regime is relatively stable."
+    )
 
-- **Medium confidence**
-  - phase is likely correct
-  - some indicators are starting to disagree
-  - worth monitoring for change
+with conf2:
+    metric_card(
+        "Medium Confidence",
+        "The current phase is still valid, but some signals are starting to disagree. Rotation or weakening may be starting."
+    )
 
-- **Low confidence**
-  - signals are mixed
-  - the market may be transitioning
-  - highest chance of a phase shift
-""")
-
-st.markdown("""
-### Confidence Guide
-
-| Confidence | Meaning | What It Suggests |
-|---|---|---|
-| **High** | Signals strongly agree | Regime is stable |
-| **Medium** | Some signals are mixed | Watch for rotation or weakening |
-| **Low** | Signals are conflicted | Possible phase shift / transition risk |
-""")
+with conf3:
+    metric_card(
+        "Low Confidence",
+        "Signals are mixed. The market may be between phases or close to shifting. Transition risk is highest here."
+    )
 
 st.info("""
-Recommended approach:
-Focus on the **main phase first**, then use **confidence** to judge how stable or fragile
-that phase is.
+Recommended approach:  
+**Read the phase first, then use confidence to judge how stable or fragile that phase is.**
 """)
 
 st.divider()
 
 # ----------------------------------------------------------
-# How to Read the Dashboards
+# How Rockers Should Use This
 # ----------------------------------------------------------
 st.header("🧠 How Rockers Should Use This")
 
 st.markdown("""
-Think of the dashboards as a layered system:
+Think of the system as a **decision funnel**.
 
-1. **Sentiment** tells you how people feel  
-2. **Breadth** tells you how many stocks are participating  
-3. **Cycle** tells you where the market probably is  
-4. **Opportunity** tells you whether prices are attractive  
+### Step 1 — Check Opportunity
+Use **GOI**  
+Ask: **Is the market giving me broad opportunity?**
 
-That means:
+### Step 2 — Identify the Regime
+Use **Market Cycle**  
+Ask: **Are we early, trending, stretched, or weak?**
 
-- A sector in **Recovery** may be early and worth building into
-- A sector in **Expansion** may be one to keep riding
-- A sector in **Euphoria** may still be strong, but risk is higher
-- A sector in **Contraction** may need patience until BuyZones improve
+### Step 3 — Find the Best Hunting Grounds
+Use **Sector Market Cycle**  
+Ask: **Which sectors are leading or recovering?**
+
+### Step 4 — Execute at the Company Level
+Use **Company Market Cycle**  
+Ask: **Which stocks have strong Health, good Direction, and real Opportunity?**
+
+### Step 5 — Manage Risk
+Use **BuyZone Count** and **Breadth tools**  
+Ask: **Is stress building or fading under the surface?**
+""")
+
+st.markdown("""
+### Example Flow
+
+- **High GOI + Recovery** → Start building positions
+- **Expansion + strong sectors** → Let winners run
+- **Euphoria + low opportunity** → Trim, de-risk, harvest gains
+- **Contraction + rising BuyZone Count** → Stay selective, wait for better setups
 """)
 
 st.divider()
 
 # ----------------------------------------------------------
-# Dashboard-by-Dashboard Help
+# Dashboard Definitions
 # ----------------------------------------------------------
 st.header("🗂️ Dashboard Definitions")
 
+with st.expander("🎯 Greer Opportunity Index (GOI)"):
+    st.markdown("""
+Measures the percentage of tracked companies currently in BuyZone.
+
+**Best for answering:**
+- Is opportunity broad or limited?
+- Are we closer to panic or complacency?
+- How unusual is the current setup historically?
+
+**Simple read:**
+- High GOI = broad opportunity
+- Low GOI = limited opportunity
+    """)
+
+with st.expander("🧭 Market Cycle"):
+    st.markdown("""
+Shows the overall market phase using the Greer framework.
+
+**Best for answering:**
+- Are we recovering?
+- Are we in a healthy uptrend?
+- Are we stretched?
+- Are we under pressure?
+- How confident is the current regime read?
+""")
+
+with st.expander("🏭 Sector Market Cycle"):
+    st.markdown("""
+Applies the market cycle logic to sectors.
+
+**Best for answering:**
+- Which sectors are leading?
+- Which sectors are weak?
+- Where is new opportunity forming?
+- Which sectors have the highest transition risk?
+""")
+
+with st.expander("🏢 Company Market Cycle"):
+    st.markdown("""
+The most actionable cycle dashboard.
+
+Each company is evaluated across:
+- **Health** = fundamental quality
+- **Direction** = trend + BuyZone posture + backdrop
+- **Opportunity** = valuation attractiveness
+
+**Best for answering:**
+- Which stocks are actionable now?
+- Which names have the best overall profile?
+- Which companies are strongest inside the best sectors?
+""")
+
 with st.expander("🧠 Sentiment Panel"):
     st.markdown("""
-Use this to gauge the emotional mood of the market.
+Use this to gauge the emotional tone of the market.
 
 Helpful for identifying:
 - excessive optimism
@@ -251,71 +516,106 @@ Helpful for identifying:
 - whether crowd behavior is stretched
 """)
 
-with st.expander("🧭 Market Cycle"):
-    st.markdown("""
-Shows the overall market phase using the Greer framework.
-
-Best for answering:
-- Are we recovering?
-- Are we in a healthy uptrend?
-- Are we stretched?
-- Are we breaking down?
-- How confident is the current regime read?
-""")
-
-with st.expander("🏙️ Sector Market Cycle"):
-    st.markdown("""
-Applies market cycle logic to sectors.
-
-Best for answering:
-- Which sectors are leading?
-- Which sectors are weak?
-- Where is new opportunity forming?
-- Which sectors have the highest transition risk?
-""")
-
 with st.expander("📊 Fear & Greed"):
     st.markdown("""
-A quick sentiment check.
+A quick sentiment reference.
 
-Best used as a reference, not a standalone buy/sell tool.
-Extreme fear can create opportunity.
-Extreme greed can signal caution.
+Best used as a contrarian signal, not a standalone buy/sell tool.
+
+- Extreme fear can create opportunity
+- Extreme greed can signal caution
+""")
+
+with st.expander("🎯 BuyZone Count"):
+    st.markdown("""
+Tracks the number of companies currently in BuyZone.
+
+Think of it as:
+
+**How many stocks are under pressure right now?**
+
+**Best for answering:**
+- Is market stress rising?
+- Is stress broad or narrow?
+- Are pullbacks spreading or improving?
 """)
 
 with st.expander("🚨 Bottom Detector"):
     st.markdown("""
-Looks for conditions that often show up near washout lows.
+Looks for conditions that often appear near washout lows.
 
 Useful for:
 - spotting possible turning points
-- identifying markets where selling may be exhausted
+- identifying when selling may be exhausted
+- confirming that fear is reaching extremes
 """)
 
-with st.expander("📈 Market Breadth"):
+with st.expander("🌐 Market Breadth"):
     st.markdown("""
-Measures participation under the surface.
+Measures participation beneath the surface.
 
-A strong market usually has broad support.
+A healthy market usually has broad support.  
 A weak market often narrows to fewer leaders.
+
+Useful for:
+- confirming trend quality
+- spotting narrowing leadership
+- checking internal participation
 """)
 
 with st.expander("📋 Dashboard"):
     st.markdown("""
-The full-featured view that combines multiple indicators in one place.
-Use this when you want the most complete market picture.
+The full-featured system dashboard.
+
+Use this when you want the most complete market picture in one place.
+It brings together the main internal signals and context metrics.
 """)
 
 with st.expander("🧩 Dashboard Mini"):
     st.markdown("""
 A simplified quick-look version of the full dashboard.
-Use this when you want a fast read without all the detail.
+
+Use this for a fast daily read when you want signal clarity without the full detail.
 """)
 
 st.divider()
 
 # ----------------------------------------------------------
-# Simple Legend
+# Practical Reading Guide
+# ----------------------------------------------------------
+st.header("🛠️ Practical Reading Guide")
+
+guide_col1, guide_col2 = st.columns(2)
+
+with guide_col1:
+    st.markdown("""
+### When the system is bullish
+Typical profile:
+- GOI is not overheated
+- Market Cycle is in **Recovery** or **Expansion**
+- Strong sectors are emerging
+- Company Cycle leaders show strong Health + Direction
+
+**Rockers:** build, add, and let leaders work
+""")
+
+with guide_col2:
+    st.markdown("""
+### When the system is defensive
+Typical profile:
+- GOI is low or stress is unstable
+- Market Cycle is in **Euphoria** or **Contraction**
+- BuyZone Count is rising fast
+- Breadth is weakening
+- Confidence is falling
+
+**Rockers:** trim risk, be selective, wait for better asymmetry
+""")
+
+st.divider()
+
+# ----------------------------------------------------------
+# Color / Status Legend
 # ----------------------------------------------------------
 st.header("🎨 Color Legend")
 
@@ -330,4 +630,30 @@ with legend_col3:
 with legend_col4:
     st.error("🔴 Contraction")
 
-st.caption("These colors are used throughout the dashboard suite for consistent interpretation.")
+st.caption(
+    "These colors are used throughout the dashboard suite so Rockers can move between pages "
+    "without relearning the system each time."
+)
+
+st.divider()
+
+# ----------------------------------------------------------
+# Final Note
+# ----------------------------------------------------------
+st.header("🎸 Final Takeaway")
+
+st.markdown("""
+The You Rock dashboard system is built to help Rockers answer three big questions:
+
+### 1. Where is the market now?
+Use **GOI**, **Market Cycle**, and **Sentiment**
+
+### 2. Where should I focus?
+Use **Sector Market Cycle**
+
+### 3. What should I act on?
+Use **Company Market Cycle** and supporting internals
+
+The edge is not in one page by itself.  
+The edge comes from using the pages **together**.
+""")
