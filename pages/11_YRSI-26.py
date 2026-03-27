@@ -18,6 +18,7 @@ from portfolio_common import (
     load_totals_by_ticker,
     calc_collateral_from_events,
     render_header_optionsfund,
+    render_model_badge,
     render_year_summary_blocks,
     fmt_money,
     fmt_money0,
@@ -31,8 +32,8 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("💵 YRSI-26 Results (You Rock Star Income Fund est. 2026)")
-
+    st.title("💵 YRSI Results (You Rock Star Income Fund est. 2026)")
+    render_model_badge("Volatility Model", "🌪️","WK_IV_Targets")
     st.markdown(
         """
         Read-only community page for **YRSI-26**.  

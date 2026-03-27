@@ -14,6 +14,7 @@ from portfolio_common import (
     calc_cashflows_stockfund,
     calc_pnl_avg_cost,
     render_header_stockfund,
+    render_model_badge,
     render_year_summary_blocks,
     fmt_money,
     fmt_pct_ratio,
@@ -25,8 +26,8 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("🪨 YROG Results (You Rock Opportunities Growth Fund est. 2026)")
-
+    st.title("🪨 YROG Results (You Rock Opportunity Growth Fund est. 2026)")
+    render_model_badge("Opportunity Model", "🪨", "Opportunities_IV")
     st.markdown(
         """
         Stock-only community page for **YROG** (buys & sells of shares).  

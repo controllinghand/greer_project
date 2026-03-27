@@ -13,6 +13,7 @@ from portfolio_common import (
     load_totals_by_ticker,
     calc_collateral_from_events,
     render_header_optionsfund,
+    render_model_badge,
     render_year_summary_blocks,
     fmt_money,
     fmt_pct_ratio,
@@ -23,8 +24,8 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("⚡ YRQI-26 Results (QQQ Daily Income Fund est. 2026)")
-
+    st.title("🏔️ YRQI-26 Results (QQQ Daily Income Fund est. 2026)")
+    render_model_badge("Daily QQQ", "🏔️")
     st.markdown(
         """
         Read-only community page for **YRQI-26** (QQQ Daily Income).  

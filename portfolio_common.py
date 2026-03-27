@@ -9,6 +9,33 @@ from datetime import date, datetime
 # ----------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------
+# ----------------------------------------------------------
+# Render model badge with link
+# ----------------------------------------------------------
+def render_model_badge(model_name: str, icon: str, page_path: str):
+    import streamlit as st
+
+    st.markdown(
+        f"""
+        <a href="{page_path}" target="_self" style="text-decoration: none;">
+            <div style="
+                display: inline-block;
+                padding: 6px 12px;
+                border-radius: 8px;
+                background-color: rgba(100, 100, 100, 0.10);
+                border: 1px solid rgba(150, 150, 150, 0.30);
+                font-size: 14px;
+                margin-bottom: 10px;
+                color: inherit;
+                cursor: pointer;
+            ">
+                Built From: {icon} <b>{model_name}</b>
+            </div>
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )
+    
 def fmt_money(x):
     try:
         if x is None or pd.isna(x):

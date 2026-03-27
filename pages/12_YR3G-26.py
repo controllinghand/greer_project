@@ -14,6 +14,7 @@ from portfolio_common import (
     calc_cashflows_stockfund,
     calc_pnl_avg_cost,
     render_header_stockfund,
+    render_model_badge,
     render_year_summary_blocks,
     fmt_money,
     fmt_pct_ratio,
@@ -25,8 +26,8 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("⭐ YR3G Results (You Rock 3 Stars Growth Fund est. 2026)")
-
+    st.title("⭐ YR3G Results (You Rock 3-Star Growth Fund est. 2026)")
+    render_model_badge("3-Stars Model", "⭐", "all_stars")
     st.markdown(
         """
         Stock-only community page for **YR3G** (buys & sells of shares).  

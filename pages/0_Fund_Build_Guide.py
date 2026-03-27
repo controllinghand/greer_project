@@ -7,7 +7,7 @@ import streamlit as st
 # Page setup
 # ----------------------------------------------------------
 st.title("🗺️ Fund Build Guide")
-st.caption("How each YouRock tool maps to each fund build process.")
+st.caption("How each model maps to each YouRock fund build process.")
 
 
 # ----------------------------------------------------------
@@ -42,20 +42,20 @@ def render_fund_card(
 # ----------------------------------------------------------
 st.markdown(
     """
-This page explains which tools are used to build each YouRock fund.
+This page explains which **models** are used to build each YouRock fund.
 
-Use this as the quick reference for the system:
+Use this as the system map:
 
-- **Opportunities** builds **YROG-26**
-- **Cycle Recovery** builds **YRRG-26**
-- **Weekly IV Targets** builds **YRVI-26**, **YRSI-26**, and **YRVG-26**
-- **All 3-Stars** builds **YR3G-26**
+- **⭐ 3-Stars Model** → **⭐ YR3G-26**
+- **↔️ Divergence Model** → **↔️ YRDG-26**
+- **🪨 Opportunity Model** → **🪨 YROG-26**
+- **🔮 Prediction Model** → **🔮 YRPG-26**
+- **🔄 Recovery Model** → **🔄 YRRG-26**
+- **🌪️ Volatility Model** → **📣 YRVI-26**, **💵 YRSI-26**, **🌪️ YRVG-26**
 """
 )
 
-st.info(
-    "Think of this page as the map, and the builder pages as the engines."
-)
+st.info("Think of this page as the map. The model pages are the engines.")
 
 
 # ----------------------------------------------------------
@@ -65,28 +65,40 @@ st.markdown("## Builder Map")
 
 builder_rows = [
     {
-        "Tool": "🎯 Opportunities",
-        "Primary Use": "Growth fund builder",
-        "Builds": "YROG-26",
-        "Style": "Opportunity-driven stock selection",
-    },
-    {
-        "Tool": "🔄 Cycle Recovery",
-        "Primary Use": "Recovery phase growth builder",
-        "Builds": "YRRG-26",
-        "Style": "Cycle-based selection (Recovery phase)",
-    },
-    {
-        "Tool": "🧲 Weekly IV Targets",
-        "Primary Use": "Weekly income and hybrid builder",
-        "Builds": "YRVI-26, YRSI-26, YRVG-26",
-        "Style": "IV-driven weekly targets",
-    },
-    {
-        "Tool": "⭐ All 3-Stars",
+        "Tool": "⭐ 3-Stars Model",
         "Primary Use": "Quality growth builder",
-        "Builds": "YR3G-26",
+        "Builds": "⭐ YR3G-26",
         "Style": "Best-in-class company selection",
+    },
+    {
+        "Tool": "↔️ Divergence Model",
+        "Primary Use": "Divergence growth builder",
+        "Builds": "↔️ YRDG-26",
+        "Style": "Strong company index + discounted from peak",
+    },
+    {
+        "Tool": "🪨 Opportunity Model",
+        "Primary Use": "Opportunity growth builder",
+        "Builds": "🪨 YROG-26",
+        "Style": "Value + yield + buyzone opportunity",
+    },
+    {
+        "Tool": "🔮 Prediction Model",
+        "Primary Use": "Probability-based growth builder",
+        "Builds": "🔮 YRPG-26",
+        "Style": "60-day forward probability model",
+    },
+    {
+        "Tool": "🔄 Recovery Model",
+        "Primary Use": "Cycle recovery builder",
+        "Builds": "🔄 YRRG-26",
+        "Style": "Recovery phase + improving direction",
+    },
+    {
+        "Tool": "🌪️ Volatility Model",
+        "Primary Use": "Income + hybrid builder",
+        "Builds": "📣 YRVI-26, 💵 YRSI-26, 🌪️ YRVG-26",
+        "Style": "IV-driven opportunity engine",
     },
 ]
 
@@ -98,186 +110,242 @@ st.dataframe(builder_rows, use_container_width=True, hide_index=True)
 # ----------------------------------------------------------
 st.markdown("## Fund-by-Fund Guide")
 
-render_fund_card(
-    fund_name="🪨 YROG-26",
-    fund_type="Growth Fund",
-    build_tool="🎯 Opportunities",
-    description=(
-        "YROG is built from companies showing attractive opportunity characteristics. "
-        "This page is designed to surface candidates with strong value, yield, buyzone, "
-        "and fair value support."
-    ),
-    process=[
-        "Open **Opportunities**",
-        "Review the highest-quality names using Greer Company Index, phase, and stars",
-        "Focus on companies with strong opportunity plus acceptable direction and health",
-        "Select stock positions for the YROG portfolio",
-        "Enter the trades into the portfolio system",
-    ],
-    key_notes=[
-        "Best for opportunity-driven growth ideas",
-        "Now improved with Greer Company Index, Health, Direction, Opportunity, and Phase",
-        "Useful when building or refreshing YROG positions",
-    ],
-)
 
-render_fund_card(
-    fund_name="🔄 YRRG-26",
-    fund_type="Recovery Growth Fund",
-    build_tool="🔄 Cycle Recovery",
-    description=(
-        "YRRG is built from companies in the Recovery phase of the Greer Market Cycle. "
-        "This fund focuses on names with strong opportunity and improving direction, "
-        "before they transition into full expansion."
-    ),
-    process=[
-        "Open **Cycle Recovery**",
-        "Filter for companies in Recovery phase with strong Greer Company Index",
-        "Focus on high Opportunity with improving Direction and solid Health",
-        "Select stock positions for the YRRG portfolio",
-        "Enter the trades into the portfolio system",
-    ],
-    key_notes=[
-        "Focuses on Recovery phase companies",
-        "Uses Greer Company Index (Health, Direction, Opportunity)",
-        "Targets early-stage trend reversals and improving setups",
-        "Complements YROG by focusing on timing within the cycle",
-    ],
-)
-
-render_fund_card(
-    fund_name="📣 YRVI-26",
-    fund_type="Income Fund",
-    build_tool="🧲 Weekly IV Targets",
-    description=(
-        "YRVI is built from weekly IV-based option opportunities. "
-        "This is the primary income engine focused on attractive weekly premium generation."
-    ),
-    process=[
-        "Open **Weekly IV Targets**",
-        "Review weekly candidates that meet IV and trade quality rules",
-        "Choose the best cash-secured put or covered call setups",
-        "Build the week’s plan for YRVI",
-        "Enter and track trades through the normal weekly process",
-    ],
-    key_notes=[
-        "Primary weekly income builder",
-        "Built around IV-driven targets",
-        "Typically used for recurring weekly option selection",
-    ],
-)
-
-render_fund_card(
-    fund_name="💵 YRSI-26",
-    fund_type="Income Fund",
-    build_tool="🧲 Weekly IV Targets",
-    description=(
-        "YRSI uses the Weekly IV Targets process but limits selections to companies with a star rating, "
-        "creating a more selective and quality-focused income strategy."
-    ),
-    process=[
-        "Open **Weekly IV Targets**",
-        "Review the week’s option candidates",
-        "Select setups that fit the YRSI plan",
-        "Build the week’s trade list",
-        "Track entries and results through the portfolio workflow",
-    ],
-    key_notes=[
-        "Uses the same weekly builder engine as YRVI",
-        "Selection may differ based on fund rules or preferences",
-        "Supports systematic weekly income generation",
-    ],
-)
-
-render_fund_card(
-    fund_name="🌪️ YRVG-26",
-    fund_type="Hybrid / Volatility Growth Fund",
-    build_tool="🧲 Weekly IV Targets",
-    description=(
-        "YRVG uses the Weekly IV Targets page as a sourcing engine, but instead of building "
-        "an income portfolio, it uses those ideas to build a growth-oriented stock portfolio."
-    ),
-    process=[
-        "Open **Weekly IV Targets**",
-        "Review the strongest weekly opportunity names",
-        "Select stock candidates sourced from the same IV-driven list",
-        "Buy shares for YRVG rather than selling options",
-        "Track the positions inside the YRVG portfolio",
-    ],
-    key_notes=[
-        "Built from the same idea engine as YRVI and YRSI",
-        "Execution style is growth, not income",
-        "Useful for converting high-IV opportunity names into stock positions",
-    ],
-)
-
+# ⭐ YR3G
 render_fund_card(
     fund_name="⭐ YR3G-26",
     fund_type="Quality Growth Fund",
-    build_tool="⭐ All 3-Stars",
+    build_tool="⭐ 3-Stars Model",
     description=(
         "YR3G is built from the highest-quality companies in the system. "
-        "The All 3-Stars page acts as the source list for elite growth candidates."
+        "This model surfaces companies that meet the strongest fundamental thresholds."
     ),
     process=[
-        "Open **All 3-Stars**",
+        "Open **3-Stars Model**",
         "Review companies currently holding 3-star status",
-        "Evaluate names for fit, diversification, and conviction",
-        "Select stock positions for YR3G",
-        "Track entries and exits in the portfolio system",
+        "Evaluate names for diversification and conviction",
+        "Select stock positions for the YR3G portfolio",
+        "Enter trades into the portfolio system",
     ],
     key_notes=[
         "Best-in-class quality builder",
-        "Focused on companies already meeting the 3-star threshold",
-        "Simple and clean builder for long-term quality growth",
+        "Simple and clean long-term strategy",
+        "Focus on proven company strength",
+    ],
+)
+
+
+# ↔️ YRDG
+render_fund_card(
+    fund_name="↔️ YRDG-26",
+    fund_type="Divergence Growth Fund",
+    build_tool="↔️ Divergence Model",
+    description=(
+        "YRDG focuses on companies with strong fundamentals that are still trading "
+        "below recent highs. It captures the gap between company strength and price."
+    ),
+    process=[
+        "Open **Divergence Model**",
+        "Identify strong company index + discounted-from-peak setups",
+        "Confirm phase and confidence support",
+        "Select positions for YRDG",
+        "Enter trades into the portfolio system",
+    ],
+    key_notes=[
+        "Designed for divergence setups",
+        "Strong company, lagging price",
+        "Captures early recovery opportunities",
+    ],
+)
+
+
+# 🪨 YROG
+render_fund_card(
+    fund_name="🪨 YROG-26",
+    fund_type="Opportunity Growth Fund",
+    build_tool="🪨 Opportunity Model",
+    description=(
+        "YROG is built from companies with strong opportunity characteristics across "
+        "value, yield, buyzone, and fair value signals."
+    ),
+    process=[
+        "Open **Opportunity Model**",
+        "Review high opportunity + strong company index names",
+        "Confirm acceptable direction and health",
+        "Select positions for YROG",
+        "Enter trades into the portfolio system",
+    ],
+    key_notes=[
+        "Opportunity-driven builder",
+        "Balanced across value + momentum",
+        "Core growth fund engine",
+    ],
+)
+
+
+# 🔮 YRPG
+render_fund_card(
+    fund_name="🔮 YRPG-26",
+    fund_type="Prediction Growth Fund",
+    build_tool="🔮 Prediction Model",
+    description=(
+        "YRPG is built from a probability model that estimates whether a stock "
+        "will be higher in ~60 trading days."
+    ),
+    process=[
+        "Open **Prediction Model**",
+        "Review highest conviction prediction setups",
+        "Focus on strongest buckets and regime alignment",
+        "Select positions for YRPG",
+        "Enter trades into the portfolio system",
+    ],
+    key_notes=[
+        "Probability-based strategy",
+        "Uses forward-looking return tendencies",
+        "Not linear — strongest buckets matter most",
+    ],
+)
+
+
+# 🔄 YRRG
+render_fund_card(
+    fund_name="🔄 YRRG-26",
+    fund_type="Recovery Growth Fund",
+    build_tool="🔄 Recovery Model",
+    description=(
+        "YRRG focuses on companies in the Recovery phase of the market cycle, "
+        "capturing early trend reversals."
+    ),
+    process=[
+        "Open **Recovery Model**",
+        "Filter for Recovery phase companies",
+        "Focus on improving direction + strong opportunity",
+        "Select positions for YRRG",
+        "Enter trades into the portfolio system",
+    ],
+    key_notes=[
+        "Early trend reversal strategy",
+        "Cycle-based timing edge",
+        "Complements YROG",
+    ],
+)
+
+
+# 🌪️ YRVG
+render_fund_card(
+    fund_name="🌪️ YRVG-26",
+    fund_type="Volatility Growth Fund",
+    build_tool="🌪️ Volatility Model",
+    description=(
+        "YRVG converts volatility-driven opportunities into a stock portfolio, "
+        "instead of using options."
+    ),
+    process=[
+        "Open **Volatility Model**",
+        "Review high IV opportunity names",
+        "Select strong candidates",
+        "Buy shares for YRVG",
+        "Track positions in the portfolio",
+    ],
+    key_notes=[
+        "Hybrid strategy",
+        "Uses IV engine for stock selection",
+        "Growth version of income models",
+    ],
+)
+
+
+# 📣 YRVI
+render_fund_card(
+    fund_name="📣 YRVI-26",
+    fund_type="Income Fund",
+    build_tool="🌪️ Volatility Model",
+    description=(
+        "YRVI is the primary income fund using weekly option strategies "
+        "based on volatility opportunities."
+    ),
+    process=[
+        "Open **Volatility Model**",
+        "Review weekly setups",
+        "Select CSP or CC trades",
+        "Execute weekly trades",
+        "Track results",
+    ],
+    key_notes=[
+        "Primary income engine",
+        "Weekly execution",
+        "IV-driven strategy",
+    ],
+)
+
+
+# 💵 YRSI
+render_fund_card(
+    fund_name="💵 YRSI-26",
+    fund_type="Income Fund",
+    build_tool="🌪️ Volatility Model",
+    description=(
+        "YRSI is a more selective version of YRVI, focusing on higher-quality names."
+    ),
+    process=[
+        "Open **Volatility Model**",
+        "Review weekly setups",
+        "Filter for higher quality trades",
+        "Execute trades",
+        "Track results",
+    ],
+    key_notes=[
+        "Selective income strategy",
+        "Quality-focused",
+        "Same engine as YRVI",
     ],
 )
 
 
 # ----------------------------------------------------------
-# Supporting pages section
+# Supporting pages
 # ----------------------------------------------------------
 st.markdown("## Supporting Pages")
 
 st.markdown(
     """
-These pages support the build process, but they are **not primary builder tools**:
+These pages support the system but are not primary builders:
 
-- **🧪 Backtesting** → Research and testing
-- **⭐ All 3-Stars Alumni** → Historical research and idea mining
-- **➕ Add Company** → Utility / maintenance tool
+- 🧪 Backtesting → Research
+- ⭐ 3-Stars Alumni → Historical ideas
+- ➕ Add Company → Utility
 """
 )
 
 
 # ----------------------------------------------------------
-# Recommended workflow
+# Workflow
 # ----------------------------------------------------------
 st.markdown("## Recommended Workflow")
 
 st.markdown(
     """
 ### Weekly workflow
-1. Start with the builder page for the relevant fund
-2. Review candidates and apply the fund’s rules
-3. Choose the final names or trades
-4. Enter positions into the portfolio system
-5. Track results on the fund page
+1. Open the model page
+2. Review candidates
+3. Select positions
+4. Enter trades
+5. Track performance
 
-### Tool-to-fund shortcut
-- **YROG** → Opportunities
-- **YRRG** → Cycle Recovery
-- **YRVI** → Weekly IV Targets
-- **YRSI** → Weekly IV Targets
-- **YRVG** → Weekly IV Targets
-- **YR3G** → All 3-Stars
+### Quick mapping
+- ⭐ YR3G → 3-Stars Model
+- ↔️ YRDG → Divergence Model
+- 🪨 YROG → Opportunity Model
+- 🔮 YRPG → Prediction Model
+- 🔄 YRRG → Recovery Model
+- 🌪️ YRVG → Volatility Model
+- 📣 YRVI → Volatility Model
+- 💵 YRSI → Volatility Model
 """
 )
 
 
 # ----------------------------------------------------------
-# Closing note
+# Closing
 # ----------------------------------------------------------
-st.success(
-    "Use this page as the system map. The builder pages are where selections happen."
-)
+st.success("Use this page as your system map. The models are your engines.")

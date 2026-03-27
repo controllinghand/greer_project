@@ -18,6 +18,7 @@ from portfolio_common import (
     load_totals_by_ticker,
     calc_collateral_from_events,
     render_header_optionsfund,
+    render_model_badge,
     render_year_summary_blocks,
     fmt_money,
     fmt_money0,
@@ -31,7 +32,8 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("📣 YRVI-26 Results (2026 Journey You Rock Volatility Income Fund)")
+    st.title("📣 YRVI Results (You Rock Volatility Income Fund est. 2026)")
+    render_model_badge("Volatility Model", "🌪️","WK_IV_Targets")
 
     st.markdown(
         """

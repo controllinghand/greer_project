@@ -1,4 +1,4 @@
-# 12_YRRG-26.py
+# 12_YRDG-26.py
 
 import streamlit as st
 import pandas as pd
@@ -27,47 +27,31 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("🔄 YRRG Results (You Rock Recovery Growth Fund est. 2026)")
-    render_model_badge("Recovery Model", "🔄", "Cycle_Recovery")
-    st.caption("Cycle-driven growth strategy focused on Recovery phase opportunities")
+    st.title("↔️ YRDG Results (You Rock Divergence Growth Fund est. 2026)")
+    render_model_badge("Divergence Model", "↔️", "Divergence_Dashboard")
 
     st.markdown(
         """
-    ### 🧭 Strategy Overview
+        Stock-only community page for **YRDG** (buys & sells of shares).  
+        Uses **only**: portfolios, portfolio_events, portfolio_nav_daily.
 
-    YRRG is a **cycle-based growth portfolio** built from the **Cycle Recovery screener**.
+        **Strategy:**  
+        Portfolio holdings are systematically sourced from the **Divergence Model**
+        screener. The goal is to build a stock-only growth fund focused on companies
+        showing strong underlying conviction while their price still trades meaningfully
+        below recent highs.
 
-    This fund targets companies that are:
-    - transitioning out of weakness  
-    - showing improving direction  
-    - still offering strong opportunity  
+        In general, the model looks for setups where:
+        - **Greer Company Index** remains strong
+        - **Price vs 52-week peak** still shows meaningful discount
+        - **Trend / phase backdrop** supports a potential recovery or expansion move
 
-    ---
-
-    ### 🎯 Core Selection Rules
-
-    - **Phase = Recovery**
-    - **Greer Company Index ≥ 65**
-    - **Opportunity ≥ 70**
-    - **Health ≥ 50**
-    - **Direction ≥ 40**
-
-    ---
-
-    ### 💡 Edge
-
-    YRRG focuses on **timing within the cycle**.
-
-    The goal is to identify companies:
-    - before full expansion
-    - before momentum becomes crowded
-    - while opportunity is still elevated
-
-    This makes YRRG a **bridge between value and trend**.
-    """
+        This fund is designed to capture high-conviction divergence opportunities
+        through pure equity ownership rather than options income.
+        """
     )
 
-    default_code = "YRRG-26"
+    default_code = "YRDG-26"
 
     # Default start date = portfolio start_date if present
     p0 = load_portfolio_by_code(default_code)
@@ -77,7 +61,9 @@ def main():
             db_start = pd.to_datetime(p0.iloc[0]["start_date"]).date()
         except Exception:
             db_start = None
-    default_start_date = db_start or date(2026, 1, 1)
+
+    # Adjust if your actual YRDG launch date is different
+    default_start_date = db_start or date(2026, 3, 26)
 
     with st.sidebar:
         st.header("Controls")
@@ -92,7 +78,11 @@ def main():
     portfolio_id = int(p.iloc[0]["portfolio_id"])
     portfolio_name = str(p.iloc[0]["name"])
     starting_cash = float(p.iloc[0]["starting_cash"])
-    portfolio_start = pd.to_datetime(p.iloc[0]["start_date"]).date() if pd.notna(p.iloc[0]["start_date"]) else start_date
+    portfolio_start = (
+        pd.to_datetime(p.iloc[0]["start_date"]).date()
+        if pd.notna(p.iloc[0]["start_date"])
+        else start_date
+    )
 
     st.caption(
         f"Portfolio: **{portfolio_code} — {portfolio_name}** (portfolio_id={portfolio_id}) · "
@@ -141,8 +131,6 @@ def main():
     st.divider()
     render_year_summary_blocks(nav_all=nav_all, portfolio_start_date=portfolio_start, years=[2026])
 
-    
-
     st.divider()
 
     st.subheader("📈 NAV over time")
@@ -161,32 +149,6 @@ def main():
 
     open_pos = pnl[pnl["shares"].abs() > 1e-9].copy()
     closed_pos = pnl[(pnl["shares"].abs() <= 1e-9) & (pnl["realized_proceeds"].abs() > 1e-9)].copy()
-    # ----------------------------------------------------------
-    # Cycle Snapshot (🔥 new section)
-    # ----------------------------------------------------------
-    st.divider()
-    st.subheader("🧭 Cycle Snapshot")
-
-    if not open_pos.empty:
-        tickers = open_pos["ticker"].astype(str).str.upper().tolist()
-        px = load_latest_prices_and_names(tickers)
-
-        snap = open_pos.merge(px, on="ticker", how="left")
-
-        # You already have these in other pages → reuse if available
-        # If not yet stored in DB, we’ll just show placeholders for now
-        snap["Phase"] = "Recovery"
-        snap["GCI"] = "—"
-
-        st.dataframe(
-            snap[["ticker", "name", "shares", "Phase", "GCI"]],
-            hide_index=True,
-            use_container_width=True,
-        )
-
-        st.caption("🔄 All positions are expected to be in Recovery phase based on entry rules.")
-    else:
-        st.info("No active positions yet.")
 
     if open_pos.empty:
         st.caption("No open positions right now.")
@@ -453,6 +415,7 @@ def main():
             hide_index=True,
             use_container_width=True,
         )
+
 
 if __name__ == "__main__":
     main()

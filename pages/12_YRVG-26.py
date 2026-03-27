@@ -15,6 +15,7 @@ from portfolio_common import (
     calc_cashflows_stockfund,
     calc_pnl_avg_cost,
     render_header_stockfund,
+    render_model_badge,
     render_year_summary_blocks,
     fmt_money,
     fmt_pct_ratio,
@@ -27,6 +28,7 @@ from portfolio_common import (
 # ----------------------------------------------------------
 def main():
     st.title("🌪️ YRVG Results (You Rock Volatility Growth Fund est. 2026)")
+    render_model_badge("Volatility Model", "🌪️","WK_IV_Targets")
 
     st.markdown(
         """
