@@ -25,7 +25,7 @@ from portfolio_common import (
 # ----------------------------------------------------------
 def main():
     st.title("🏔️ YRQI-26 Results (QQQ Daily Income Fund est. 2026)")
-    render_model_badge("Daily QQQ", "🏔️", "QQQ-26")
+    render_model_badge("Daily QQQ", "🏔️", "pages/12_QQQ-26.py")
     st.markdown(
         """
         Read-only community page for **YRQI-26** (QQQ Daily Income).  

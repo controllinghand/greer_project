@@ -27,7 +27,7 @@ from portfolio_common import (
 # ----------------------------------------------------------
 def main():
     st.title("🪨 YROG Results (You Rock Opportunity Growth Fund est. 2026)")
-    render_model_badge("Opportunity Model", "🪨", "Opportunities_IV")
+    render_model_badge("Opportunity Model", "🪨", "pages/10_Opportunities_IV.py")
     st.markdown(
         """
         Stock-only community page for **YROG** (buys & sells of shares).  

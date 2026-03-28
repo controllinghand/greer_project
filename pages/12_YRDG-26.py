@@ -28,7 +28,7 @@ from portfolio_common import (
 # ----------------------------------------------------------
 def main():
     st.title("↔️ YRDG Results (You Rock Divergence Growth Fund est. 2026)")
-    render_model_badge("Divergence Model", "↔️", "Divergence_Dashboard")
+    render_model_badge("Divergence Model", "↔️", "pages/14_Divergence_Dashboard.py")
 
     st.markdown(
         """

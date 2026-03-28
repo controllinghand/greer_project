@@ -27,7 +27,7 @@ from portfolio_common import (
 # ----------------------------------------------------------
 def main():
     st.title("⭐ YR3G Results (You Rock 3-Star Growth Fund est. 2026)")
-    render_model_badge("3-Stars Model", "⭐", "all_stars")
+    render_model_badge("3-Stars Model", "⭐", "pages/8_all_stars.py")
     st.markdown(
         """
         Stock-only community page for **YR3G** (buys & sells of shares).  

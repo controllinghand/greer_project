@@ -33,7 +33,7 @@ from portfolio_common import (
 # ----------------------------------------------------------
 def main():
     st.title("💵 YRSI Results (You Rock Star Income Fund est. 2026)")
-    render_model_badge("Volatility Model", "🌪️","WK_IV_Targets")
+    render_model_badge("Volatility Model", "🌪️","pages/11_WK_IV_Targets.py")
     st.markdown(
         """
         Read-only community page for **YRSI-26**.  

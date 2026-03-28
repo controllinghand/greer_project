@@ -28,7 +28,7 @@ from portfolio_common import (
 # ----------------------------------------------------------
 def main():
     st.title("🔄 YRRG Results (You Rock Recovery Growth Fund est. 2026)")
-    render_model_badge("Recovery Model", "🔄", "Cycle_Recovery")
+    render_model_badge("Recovery Model", "🔄", "pages/13_Cycle_Recovery.py")
     st.caption("Cycle-driven growth strategy focused on Recovery phase opportunities")
 
     st.markdown(

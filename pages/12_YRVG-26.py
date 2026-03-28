@@ -28,7 +28,7 @@ from portfolio_common import (
 # ----------------------------------------------------------
 def main():
     st.title("🌪️ YRVG Results (You Rock Volatility Growth Fund est. 2026)")
-    render_model_badge("Volatility Model", "🌪️","WK_IV_Targets")
+    render_model_badge("Volatility Model", "🌪️","pages/11_WK_IV_Targets.py")
 
     st.markdown(
         """

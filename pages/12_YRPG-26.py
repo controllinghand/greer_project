@@ -28,7 +28,7 @@ from portfolio_common import (
 # ----------------------------------------------------------
 def main():
     st.title("🔮 YRPG Results (You Rock Prediction Growth Fund est. 2026)")
-    render_model_badge("Prediction Model", "🔮", "Prediction")
+    render_model_badge("Prediction Model", "🔮", "pages/9_Prediction.py")
     st.markdown(
         """
         Stock-only community page for **YRPG** (buys & sells of shares).  
