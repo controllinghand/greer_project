@@ -30,6 +30,57 @@ def stars_display(x) -> str:
         return ""
 
 # ----------------------------------------------------------
+# Score / highlight best weekly targets
+# - Uses a simple ranking blend:
+#   premium %, downside buffer, IV ATM, stars, liquidity
+# - Only highlights wheel-ready rows
+# ----------------------------------------------------------
+def add_best_target_flags(df: pd.DataFrame, top_n: int) -> pd.DataFrame:
+    out = df.copy()
+
+    out["contract_count_num"] = pd.to_numeric(out["contract_count"], errors="coerce").fillna(0)
+
+    out["best_target_eligible"] = (
+        (out["wheel_flag"] == "✅")
+        & out["action_premium_pct"].notna()
+        & out["buffer_pct"].notna()
+    )
+
+    out["best_target_score"] = (
+        (out["action_premium_pct"].fillna(0) * 1000.0)
+        + (out["buffer_pct"].fillna(0) * 250.0)
+        + (out["iv_atm"].fillna(0) * 25.0)
+        + (out["greer_star_rating"].fillna(0) * 8.0)
+        + (out["contract_count_num"].clip(upper=200) * 0.05)
+    )
+
+    out.loc[~out["best_target_eligible"], "best_target_score"] = -1
+    out["best_target"] = False
+
+    if top_n > 0:
+        best_idx = (
+            out[out["best_target_eligible"]]
+            .sort_values(
+                by=["best_target_score", "action_premium_pct", "buffer_pct", "iv_atm"],
+                ascending=False,
+                na_position="last",
+            )
+            .head(top_n)
+            .index
+        )
+        out.loc[best_idx, "best_target"] = True
+
+    return out
+
+# ----------------------------------------------------------
+# Apply Google-Sheets-like green highlight to best rows
+# ----------------------------------------------------------
+def style_best_targets(row):
+    if row.get("Best Target", "") == "✅":
+        return ["background-color: #d9ead3"] * len(row)
+    return [""] * len(row)
+
+# ----------------------------------------------------------
 # Wheel safety flags (keep rows but warn / optionally hide)
 # ----------------------------------------------------------
 def add_wheel_flags(df: pd.DataFrame, wheel_mode: str) -> pd.DataFrame:
@@ -282,12 +333,15 @@ def main():
     with colD:
         earnings_days_hide = st.slider("Hide upcoming earnings within X days (0 = off)", 0, 30, 7)
     with colE:
-        earnings_recent_hide = st.slider("Hide companies that already reported within the last X days (default 0 = show all)",0, 30, 0)
-
-
+        earnings_recent_hide = st.slider(
+            "Hide companies that already reported within the last X days (default 0 = show all)",
+            0,
+            30,
+            0
+        )
 
     # ----------------------------------------------------------
-    # Load data (✅ must happen BEFORE df[...] usage)
+    # Load data
     # ----------------------------------------------------------
     df = load_weekly_targets(
         iv_min_atm=iv_min_atm,
@@ -320,42 +374,33 @@ def main():
     df["earnings_date"] = pd.to_datetime(df["earnings_date"], errors="coerce").dt.date
     df["days_to_earnings"] = pd.to_numeric(df["days_to_earnings"], errors="coerce").astype("Int64")
 
-
-    # Simple earnings risk flag
+    # ----------------------------------------------------------
+    # Earnings risk helper
+    # ----------------------------------------------------------
     def earnings_flag(d) -> str:
-        """
-        Interpret days_to_earnings:
-          - negative => earnings likely already happened
-          - small negative => recently reported
-          - small positive => upcoming soon
-          - None => unknown
-        """
         try:
             if pd.isna(d):
                 return "❓"
             v = int(d)
 
-            # Recently reported
             if v < 0:
                 if v >= -3:
-                    return "🟣"  # just reported (last 3 days)
-                return "⚫"      # reported (older)
+                    return "🟣"
+                return "⚫"
 
-            # Upcoming
             if v == 0:
-                return "🚨"      # today
+                return "🚨"
             if v <= 3:
-                return "🟥"      # very soon
+                return "🟥"
             if v <= 7:
-                return "🟧"      # soon
+                return "🟧"
             return "✅"
         except Exception:
             return "❓"
 
-
     df["earnings_flag"] = df["days_to_earnings"].apply(earnings_flag)
 
-    # NEW: recent earnings helpers (index-safe)
+    # Recent earnings helpers
     recent_window = int(earnings_recent_hide)
     df["earnings_recent_flag"] = (
         (recent_window > 0)
@@ -369,20 +414,21 @@ def main():
         (upcoming_window > 0)
         & df["days_to_earnings"].notna()
         & (df["days_to_earnings"] >= 0)
-        & (df["days_to_earnings"] < upcoming_window)   # < window (so 0..6 hides when window=7)
+        & (df["days_to_earnings"] < upcoming_window)
     )
-
 
     # Market cap formatting
     df["market_cap_raw"] = pd.to_numeric(df["market_cap"], errors="coerce")
     df["market_cap"] = df["market_cap_raw"].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "")
 
+    # ----------------------------------------------------------
     # Format helpers
+    # ----------------------------------------------------------
     def fmt_money_local(x):
         return f"${float(x):.2f}" if pd.notnull(x) else ""
 
     def fmt_pct_local(x):
-        return f"{float(x)*100:.2f}%" if pd.notnull(x) else ""
+        return f"{float(x) * 100:.2f}%" if pd.notnull(x) else ""
 
     df["put_20d_premium_fmt"] = df["put_20d_premium"].apply(fmt_money_local)
     df["put_20d_premium_pct_fmt"] = df["put_20d_premium_pct"].apply(fmt_pct_local)
@@ -401,8 +447,6 @@ def main():
     max_allowed = today + timedelta(days=expiry_days)
     df = df[df["expiry"] <= max_allowed]
 
-    # Hide upcoming earnings within X days (0 = off)
-    # Hide ONLY if 0 <= dte <= window (negative = already reported = always show)
     if int(earnings_days_hide) > 0:
         window = int(earnings_days_hide)
         df = df[
@@ -411,16 +455,13 @@ def main():
             | (df["days_to_earnings"] > window)
         ]
 
-    # Hide recent earnings reported within X days (0 = off)
     if int(earnings_recent_hide) > 0:
         window = int(earnings_recent_hide)
-        # hide if -window <= dte < 0
         df = df[
             df["days_to_earnings"].isna()
             | (df["days_to_earnings"] >= 0)
             | (df["days_to_earnings"] < -window)
         ]
-
 
     if df.empty:
         st.info("Nothing left after earnings filters. Try widening the windows.")
@@ -448,10 +489,7 @@ def main():
         df["action_premium_fmt"] = df["call_20d_premium_fmt"]
         df["action_premium_pct_fmt"] = df["call_20d_premium_pct_fmt"]
 
-    # Require action fields
     df = df[df["action_premium_pct"].notna() & df["action_strike"].notna() & df["action_premium"].notna()]
-
-    # Premium target filter
     df = df[df["action_premium_pct"] >= float(min_target_premium_pct)]
 
     if df.empty:
@@ -477,7 +515,6 @@ def main():
         hide_red = st.checkbox("Hide ❌ Red flags (recommended)", value=True)
     with f2:
         hide_caution = st.checkbox("Hide ⚠️ Caution (recommended)", value=True)
-    
 
     if hide_red:
         df = df[df["wheel_flag"] != "❌"]
@@ -488,7 +525,18 @@ def main():
         st.info("Nothing left after hiding flags/earnings risk. Try unchecking one of the filters.")
         return
 
+    # ----------------------------------------------------------
+    # Highlight controls
+    # ----------------------------------------------------------
+    g1, g2 = st.columns([1.1, 1.1])
+    with g1:
+        highlight_best = st.checkbox("Highlight best targets in green", value=True)
+    with g2:
+        highlight_top_n = st.slider("Number of best targets to highlight", 0, 15, 5)
+
+    # ----------------------------------------------------------
     # Sorting
+    # ----------------------------------------------------------
     if sort_by == "Action premium %":
         df = df.sort_values(by="action_premium_pct", ascending=False, na_position="last")
     elif sort_by == "IV ATM":
@@ -500,14 +548,23 @@ def main():
     else:
         df = df.sort_values(by="ticker", ascending=True)
 
+    # ----------------------------------------------------------
+    # Highlight best targets
+    # ----------------------------------------------------------
+    if highlight_best:
+        df = add_best_target_flags(df, top_n=int(highlight_top_n))
+    else:
+        df["best_target"] = False
+        df["best_target_score"] = None
+
     st.subheader(f"🧮 Found {len(df)} targets (Wheel Mode: {wheel_mode})")
 
     # ----------------------------------------------------------
-    # Table columns (keep wheel columns on the far right)
+    # Table columns
     # ----------------------------------------------------------
     columns = [
-        # Core identity / filters
         "ticker",
+        "best_target",
         "stars",
         "latest_price",
         "market_cap",
@@ -517,38 +574,32 @@ def main():
         "dte",
         "contract_count",
 
-        # Put side
         "put_20d_strike",
         "buffer_pct_fmt",
         "put_20d_delta",
         "put_20d_premium_fmt",
         "put_20d_premium_pct_fmt",
 
-        # Call side
         "call_20d_strike",
         "call_20d_delta",
         "call_20d_premium_fmt",
         "call_20d_premium_pct_fmt",
 
-        # “Action” side (depends on Wheel Mode)
         "action_strategy",
         "action_strike",
         "action_delta",
         "action_premium_fmt",
         "action_premium_pct_fmt",
 
-        # Other flags
         "put_itm_flag",
         "call_itm_flag",
 
-        # Earnings (NEW)
         "earnings_flag",
         "earnings_date",
         "days_to_earnings",
         "earnings_recent_flag",
         "earnings_upcoming_flag",
 
-        # Wheel info (far right)
         "wheel_flag",
         "wheel_fit",
         "wheel_reason",
@@ -556,6 +607,7 @@ def main():
 
     display_df = df[columns].rename(columns={
         "ticker": "Ticker",
+        "best_target": "Best Target",
         "stars": "Stars",
         "latest_price": "Price",
         "market_cap": "Market Cap",
@@ -590,7 +642,15 @@ def main():
         "wheel_reason": "Wheel Reason",
     })
 
-    st.dataframe(display_df, hide_index=True, use_container_width=True)
+    display_df["Best Target"] = display_df["Best Target"].map({True: "✅", False: ""})
+
+    styled_df = display_df.style.apply(style_best_targets, axis=1)
+
+    st.dataframe(
+        styled_df,
+        hide_index=True,
+        use_container_width=True,
+    )
 
     st.download_button(
         "Download CSV",
