@@ -38,13 +38,12 @@ def fmt_int(value):
 
 
 # ----------------------------------------------------------
-# Load latest snapshot date
+# Detect prod snapshot mode vs local view mode
 # ----------------------------------------------------------
 @st.cache_data(ttl=300)
 def load_latest_as_of_date():
     engine = get_connection()
 
-    # Try prod tables first
     try:
         query = """
             SELECT MAX(as_of_date) AS as_of_date
@@ -54,11 +53,9 @@ def load_latest_as_of_date():
 
         if not df.empty and not pd.isna(df.iloc[0]["as_of_date"]):
             return df.iloc[0]["as_of_date"]
-
     except Exception:
         pass
 
-    # Fallback → local mode
     return None
 
 
@@ -69,7 +66,6 @@ def load_latest_as_of_date():
 def load_overall(as_of_date) -> pd.DataFrame:
     engine = get_connection()
 
-    # PROD MODE
     if as_of_date is not None:
         query = text("""
             SELECT *
@@ -78,7 +74,6 @@ def load_overall(as_of_date) -> pd.DataFrame:
         """)
         return pd.read_sql(query, engine, params={"as_of_date": as_of_date})
 
-    # LOCAL MODE fallback
     return pd.read_sql("SELECT * FROM prediction_backtest_overall_v", engine)
 
 
@@ -88,13 +83,24 @@ def load_overall(as_of_date) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_bucket_stats(as_of_date) -> pd.DataFrame:
     engine = get_connection()
-    query = text("""
+
+    if as_of_date is not None:
+        query = text("""
+            SELECT *
+            FROM prediction_backtest_bucket_stats
+            WHERE as_of_date = :as_of_date
+            ORDER BY calibration_bucket NULLS LAST
+        """)
+        return pd.read_sql(query, engine, params={"as_of_date": as_of_date})
+
+    return pd.read_sql(
+        """
         SELECT *
-        FROM prediction_backtest_bucket_stats
-        WHERE as_of_date = :as_of_date
+        FROM prediction_backtest_bucket_stats_v
         ORDER BY calibration_bucket NULLS LAST
-    """)
-    return pd.read_sql(query, engine, params={"as_of_date": as_of_date})
+        """,
+        engine,
+    )
 
 
 # ----------------------------------------------------------
@@ -103,13 +109,24 @@ def load_bucket_stats(as_of_date) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_phase_bucket_stats(as_of_date) -> pd.DataFrame:
     engine = get_connection()
-    query = text("""
+
+    if as_of_date is not None:
+        query = text("""
+            SELECT *
+            FROM prediction_backtest_phase_bucket_stats
+            WHERE as_of_date = :as_of_date
+            ORDER BY phase, calibration_bucket NULLS LAST
+        """)
+        return pd.read_sql(query, engine, params={"as_of_date": as_of_date})
+
+    return pd.read_sql(
+        """
         SELECT *
-        FROM prediction_backtest_phase_bucket_stats
-        WHERE as_of_date = :as_of_date
+        FROM prediction_backtest_phase_bucket_stats_v
         ORDER BY phase, calibration_bucket NULLS LAST
-    """)
-    return pd.read_sql(query, engine, params={"as_of_date": as_of_date})
+        """,
+        engine,
+    )
 
 
 # ----------------------------------------------------------
@@ -118,13 +135,24 @@ def load_phase_bucket_stats(as_of_date) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_goi_bucket_stats(as_of_date) -> pd.DataFrame:
     engine = get_connection()
-    query = text("""
+
+    if as_of_date is not None:
+        query = text("""
+            SELECT *
+            FROM prediction_backtest_goi_bucket_stats
+            WHERE as_of_date = :as_of_date
+            ORDER BY goi_zone, calibration_bucket NULLS LAST
+        """)
+        return pd.read_sql(query, engine, params={"as_of_date": as_of_date})
+
+    return pd.read_sql(
+        """
         SELECT *
-        FROM prediction_backtest_goi_bucket_stats
-        WHERE as_of_date = :as_of_date
+        FROM prediction_backtest_goi_bucket_stats_v
         ORDER BY goi_zone, calibration_bucket NULLS LAST
-    """)
-    return pd.read_sql(query, engine, params={"as_of_date": as_of_date})
+        """,
+        engine,
+    )
 
 
 # ----------------------------------------------------------
@@ -150,9 +178,10 @@ def main():
 
     as_of_date = load_latest_as_of_date()
 
-    if as_of_date is None:
-        st.warning("No prediction history snapshot found in prod.")
-        return
+    if as_of_date is not None:
+        st.caption(f"📦 Prod Snapshot: {as_of_date}")
+    else:
+        st.caption("🧪 Local Mode (views)")
 
     overall_df = load_overall(as_of_date)
     bucket_df = load_bucket_stats(as_of_date)
@@ -166,15 +195,19 @@ def main():
     overall = overall_df.iloc[0]
 
     st.markdown(
-        f"""
+        """
 This page is the historical evidence layer behind the live Prediction model.
 
-**Snapshot Date:** `{as_of_date}`
+It helps answer:
+- Which buckets performed best?
+- Which market phases produced the strongest results?
+- When does the model become selective?
+- How do returns improve with time?
 """
     )
 
     # ----------------------------------------------------------
-    # Top KPI cards
+    # Historical Summary
     # ----------------------------------------------------------
     st.markdown("### Historical Summary")
 
@@ -192,52 +225,33 @@ This page is the historical evidence layer behind the live Prediction model.
     st.divider()
 
     # ----------------------------------------------------------
-    # Key findings
-    # ----------------------------------------------------------
-    st.markdown("### Key Findings")
-    st.markdown(
-        """
-- **110 bucket** has been the strongest historical signal bucket.
-- **90 bucket** is still positive, but noisier.
-- **Watchlist / non-bucketed setups** are much weaker and often negative.
-- The model becomes most active during **Extreme Opportunity** environments.
-- The strongest zones tend to appear in **Contraction** and early **Recovery**.
-"""
-    )
-
-    st.divider()
-
-    # ----------------------------------------------------------
-    # Bucket performance
+    # Bucket Performance
     # ----------------------------------------------------------
     st.markdown("### Bucket Performance")
 
-    if bucket_df.empty:
-        st.info("No bucket stats available.")
-    else:
-        bucket_display = bucket_df.copy()
-        bucket_display["win_rate_60d"] = bucket_display["win_rate_60d"].apply(lambda x: fmt_pct(x))
-        bucket_display["avg_return_60d"] = bucket_display["avg_return_60d"].apply(lambda x: fmt_pct(x))
-        bucket_display["avg_return_90d"] = bucket_display["avg_return_90d"].apply(lambda x: fmt_pct(x))
-        bucket_display["avg_return_120d"] = bucket_display["avg_return_120d"].apply(lambda x: fmt_pct(x))
-        bucket_display["avg_return_180d"] = bucket_display["avg_return_180d"].apply(lambda x: fmt_pct(x))
-        bucket_display["rows"] = bucket_display["rows"].apply(fmt_int)
+    bucket_display = bucket_df.copy()
+    bucket_display["rows"] = bucket_display["rows"].apply(fmt_int)
+    bucket_display["win_rate_60d"] = bucket_display["win_rate_60d"].apply(lambda x: fmt_pct(x))
+    bucket_display["avg_return_60d"] = bucket_display["avg_return_60d"].apply(lambda x: fmt_pct(x))
+    bucket_display["avg_return_90d"] = bucket_display["avg_return_90d"].apply(lambda x: fmt_pct(x))
+    bucket_display["avg_return_120d"] = bucket_display["avg_return_120d"].apply(lambda x: fmt_pct(x))
+    bucket_display["avg_return_180d"] = bucket_display["avg_return_180d"].apply(lambda x: fmt_pct(x))
 
-        st.dataframe(
-            bucket_display.rename(columns={
-                "bucket_label": "Bucket",
-                "rows": "Rows",
-                "win_rate_60d": "Win Rate (60d)",
-                "avg_return_60d": "Avg Return (60d)",
-                "avg_return_90d": "Avg Return (90d)",
-                "avg_return_120d": "Avg Return (120d)",
-                "avg_return_180d": "Avg Return (180d)",
-            })[
-                ["Bucket", "Rows", "Win Rate (60d)", "Avg Return (60d)", "Avg Return (90d)", "Avg Return (120d)", "Avg Return (180d)"]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+    st.dataframe(
+        bucket_display.rename(columns={
+            "bucket_label": "Bucket",
+            "rows": "Rows",
+            "win_rate_60d": "Win Rate (60d)",
+            "avg_return_60d": "Avg Return (60d)",
+            "avg_return_90d": "Avg Return (90d)",
+            "avg_return_120d": "Avg Return (120d)",
+            "avg_return_180d": "Avg Return (180d)",
+        })[
+            ["Bucket", "Rows", "Win Rate (60d)", "Avg Return (60d)", "Avg Return (90d)", "Avg Return (120d)", "Avg Return (180d)"]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
 
     st.divider()
 
@@ -246,53 +260,23 @@ This page is the historical evidence layer behind the live Prediction model.
     # ----------------------------------------------------------
     st.markdown("### Phase × Bucket")
 
-    if phase_bucket_df.empty:
-        st.info("No phase stats available.")
-    else:
-        tab1, tab2 = st.tabs(["Win Rate (60d)", "Avg Return (60d)"])
+    tab1, tab2 = st.tabs(["Win Rate (60d)", "Avg Return (60d)"])
 
-        with tab1:
-            win_matrix = build_matrix(phase_bucket_df, "phase", "win_rate_60d")
-            if not win_matrix.empty:
-                st.dataframe(
-                    win_matrix.style.format("{:.1%}").background_gradient(axis=None, cmap="Greens"),
-                    use_container_width=True,
-                )
+    with tab1:
+        win_matrix = build_matrix(phase_bucket_df, "phase", "win_rate_60d")
+        if not win_matrix.empty:
+            st.dataframe(
+                win_matrix.style.format("{:.1%}").background_gradient(axis=None, cmap="Greens"),
+                use_container_width=True,
+            )
 
-        with tab2:
-            ret_matrix = build_matrix(phase_bucket_df, "phase", "avg_return_60d")
-            if not ret_matrix.empty:
-                st.dataframe(
-                    ret_matrix.style.format("{:.1%}").background_gradient(axis=None, cmap="RdYlGn"),
-                    use_container_width=True,
-                )
-
-        st.markdown("#### Detail Table")
-
-        phase_display = phase_bucket_df.copy()
-        phase_display["rows"] = phase_display["rows"].apply(fmt_int)
-        phase_display["win_rate_60d"] = phase_display["win_rate_60d"].apply(lambda x: fmt_pct(x))
-        phase_display["avg_return_60d"] = phase_display["avg_return_60d"].apply(lambda x: fmt_pct(x))
-        phase_display["avg_return_90d"] = phase_display["avg_return_90d"].apply(lambda x: fmt_pct(x))
-        phase_display["avg_return_120d"] = phase_display["avg_return_120d"].apply(lambda x: fmt_pct(x))
-        phase_display["avg_return_180d"] = phase_display["avg_return_180d"].apply(lambda x: fmt_pct(x))
-
-        st.dataframe(
-            phase_display.rename(columns={
-                "phase": "Phase",
-                "bucket_label": "Bucket",
-                "rows": "Rows",
-                "win_rate_60d": "Win Rate (60d)",
-                "avg_return_60d": "Avg Return (60d)",
-                "avg_return_90d": "Avg Return (90d)",
-                "avg_return_120d": "Avg Return (120d)",
-                "avg_return_180d": "Avg Return (180d)",
-            })[
-                ["Phase", "Bucket", "Rows", "Win Rate (60d)", "Avg Return (60d)", "Avg Return (90d)", "Avg Return (120d)", "Avg Return (180d)"]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+    with tab2:
+        ret_matrix = build_matrix(phase_bucket_df, "phase", "avg_return_60d")
+        if not ret_matrix.empty:
+            st.dataframe(
+                ret_matrix.style.format("{:.1%}").background_gradient(axis=None, cmap="RdYlGn"),
+                use_container_width=True,
+            )
 
     st.divider()
 
@@ -301,53 +285,23 @@ This page is the historical evidence layer behind the live Prediction model.
     # ----------------------------------------------------------
     st.markdown("### GOI Zone × Bucket")
 
-    if goi_bucket_df.empty:
-        st.info("No GOI stats available.")
-    else:
-        tab3, tab4 = st.tabs(["Win Rate (60d)", "Avg Return (60d)"])
+    tab3, tab4 = st.tabs(["Win Rate (60d)", "Avg Return (60d)"])
 
-        with tab3:
-            goi_win_matrix = build_matrix(goi_bucket_df, "goi_zone", "win_rate_60d")
-            if not goi_win_matrix.empty:
-                st.dataframe(
-                    goi_win_matrix.style.format("{:.1%}").background_gradient(axis=None, cmap="Greens"),
-                    use_container_width=True,
-                )
+    with tab3:
+        goi_win_matrix = build_matrix(goi_bucket_df, "goi_zone", "win_rate_60d")
+        if not goi_win_matrix.empty:
+            st.dataframe(
+                goi_win_matrix.style.format("{:.1%}").background_gradient(axis=None, cmap="Greens"),
+                use_container_width=True,
+            )
 
-        with tab4:
-            goi_ret_matrix = build_matrix(goi_bucket_df, "goi_zone", "avg_return_60d")
-            if not goi_ret_matrix.empty:
-                st.dataframe(
-                    goi_ret_matrix.style.format("{:.1%}").background_gradient(axis=None, cmap="RdYlGn"),
-                    use_container_width=True,
-                )
-
-        st.markdown("#### Detail Table")
-
-        goi_display = goi_bucket_df.copy()
-        goi_display["rows"] = goi_display["rows"].apply(fmt_int)
-        goi_display["win_rate_60d"] = goi_display["win_rate_60d"].apply(lambda x: fmt_pct(x))
-        goi_display["avg_return_60d"] = goi_display["avg_return_60d"].apply(lambda x: fmt_pct(x))
-        goi_display["avg_return_90d"] = goi_display["avg_return_90d"].apply(lambda x: fmt_pct(x))
-        goi_display["avg_return_120d"] = goi_display["avg_return_120d"].apply(lambda x: fmt_pct(x))
-        goi_display["avg_return_180d"] = goi_display["avg_return_180d"].apply(lambda x: fmt_pct(x))
-
-        st.dataframe(
-            goi_display.rename(columns={
-                "goi_zone": "GOI Zone",
-                "bucket_label": "Bucket",
-                "rows": "Rows",
-                "win_rate_60d": "Win Rate (60d)",
-                "avg_return_60d": "Avg Return (60d)",
-                "avg_return_90d": "Avg Return (90d)",
-                "avg_return_120d": "Avg Return (120d)",
-                "avg_return_180d": "Avg Return (180d)",
-            })[
-                ["GOI Zone", "Bucket", "Rows", "Win Rate (60d)", "Avg Return (60d)", "Avg Return (90d)", "Avg Return (120d)", "Avg Return (180d)"]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+    with tab4:
+        goi_ret_matrix = build_matrix(goi_bucket_df, "goi_zone", "avg_return_60d")
+        if not goi_ret_matrix.empty:
+            st.dataframe(
+                goi_ret_matrix.style.format("{:.1%}").background_gradient(axis=None, cmap="RdYlGn"),
+                use_container_width=True,
+            )
 
     st.divider()
 
@@ -360,9 +314,6 @@ This page shows the **historical evidence** behind those signals:
 - which buckets were strongest,
 - where the model became active,
 - and how returns improved across longer horizons.
-
-Together, the two pages create a full workflow:
-**today's signals + historical proof**.
 """
     )
 
