@@ -1,4 +1,173 @@
 # prediction_utils.py
+# ----------------------------------------------------------
+# Prediction Scoring Model (DOCUMENTATION ONLY - DO NOT MODIFY LOGIC BELOW)
+# ----------------------------------------------------------
+"""
+RAW PREDICTION SCORE MODEL
+
+The prediction_score is a rules-based composite score that measures
+how favorable a company setup is at a given point in time.
+
+This model is NOT machine learning — it is a structured scoring system
+built from multiple independent signals.
+
+----------------------------------------------------------
+FORMULA
+----------------------------------------------------------
+
+prediction_score =
+    phase_score
+  + transition_score
+  + buyzone_score
+  + confidence_score
+  + fundamentals_score
+  + goi_score
+  + regime_alignment_score
+  + overheat_penalty
+
+----------------------------------------------------------
+COMPONENT DEFINITIONS
+----------------------------------------------------------
+
+1. Phase Score (Macro Timing)
+- CONTRACTION → +30
+- RECOVERY    → +25
+- EUPHORIA    → +20
+- EXPANSION   → +15
+
+→ Rewards earlier cycle entry points
+
+----------------------------------------------------------
+
+2. Transition Score (Inflection Detection)
+- CONTRACTION → EXPANSION → +25
+- CONTRACTION → RECOVERY  → +20
+- EXPANSION → CONTRACTION → +20
+
+→ Captures major turning points in the cycle
+
+----------------------------------------------------------
+
+3. BuyZone Score (Technical Entry Timing)
+- BuyZone = TRUE → +15
+- Otherwise → 0
+
+→ Ensures timing alignment with pullbacks
+
+----------------------------------------------------------
+
+4. Confidence Score (Signal Strength)
+- confidence * 20
+
+Examples:
+- 1.0 → +20
+- 0.5 → +10
+
+→ Scales conviction of the setup
+
+----------------------------------------------------------
+
+5. Fundamentals Score (Quality + Valuation)
+- GV ≥ 60 → +5
+- GY ≥ 3  → +5
+
+Max = +10
+
+→ Rewards strong companies at good valuations
+
+----------------------------------------------------------
+
+6. GOI Score (Market Opportunity Environment)
+- ELEVATED_OPPORTUNITY → +30
+- EXTREME_OPPORTUNITY  → +20
+- NORMAL               → +10
+- LOW_OPPORTUNITY      → +5
+- EXTREME_GREED        → -15
+
+→ Adds macro tailwind / headwind
+
+----------------------------------------------------------
+
+7. Regime Alignment Score (Signal Synergy)
+- CONTRACTION + ELEVATED_OPPORTUNITY → +30
+- RECOVERY + ELEVATED_OPPORTUNITY    → +25
+- CONTRACTION + EXTREME_OPPORTUNITY  → +20
+- EUPHORIA + EXTREME_GREED           → -20
+
+→ Rewards "perfect storm" setups
+
+----------------------------------------------------------
+
+8. Overheat Penalty (Risk Control)
+- EUPHORIA + EXTREME_GREED → -30
+- EXPANSION + EXTREME_GREED → -20
+- EUPHORIA + no BuyZone → -10
+
+→ Prevents chasing overheated markets
+
+----------------------------------------------------------
+INTERPRETATION
+----------------------------------------------------------
+
+The raw score represents:
+
+    "How ideal is this setup right now?"
+
+Higher is better, but the relationship is NOT linear.
+
+----------------------------------------------------------
+BUCKET SYSTEM
+----------------------------------------------------------
+
+Raw scores are converted into:
+
+1. Raw Bucket (rounded to nearest 10)
+2. Calibration Bucket:
+    ≥125 → 130
+    ≥105 → 110
+    ≥85  → 90
+
+Calibration buckets map to historical:
+- Expected win rate
+- Expected return
+
+----------------------------------------------------------
+EXAMPLE (OKTA)
+----------------------------------------------------------
+
+Phase = CONTRACTION           +30
+Transition = EXPANSION→CONTRACTION +20
+BuyZone = TRUE                +15
+Confidence = 1.0              +20
+GV ≥ 60                       +5
+GY ≥ 3                        +5
+GOI = NORMAL                  +10
+Alignment                     +0
+Penalty                       +0
+
+TOTAL = 105
+
+----------------------------------------------------------
+DESIGN PRINCIPLES
+----------------------------------------------------------
+
+- Reward early cycle entries
+- Reward inflection points
+- Reward alignment across signals
+- Penalize overheated environments
+- Keep model interpretable and explainable
+
+----------------------------------------------------------
+IMPORTANT NOTE
+----------------------------------------------------------
+
+DO NOT modify scoring logic without:
+1. Backtesting impact
+2. Updating calibration buckets
+3. Updating this documentation
+
+This file is the source of truth for how prediction scores are calculated.
+"""
 
 import pandas as pd
 

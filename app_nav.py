@@ -21,6 +21,7 @@ def build_pages():
             st.Page("pages/5_Bottom-Detector.py", title="Bottom Detector", icon="🧯"),
             st.Page("pages/8_BuyZone-Count.py", title="BuyZone Count", icon="🎯"),
             st.Page("pages/3_Market-Breadth.py", title="Market Breadth", icon="🌐"),
+            st.Page("pages/15_Prediction_History.py", title="Prediction History", icon="🔮"),
             st.Page("pages/1_Dashboard.py", title="Dashboard", icon="📊"),
             st.Page("pages/2_Dashboard-mini.py", title="Dashboard Mini", icon="🧩"),
             
