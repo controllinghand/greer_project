@@ -169,7 +169,7 @@ Interpretation:
     # Filters
     col1, col2, col3 = st.columns(3)
     with col1:
-        min_score = st.slider("Minimum Prediction Score", min_value=0, max_value=150, value=100, step=10)
+        min_score = st.slider("Minimum Prediction Score", min_value=0, max_value=150, value=80, step=10)
     with col2:
         selected_phase = st.multiselect(
             "Phase",
