@@ -105,6 +105,20 @@ logger.info("Running greer_company_index_calculator.py")
 run_cmd(["python", "greer_company_index_calculator.py"])
 
 # ----------------------------------------------------------
+# Refresh Prediction Snapshot (fast website page)
+# ----------------------------------------------------------
+print("\n🔮 Refreshing prediction snapshot …")
+logger.info("Running refresh_prediction_snapshot.py")
+run_cmd(["python", "refresh_prediction_snapshot.py"])
+
+# ----------------------------------------------------------
+# Refresh Divergence Snapshot (fast website page)
+# ----------------------------------------------------------
+print("\n📉 Refreshing divergence snapshot …")
+logger.info("Running refresh_divergence_snapshot.py")
+run_cmd(["python", "refresh_divergence_snapshot.py"])
+
+# ----------------------------------------------------------
 # Track Daily Predictions
 # ----------------------------------------------------------
 print("\n🔮 Tracking daily prediction snapshots …")

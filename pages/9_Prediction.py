@@ -3,8 +3,8 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
+
 from db import get_engine
-from prediction_utils import calculate_prediction_score
 
 
 # ----------------------------------------------------------
@@ -39,71 +39,20 @@ def get_connection():
 
 
 # ----------------------------------------------------------
-# Load live prediction inputs
+# Load latest prediction snapshot
 # ----------------------------------------------------------
 @st.cache_data(ttl=300)
-def load_prediction_inputs() -> pd.DataFrame:
+def load_prediction_snapshot() -> pd.DataFrame:
     engine = get_connection()
 
     query = text("""
-        WITH latest_market AS (
-            SELECT
-                date,
-                buyzone_pct,
-                CASE
-                    WHEN buyzone_pct >= 66 THEN 'EXTREME_OPPORTUNITY'
-                    WHEN buyzone_pct >= 46 THEN 'ELEVATED_OPPORTUNITY'
-                    WHEN buyzone_pct >= 14 THEN 'NORMAL'
-                    WHEN buyzone_pct >= 10 THEN 'LOW_OPPORTUNITY'
-                    ELSE 'EXTREME_GREED'
-                END AS goi_zone
-            FROM buyzone_breadth
-            ORDER BY date DESC
-            LIMIT 1
-        ),
-        company_phase_history AS (
-            SELECT
-                g.ticker,
-                g.date,
-                g.phase,
-                g.confidence,
-                LAG(g.phase) OVER (PARTITION BY g.ticker ORDER BY g.date) AS prior_phase,
-                ROW_NUMBER() OVER (PARTITION BY g.ticker ORDER BY g.date DESC) AS rn
-            FROM greer_company_index_daily g
-        ),
-        latest_company_phase AS (
-            SELECT
-                ticker,
-                date AS snapshot_date,
-                phase,
-                prior_phase,
-                confidence
-            FROM company_phase_history
-            WHERE rn = 1
+        SELECT *
+        FROM prediction_snapshot
+        WHERE prediction_date = (
+            SELECT MAX(prediction_date)
+            FROM prediction_snapshot
         )
-        SELECT
-            ds.ticker,
-            ds.name,
-            ds.sector,
-            ds.industry,
-            ds.current_price,
-            ds.greer_star_rating,
-            ds.greer_value_score,
-            ds.greer_yield_score,
-            ds.buyzone_flag,
-            ds.gfv_price,
-            ds.gfv_status,
-            lcp.snapshot_date,
-            lcp.phase,
-            lcp.prior_phase,
-            lcp.confidence,
-            lm.buyzone_pct AS market_buyzone_pct,
-            lm.goi_zone
-        FROM dashboard_snapshot ds
-        JOIN latest_company_phase lcp
-          ON lcp.ticker = ds.ticker
-        CROSS JOIN latest_market lm
-        ORDER BY ds.ticker
+        ORDER BY ticker
     """)
 
     return pd.read_sql(query, engine)
@@ -117,14 +66,17 @@ def main():
     st.caption("Probability-based multi-month outlook for current company setups.")
     st.markdown(PREDICTION_PAGE_DESCRIPTION)
 
-    df = load_prediction_inputs()
+    df = load_prediction_snapshot()
 
     if df.empty:
         st.warning("No prediction data available.")
         return
 
-    # Current market regime banner
-    current_goi_zone = df["goi_zone"].dropna().iloc[0] if not df["goi_zone"].dropna().empty else "UNKNOWN"
+    current_goi_zone = (
+        df["goi_zone"].dropna().iloc[0]
+        if not df["goi_zone"].dropna().empty
+        else "UNKNOWN"
+    )
     current_goi_label = current_goi_zone.replace("_", " ").title()
 
     st.info(f"""
@@ -145,14 +97,6 @@ Interpretation:
 - Best results come from patience and holding through volatility
 """)
 
-    # Optional filters: exclude known weak/noisy setups
-    df = df[df["buyzone_flag"].notna()].copy()
-    df = df[~((df["phase"] == "CONTRACTION") & (df["goi_zone"] == "EXTREME_GREED"))].copy()
-
-    score_df = df.apply(calculate_prediction_score, axis=1)
-    df = pd.concat([df, score_df], axis=1)
-
-    # Top summary
     c1, c2, c3 = st.columns(3)
     with c1:
         st.metric("Optimal Signal Bucket", "110+")
@@ -166,21 +110,26 @@ Interpretation:
 
     st.divider()
 
-    # Filters
     col1, col2, col3 = st.columns(3)
     with col1:
-        min_score = st.slider("Minimum Prediction Score", min_value=0, max_value=150, value=80, step=10)
+        min_score = st.slider(
+            "Minimum Prediction Score",
+            min_value=0,
+            max_value=150,
+            value=80,
+            step=10,
+        )
     with col2:
         selected_phase = st.multiselect(
             "Phase",
             sorted(df["phase"].dropna().unique().tolist()),
-            default=sorted(df["phase"].dropna().unique().tolist())
+            default=sorted(df["phase"].dropna().unique().tolist()),
         )
     with col3:
         selected_goi = st.multiselect(
             "GOI Zone",
             sorted(df["goi_zone"].dropna().unique().tolist()),
-            default=sorted(df["goi_zone"].dropna().unique().tolist())
+            default=sorted(df["goi_zone"].dropna().unique().tolist()),
         )
 
     filtered = df[
@@ -188,11 +137,6 @@ Interpretation:
         (df["phase"].isin(selected_phase)) &
         (df["goi_zone"].isin(selected_goi))
     ].copy()
-
-    filtered["expected_win_rate_trend_pct"] = (filtered["expected_win_rate_trend"] * 100).round(1)
-    filtered["expected_return_trend_pct"] = (filtered["expected_return_trend"] * 100).round(1)
-    filtered["confidence_pct"] = (filtered["confidence"] * 100).round(1)
-    filtered["prediction_score"] = filtered["prediction_score"].round(1)
 
     st.markdown("### Live Signals")
 
@@ -241,19 +185,17 @@ Interpretation:
         "greer_yield_score": "GY",
     })
 
-    # ----------------------------------------------------------
-    # Clean up display formatting
-    # ----------------------------------------------------------
+    if display_df.empty:
+        st.info("No companies match the current filters.")
+        return
+
     display_df["Price"] = display_df["Price"].round(2)
     display_df["Prediction Score"] = display_df["Prediction Score"].round(1)
     display_df["Expected Win Rate (Trend) %"] = display_df["Expected Win Rate (Trend) %"].round(1)
     display_df["Expected Return (Trend) %"] = display_df["Expected Return (Trend) %"].round(1)
 
-    # Buckets should be integers
     display_df["Raw Bucket"] = display_df["Raw Bucket"].astype("Int64")
     display_df["Calibration Bucket"] = display_df["Calibration Bucket"].astype("Int64")
-
-    # Optional: GV / GY cleanup
     display_df["GV"] = display_df["GV"].round(0)
     display_df["GY"] = display_df["GY"].round(0)
 
