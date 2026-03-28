@@ -119,6 +119,13 @@ logger.info("Running refresh_divergence_snapshot.py")
 run_cmd(["python", "refresh_divergence_snapshot.py"])
 
 # ----------------------------------------------------------
+# Refresh Opportunities IV Snapshot (fast website page)
+# ----------------------------------------------------------
+print("\n⭐ Refreshing Opportunities IV snapshot …")
+logger.info("Running refresh_opportunities_iv_snapshot.py")
+run_cmd(["python", "refresh_opportunities_iv_snapshot.py"])
+
+# ----------------------------------------------------------
 # Track Daily Predictions
 # ----------------------------------------------------------
 print("\n🔮 Tracking daily prediction snapshots …")

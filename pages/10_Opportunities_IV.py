@@ -4,8 +4,6 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import text
 from db import get_engine  # ✅ Centralized DB connection
-from market_cycle_utils import classify_phase_with_confidence
-from company_cycle_helpers import enrich_company_cycle_dataframe
 
 # Page config — update tab title
 # st.set_page_config(page_title="⭐ Opportunities with IV", layout="wide")
@@ -76,6 +74,7 @@ st.markdown(
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
+
 def signal_emoji(value: float) -> str:
     x = float(value)
     if x <= 24:
@@ -109,134 +108,25 @@ def phase_chip(phase_name: str) -> str:
 
 
 # --------------------------------------------------
-# Load opportunities + company cycle inputs
+# Load opportunities snapshot
 # --------------------------------------------------
-@st.cache_data(ttl=3600)
-def load_filtered_companies() -> pd.DataFrame:
+@st.cache_data(ttl=300)
+def load_snapshot() -> pd.DataFrame:
     engine = get_engine()
+
     query = text(
         """
-        WITH live_bull_gaps AS (
-          SELECT ticker, date AS entry_date
-          FROM public.fair_value_gaps
-          WHERE direction = 'bullish'
-            AND mitigated = false
-        ),
-        last_entry AS (
-          SELECT ticker, MAX(entry_date) AS last_entry_date
-          FROM live_bull_gaps
-          GROUP BY ticker
-        ),
-        latest_prices AS (
-          SELECT ticker, close AS current_price, date
-          FROM prices
-          WHERE (ticker, date) IN (
-               SELECT ticker, MAX(date) FROM prices GROUP BY ticker
-            )
-        ),
-        latest_gfv AS (
-          SELECT DISTINCT ON (g.ticker)
-            g.ticker,
-            g.gfv_price,
-            g.gfv_status,
-            g.date
-          FROM greer_fair_value_daily g
-          ORDER BY g.ticker, g.date DESC
-        ),
-        latest_sector AS (
-          SELECT
-            sector,
-            summary_date,
-            buyzone_pct,
-            greer_market_index
-          FROM sector_summary_daily
-          WHERE summary_date = (
-            SELECT MAX(summary_date) FROM sector_summary_daily
-          )
-        ),
-        recent_iv AS (
-          SELECT DISTINCT ON (ivs.ticker)
-            ivs.ticker,
-            ivs.iv_atm,
-            ivs.expiry AS iv_expiry
-          FROM iv_summary ivs
-          JOIN (
-            SELECT ticker, MAX(fetch_date) AS max_fetch_date
-            FROM iv_summary
-            GROUP BY ticker
-          ) mf
-            ON mf.ticker = ivs.ticker
-           AND mf.max_fetch_date = ivs.fetch_date
-          WHERE ivs.expiry >= CURRENT_DATE
-          ORDER BY ivs.ticker, ivs.expiry ASC
+        SELECT *
+        FROM opportunities_iv_snapshot
+        WHERE snapshot_date = (
+            SELECT MAX(snapshot_date)
+            FROM opportunities_iv_snapshot
         )
-        SELECT
-          l.ticker,
-          c.name,
-          c.sector,
-          c.industry,
-          c.greer_star_rating AS stars,
-          l.greer_value_score AS greer_value,
-          l.above_50_count,
-          l.greer_yield_score AS yield_score,
-          l.buyzone_flag,
-          l.fvg_last_direction,
-          le.last_entry_date,
-          p.current_price,
-          gfv.gfv_price,
-          gfv.gfv_status,
-          gfv.gfv_price * 0.75 AS gfv_mos,
-          riv.iv_atm AS iv_atm,
-          riv.iv_expiry AS iv_expiry,
-          s.summary_date AS sector_summary_date,
-          s.buyzone_pct AS sector_buyzone_pct,
-          (100.0 - s.buyzone_pct) AS sector_direction_pct,
-          s.greer_market_index AS sector_greer_market_index
-        FROM last_entry le
-        JOIN latest_company_snapshot l ON l.ticker = le.ticker
-        JOIN companies c               ON l.ticker = c.ticker
-        JOIN latest_prices p           ON p.ticker = l.ticker
-        JOIN latest_gfv gfv            ON gfv.ticker = l.ticker
-        LEFT JOIN recent_iv riv        ON riv.ticker = l.ticker
-        LEFT JOIN latest_sector s      ON c.sector = s.sector
-        WHERE l.greer_value_score >= 50
-          AND l.greer_yield_score >= 3
-          AND l.buyzone_flag = TRUE
-          AND l.fvg_last_direction = 'bullish'
-          AND p.current_price < gfv.gfv_price * 0.75
-          AND c.delisted = FALSE
-        ORDER BY
-          riv.iv_atm DESC NULLS LAST,
-          le.last_entry_date DESC,
-          l.ticker;
+        ORDER BY greer_company_index DESC, iv_atm DESC NULLS LAST, ticker
         """
     )
 
-    df = pd.read_sql(query, engine)
-
-    if df.empty:
-        return df
-
-    df = df.rename(
-        columns={
-            "greer_value": "greer_value_score",
-            "yield_score": "greer_yield_score",
-        }
-    )
-
-    df = enrich_company_cycle_dataframe(df, classify_phase_with_confidence)
-
-    df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce") * 100.0
-    df["confidence"] = df["confidence"].round(1)
-
-    df = df.rename(
-        columns={
-            "greer_value_score": "greer_value",
-            "greer_yield_score": "yield_score",
-        }
-    )
-
-    return df
+    return pd.read_sql(query, engine)
 
 
 # --------------------------------------------------
@@ -264,7 +154,8 @@ def main():
         unsafe_allow_html=True,
     )
 
-    df = load_filtered_companies()
+    df = load_snapshot()
+
     if df.empty:
         st.info("No companies currently meet all conditions.")
         return
@@ -275,10 +166,14 @@ def main():
     df["phase"] = df["phase"].fillna("UNKNOWN")
 
     if "last_entry_date" in df.columns:
-        df["last_entry_date"] = pd.to_datetime(df["last_entry_date"], errors="coerce").dt.date
+        df["last_entry_date"] = pd.to_datetime(
+            df["last_entry_date"], errors="coerce"
+        ).dt.date
 
     if "iv_expiry" in df.columns:
-        df["iv_expiry"] = pd.to_datetime(df["iv_expiry"], errors="coerce").dt.date
+        df["iv_expiry"] = pd.to_datetime(
+            df["iv_expiry"], errors="coerce"
+        ).dt.date
 
     numeric_cols = [
         "current_price",
@@ -293,11 +188,15 @@ def main():
         "greer_company_index",
         "confidence",
         "sector_direction_pct",
+        "stars",
     ]
 
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    if "buyzone_flag" in df.columns:
+        df["buyzone_flag"] = df["buyzone_flag"].fillna(False)
 
     # --------------------------------------------------
     # Filters
@@ -445,9 +344,19 @@ def main():
     display_df["Health"] = display_df["health_pct"].apply(signal_pct)
     display_df["Direction"] = display_df["direction_pct"].apply(signal_pct)
     display_df["Opportunity"] = display_df["opportunity_pct"].apply(signal_pct)
-    display_df["Confidence"] = display_df["confidence"].apply(lambda x: f"{x:.0f}%" if pd.notnull(x) else "")
+    display_df["Confidence"] = display_df["confidence"].apply(
+        lambda x: f"{x:.0f}%" if pd.notnull(x) else ""
+    )
 
-    for col in ["greer_company_index", "greer_value", "yield_score", "iv_atm", "current_price", "gfv_price", "gfv_mos"]:
+    for col in [
+        "greer_company_index",
+        "greer_value",
+        "yield_score",
+        "iv_atm",
+        "current_price",
+        "gfv_price",
+        "gfv_mos",
+    ]:
         if col in display_df.columns:
             display_df[col] = display_df[col].round(2)
 
@@ -494,34 +403,35 @@ def main():
 
     st.markdown(html_table, unsafe_allow_html=True)
 
-    csv_export = filtered_df[
-        [
-            "ticker",
-            "name",
-            "sector",
-            "industry",
-            "stars",
-            "greer_company_index",
-            "health_pct",
-            "direction_pct",
-            "opportunity_pct",
-            "phase",
-            "confidence",
-            "greer_value",
-            "above_50_count",
-            "yield_score",
-            "buyzone_flag",
-            "fvg_last_direction",
-            "gfv_status",
-            "sector_direction_pct",
-            "iv_atm",
-            "iv_expiry",
-            "current_price",
-            "gfv_price",
-            "gfv_mos",
-            "last_entry_date",
-        ]
-    ].rename(
+    export_cols = [
+        "ticker",
+        "name",
+        "sector",
+        "industry",
+        "stars",
+        "greer_company_index",
+        "health_pct",
+        "direction_pct",
+        "opportunity_pct",
+        "phase",
+        "confidence",
+        "greer_value",
+        "yield_score",
+        "buyzone_flag",
+        "fvg_last_direction",
+        "gfv_status",
+        "sector_direction_pct",
+        "iv_atm",
+        "iv_expiry",
+        "current_price",
+        "gfv_price",
+        "gfv_mos",
+        "last_entry_date",
+    ]
+
+    existing_export_cols = [col for col in export_cols if col in filtered_df.columns]
+
+    csv_export = filtered_df[existing_export_cols].rename(
         columns={
             "ticker": "Ticker",
             "name": "Name",
@@ -535,7 +445,6 @@ def main():
             "phase": "Phase",
             "confidence": "Confidence %",
             "greer_value": "Greer Value %",
-            "above_50_count": "Above 50 Count",
             "yield_score": "Yield Score",
             "buyzone_flag": "BuyZone Flag",
             "fvg_last_direction": "FVG Last Direction",
