@@ -153,6 +153,8 @@ def calculate_prediction_score(row: pd.Series) -> pd.Series:
         "calibration_bucket": calibration_bucket,
         "expected_win_rate_trend": expected_win_rate_trend,
         "expected_return_trend": expected_return_trend,
+        "expected_win_rate_60d": expected_win_rate_trend,
+        "expected_return_60d": expected_return_trend,
         "signal_tier": signal_tier,
         "signal_horizon": signal_horizon,
         "setup_label": setup_label,
