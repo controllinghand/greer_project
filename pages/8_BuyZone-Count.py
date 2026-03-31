@@ -33,6 +33,7 @@ def load_buyzone_history(days: int = 365) -> pd.DataFrame:
         engine
     )
 
+# 1. Keep the 365 limit but ensure it's calculated from the latest date
 df = load_buyzone_history(365)
 
 if df.empty:
@@ -52,23 +53,48 @@ df["bz_pct_50dma"] = df["buyzone_pct"].rolling(50, min_periods=1).mean()
 latest = df.iloc[-1]
 prev = df.iloc[-2] if len(df) > 1 else latest
 
+# 2. Update Thresholds to be DYNAMIC based on the current Universe size
+# This ensures that if you track 900 or 1200 companies, the bands move with you.
+latest_total = int(latest['total_companies'])
+
+# Dynamic thresholds based on your GOI percentages (10%, 14%, 46%, 66%)
+DYN_LOW      = latest_total * 0.10
+DYN_NORMAL   = latest_total * 0.14
+DYN_ELEVATED = latest_total * 0.46
+DYN_STRESS   = latest_total * 0.66
+
+def classify_buyzone_count_dynamic(count: float, total: int) -> tuple[str, str]:
+    pct = (count / total) * 100
+    if pct < 10.0:
+        return "🔴 Extreme Greed", "Opportunity is scarce. Market is likely overheated."
+    if pct < 14.0:
+        return "🟠 Low Opportunity", "Market is strong; selectivity is required."
+    if pct < 46.0:
+        return "🔵 Normal Range", "BuyZone count is within a typical working range."
+    return "🟢 Broad Opportunity", "A large group of stocks is attractively positioned."
+
+regime_title, regime_note = classify_buyzone_count_dynamic(
+    latest["buyzone_count"], 
+    int(latest["total_companies"])
+)
+
 # ----------------------------------------------------------
 # Practical starter thresholds
 # ----------------------------------------------------------
-LOW_THRESHOLD = 280
-NORMAL_THRESHOLD = 360
-ELEVATED_THRESHOLD = 440
+#LOW_THRESHOLD = 280
+#NORMAL_THRESHOLD = 360
+#ELEVATED_THRESHOLD = 440
 
-def classify_buyzone_count(value: float) -> tuple[str, str]:
-    if value < LOW_THRESHOLD:
-        return "🟢 Low Participation", "Few stocks are in BuyZone. Market stress looks contained."
-    if value < NORMAL_THRESHOLD:
-        return "🔵Normal Range", "BuyZone count is within a typical working range."
-    if value < ELEVATED_THRESHOLD:
-        return "🟠 Elevated Opportunity", "A larger-than-normal group of stocks is entering BuyZone."
-    return "🔴 Broad Stress", "BuyZone participation is unusually high across the universe."
+#def classify_buyzone_count(value: float) -> tuple[str, str]:
+#    if value < LOW_THRESHOLD:
+#        return "🟢 Low Participation", "Few stocks are in BuyZone. Market stress looks contained."
+#    if value < NORMAL_THRESHOLD:
+#        return "🔵Normal Range", "BuyZone count is within a typical working range."
+#    if value < ELEVATED_THRESHOLD:
+#        return "🟠 Elevated Opportunity", "A larger-than-normal group of stocks is entering BuyZone."
+#    return "🔴 Broad Stress", "BuyZone participation is unusually high across the universe."
 
-regime_title, regime_note = classify_buyzone_count(latest["buyzone_count"])
+#regime_title, regime_note = classify_buyzone_count(latest["buyzone_count"])
 
 # ----------------------------------------------------------
 # Trend helpers
@@ -145,7 +171,8 @@ fig.add_trace(
         x=df["summary_date"],
         y=df["buyzone_count"],
         mode="lines+markers",
-        name="BuyZone Count"
+        name="BuyZone Count",
+        line=dict(color="#1E88E5")
     )
 )
 
@@ -155,38 +182,39 @@ fig.add_trace(
         y=df["bz_50dma"],
         mode="lines",
         name="50-Day Avg",
-        line=dict(dash="dash")
+        line=dict(dash="dash", color="#666666")
     )
 )
 
-# Threshold guide bands
+# Dynamic Threshold guide bands
 fig.add_hrect(
-    y0=0, y1=LOW_THRESHOLD,
-    fillcolor="green", opacity=0.06, line_width=0,
-    annotation_text="Low", annotation_position="top left"
+    y0=0, y1=DYN_LOW,
+    fillcolor="red", opacity=0.08, line_width=0,
+    annotation_text="Extreme Greed", annotation_position="top left"
 )
 fig.add_hrect(
-    y0=LOW_THRESHOLD, y1=NORMAL_THRESHOLD,
-    fillcolor="yellow", opacity=0.06, line_width=0,
-    annotation_text="Normal", annotation_position="top left"
+    y0=DYN_LOW, y1=DYN_NORMAL,
+    fillcolor="orange", opacity=0.08, line_width=0,
+    annotation_text="Low Opportunity", annotation_position="top left"
 )
 fig.add_hrect(
-    y0=NORMAL_THRESHOLD, y1=ELEVATED_THRESHOLD,
-    fillcolor="orange", opacity=0.06, line_width=0,
-    annotation_text="Elevated", annotation_position="top left"
+    y0=DYN_NORMAL, y1=DYN_ELEVATED,
+    fillcolor="blue", opacity=0.05, line_width=0,
+    annotation_text="Normal Range", annotation_position="top left"
 )
 fig.add_hrect(
-    y0=ELEVATED_THRESHOLD, y1=max(int(df["total_companies"].max()), ELEVATED_THRESHOLD + 50),
-    fillcolor="red", opacity=0.06, line_width=0,
-    annotation_text="Broad Stress", annotation_position="top left"
+    y0=DYN_ELEVATED, y1=latest_total,
+    fillcolor="green", opacity=0.08, line_width=0,
+    annotation_text="Elevated Opportunity", annotation_position="top left"
 )
 
 fig.update_layout(
-    title="BuyZone Count Over Time",
+    title="BuyZone Count Over Time (1-Year Tactical View)",
     xaxis_title="Date",
     yaxis_title="BuyZone Count",
     height=520,
     margin=dict(l=20, r=20, t=60, b=20),
+    yaxis=dict(range=[0, latest_total * 1.1]) # Sets scale relative to current universe
 )
 
 st.plotly_chart(fig, use_container_width=True)

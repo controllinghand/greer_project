@@ -14,31 +14,33 @@ from textwrap import dedent
 st.set_page_config(page_title="Greer Opportunity Index", layout="wide")
 
 
-HISTORY_START_DATE = "2012-01-01"
+# HISTORY_START_DATE = "2012-01-01"
+HISTORY_START_DATE = "2000-01-01"
 
 # ----------------------------------------------------------
-# Zone thresholds
-# Based on historical percentiles from buyzone_breadth
+# Zone thresholds (Updated for 1998-2026 Data)
 # ----------------------------------------------------------
-P5 = 9.8806
-P20 = 13.9130
-P50 = 28.8986
-P80 = 46.0369
-P95 = 65.8722
+P5  = 11.0   # Extreme Greed floor
+P20 = 17.0   # Low Opportunity ceiling
+P50 = 32.2   # Median (The true "Normal")
+P80 = 54.3   # Elevated Opportunity floor
+P95 = 73.6   # Extreme Opportunity floor
 
 # ----------------------------------------------------------
 # Zone cutoffs
 # 4 cutoffs create 5 zones
+# Updated to match 1998-2026 Historical Percentiles
 # ----------------------------------------------------------
-ZONE_CUT_1 = 10.0
-ZONE_CUT_2 = 14.0
-ZONE_CUT_3 = 46.0
-ZONE_CUT_4 = 66.0
 
-ZONE_EXTREME_GREED = 10.0 
-ZONE_LOW_OPPORTUNITY = 14.0 
-ZONE_NORMAL = 46.0 
-ZONE_ELEVATED = 66.0
+ZONE_CUT_1 = 11.0  # P5
+ZONE_CUT_2 = 17.0  # P20
+ZONE_CUT_3 = 54.0  # P80
+ZONE_CUT_4 = 74.0  # P95
+
+ZONE_EXTREME_GREED   = 11.0 
+ZONE_LOW_OPPORTUNITY = 17.0 
+ZONE_NORMAL          = 54.0 
+ZONE_ELEVATED        = 74.0
 
 # ----------------------------------------------------------
 # Zone colors
@@ -117,7 +119,8 @@ def load_recent_goi_history(days: int = 90) -> pd.DataFrame:
 def load_zone_distribution() -> pd.DataFrame:
     engine = get_connection()
 
-    query = """
+    # Added 'f' before the string to enable variable interpolation
+    query = f"""
         SELECT
             CASE
                 WHEN buyzone_pct < 10 THEN 'Extreme Greed'
@@ -128,7 +131,7 @@ def load_zone_distribution() -> pd.DataFrame:
             END AS zone_label,
             COUNT(*) AS days_count
         FROM buyzone_breadth
-        WHERE date >= DATE '2012-01-01'
+        WHERE date >= '{HISTORY_START_DATE}'
         GROUP BY 1
     """
 
@@ -321,7 +324,8 @@ def build_goi_chart(df_hist: pd.DataFrame) -> alt.Chart:
         {"y0": ZONE_CUT_1, "y1": ZONE_CUT_2, "zone": "Low Opportunity", "color": COLOR_LOW_OPPORTUNITY},
         {"y0": ZONE_CUT_2, "y1": ZONE_CUT_3, "zone": "Normal Range", "color": COLOR_NORMAL_RANGE},
         {"y0": ZONE_CUT_3, "y1": ZONE_CUT_4, "zone": "Elevated Opportunity", "color": COLOR_ELEVATED_OPPORTUNITY},
-        {"y0": ZONE_CUT_4, "y1": 80, "zone": "Extreme Opportunity", "color": COLOR_EXTREME_OPPORTUNITY},
+        # Changed y1 from 80 to 100 to cover the 2008 peak
+        {"y0": ZONE_CUT_4, "y1": 100, "zone": "Extreme Opportunity", "color": COLOR_EXTREME_OPPORTUNITY},
     ])
 
     band_chart = (
