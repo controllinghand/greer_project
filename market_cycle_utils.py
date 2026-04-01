@@ -6,8 +6,8 @@
 # use the same logic.
 # ----------------------------------------------------------
 
+import pandas as pd
 import streamlit as st
-
 
 # ----------------------------------------------------------
 # Normalize a value into a 0.0 to 1.0 scale
@@ -15,6 +15,32 @@ import streamlit as st
 def normalize_pct(value: float) -> float:
     x = float(value)
     return max(0.0, min(100.0, x)) / 100.0
+
+# ----------------------------------------------------------
+# GOI / Market Regime Logic (Dynamic Thresholds)
+# ----------------------------------------------------------
+
+def get_market_thresholds(engine):
+    """
+    Fetches the P5, P20, P80, P95 thresholds from the database.
+    This ensures all scripts use the 26-year calibrated data.
+    """
+    
+    query = "SELECT * FROM market_regime_thresholds" # The view we created
+    df = pd.read_sql(query, engine)
+    if df.empty:
+        # Fallback to current hardcoded values if the view fails
+        return {"p5": 11.2, "p20": 17.0, "p80": 54.4, "p95": 73.6}
+    return df.iloc[0].to_dict()
+
+def get_goi_label(buyzone_pct: float, thresholds: dict) -> str:
+    """Returns the string label based on the current % and DB thresholds."""
+    val = float(buyzone_pct)
+    if val < thresholds['p5']:  return "EXTREME_GREED"
+    if val < thresholds['p20']: return "LOW_OPPORTUNITY"
+    if val < thresholds['p80']: return "NORMAL_RANGE"
+    if val < thresholds['p95']: return "ELEVATED_OPPORTUNITY"
+    return "EXTREME_OPPORTUNITY"
 
 
 # ----------------------------------------------------------

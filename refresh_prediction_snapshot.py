@@ -1,4 +1,7 @@
 # refresh_prediction_snapshot.py
+# ----------------------------------------------------------
+# Dynamic Uplift: Now uses market_regime_thresholds view
+# ----------------------------------------------------------
 
 import logging
 import os
@@ -11,6 +14,8 @@ from sqlalchemy import text
 
 from db import get_engine
 from prediction_utils import calculate_prediction_score
+# NEW: Import our unified brain
+from market_cycle_utils import get_market_thresholds, get_goi_label
 
 
 # ----------------------------------------------------------
@@ -63,19 +68,17 @@ def clean_value(value: Any) -> Any:
 # ----------------------------------------------------------
 def load_prediction_inputs() -> pd.DataFrame:
     engine = get_engine()
+    
+    # NEW: Fetch dynamic thresholds first
+    thresholds = get_market_thresholds(engine)
 
+    # UPDATED SQL: We removed the hardcoded CASE statement and 
+    # replaced it with a simple select. We'll handle the labeling in Python.
     query = text("""
         WITH latest_market AS (
             SELECT
                 date,
-                buyzone_pct,
-                CASE
-                    WHEN buyzone_pct >= 66 THEN 'EXTREME_OPPORTUNITY'
-                    WHEN buyzone_pct >= 46 THEN 'ELEVATED_OPPORTUNITY'
-                    WHEN buyzone_pct >= 14 THEN 'NORMAL'
-                    WHEN buyzone_pct >= 10 THEN 'LOW_OPPORTUNITY'
-                    ELSE 'EXTREME_GREED'
-                END AS goi_zone
+                buyzone_pct
             FROM buyzone_breadth
             ORDER BY date DESC
             LIMIT 1
@@ -122,8 +125,7 @@ def load_prediction_inputs() -> pd.DataFrame:
             lcp.phase,
             lcp.prior_phase,
             lcp.confidence,
-            lm.buyzone_pct AS market_buyzone_pct,
-            lm.goi_zone
+            lm.buyzone_pct AS market_buyzone_pct
         FROM dashboard_snapshot ds
         JOIN latest_company_phase lcp
           ON lcp.ticker = ds.ticker
@@ -132,7 +134,12 @@ def load_prediction_inputs() -> pd.DataFrame:
     """)
 
     df = pd.read_sql(query, engine)
-    logger.info("Loaded %s prediction input rows", len(df))
+    
+    # NEW: Apply the dynamic GOI label in Python using the unified utility
+    if not df.empty:
+        df['goi_zone'] = df['market_buyzone_pct'].apply(lambda x: get_goi_label(x, thresholds))
+    
+    logger.info("Loaded %s prediction input rows with dynamic GOI zones", len(df))
     return df
 
 
