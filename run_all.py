@@ -8,6 +8,15 @@ import logging
 import os
 import sys
 
+import datetime
+
+# ----------------------------------------------------------
+# Calculate Lookback (7 days)
+# ----------------------------------------------------------
+# This ensures we refresh the last week of data to catch any 
+# late-arriving Fair Value Gaps or upstream ETL corrections.
+lookback_date = (datetime.date.today() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+
 # ----------------------------------------------------------
 # Setup Logging
 # ----------------------------------------------------------
@@ -100,9 +109,10 @@ run_cmd(["python", "build_sector_summary_daily.py"])
 # ----------------------------------------------------------
 # Build Greer Company Index Daily History
 # ----------------------------------------------------------
-print("\n📈 Building Greer Company Index daily history …")
-logger.info("Running greer_company_index_calculator.py")
-run_cmd(["python", "greer_company_index_calculator.py"])
+print(f"\n📈 Building Greer Company Index daily history (since {lookback_date}) …")
+logger.info("Running greer_company_index_calculator.py with 7-day lookback")
+# Pass the --start-date argument to the script
+run_cmd(["python", "greer_company_index_calculator.py", "--start-date", lookback_date])
 
 # ----------------------------------------------------------
 # Refresh Prediction Snapshot (fast website page)
