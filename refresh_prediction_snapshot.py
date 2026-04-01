@@ -72,8 +72,6 @@ def load_prediction_inputs() -> pd.DataFrame:
     # NEW: Fetch dynamic thresholds first
     thresholds = get_market_thresholds(engine)
 
-    # UPDATED SQL: We removed the hardcoded CASE statement and 
-    # replaced it with a simple select. We'll handle the labeling in Python.
     query = text("""
         WITH latest_market AS (
             SELECT
@@ -135,7 +133,6 @@ def load_prediction_inputs() -> pd.DataFrame:
 
     df = pd.read_sql(query, engine)
     
-    # NEW: Apply the dynamic GOI label in Python using the unified utility
     if not df.empty:
         df['goi_zone'] = df['market_buyzone_pct'].apply(lambda x: get_goi_label(x, thresholds))
     
@@ -152,7 +149,7 @@ def build_prediction_snapshot(df: pd.DataFrame) -> pd.DataFrame:
 
     working_df = df.copy()
 
-    # Match current page behavior
+    # Filter to match BuyZone page behavior
     working_df = working_df[working_df["buyzone_flag"].notna()].copy()
     working_df = working_df[
         ~(
@@ -165,18 +162,32 @@ def build_prediction_snapshot(df: pd.DataFrame) -> pd.DataFrame:
         logger.warning("All prediction rows filtered out before scoring")
         return pd.DataFrame()
 
+    # 1. APPLY SCORING: This returns a Series of dicts
+    scores = working_df.apply(calculate_prediction_score, axis=1)
+    
+    # 1. APPLY SCORING
+    # This likely returns a DataFrame where each row contains the prediction metrics
     score_df = working_df.apply(calculate_prediction_score, axis=1)
-    working_df = pd.concat([working_df, score_df], axis=1)
+
+    # 2. JOIN SCORES
+    # If calculate_prediction_score returns a Series, score_df is a DataFrame.
+    # We join it back to the original data using the index.
+    working_df = working_df.join(score_df, rsuffix="_calc")
+
+    # 3. FORCE NUMERIC
+    # Using the join might result in some 'object' types if NaNs exist
+    for col in ["expected_win_rate_trend", "expected_return_trend", "confidence"]:
+        if col in working_df.columns:
+            working_df[col] = pd.to_numeric(working_df[col], errors="coerce").fillna(0)
 
     working_df["prediction_date"] = pd.to_datetime(date.today())
-    working_df["expected_win_rate_trend_pct"] = (
-        working_df["expected_win_rate_trend"] * 100
-    ).round(1)
-    working_df["expected_return_trend_pct"] = (
-        working_df["expected_return_trend"] * 100
-    ).round(1)
-    working_df["confidence_pct"] = (working_df["confidence"] * 100).round(1)
+    
+    # 4. CALCULATE PCT COLUMNS
+    working_df["expected_win_rate_trend_pct"] = (working_df["expected_win_rate_trend"] * 100.0).round(1)
+    working_df["expected_return_trend_pct"] = (working_df["expected_return_trend"] * 100.0).round(1)
+    working_df["confidence_pct"] = (working_df["confidence"] * 100.0).round(1)
 
+    # 5. ASSEMBLE FINAL SNAPSHOT
     snapshot_df = pd.DataFrame({
         "prediction_date": working_df["prediction_date"],
         "ticker": working_df["ticker"],
@@ -230,67 +241,27 @@ def upsert_prediction_snapshot(df: pd.DataFrame) -> int:
 
     sql = text("""
         INSERT INTO prediction_snapshot (
-            prediction_date,
-            ticker,
-            name,
-            sector,
-            industry,
-            current_price,
-            prediction_score,
-            score_bucket,
-            calibration_bucket,
-            signal_tier,
-            signal_horizon,
-            expected_win_rate_trend,
-            expected_return_trend,
-            expected_win_rate_trend_pct,
-            expected_return_trend_pct,
-            setup_label,
-            phase,
-            prior_phase,
-            goi_zone,
-            buyzone_flag,
-            confidence,
-            confidence_pct,
-            greer_value_score,
-            greer_yield_score,
-            greer_star_rating,
-            gfv_price,
-            gfv_status,
-            snapshot_date,
-            market_buyzone_pct,
+            prediction_date, ticker, name, sector, industry,
+            current_price, prediction_score, score_bucket,
+            calibration_bucket, signal_tier, signal_horizon,
+            expected_win_rate_trend, expected_return_trend,
+            expected_win_rate_trend_pct, expected_return_trend_pct,
+            setup_label, phase, prior_phase, goi_zone,
+            buyzone_flag, confidence, confidence_pct,
+            greer_value_score, greer_yield_score, greer_star_rating,
+            gfv_price, gfv_status, snapshot_date, market_buyzone_pct,
             updated_at
         )
         VALUES (
-            :prediction_date,
-            :ticker,
-            :name,
-            :sector,
-            :industry,
-            :current_price,
-            :prediction_score,
-            :score_bucket,
-            :calibration_bucket,
-            :signal_tier,
-            :signal_horizon,
-            :expected_win_rate_trend,
-            :expected_return_trend,
-            :expected_win_rate_trend_pct,
-            :expected_return_trend_pct,
-            :setup_label,
-            :phase,
-            :prior_phase,
-            :goi_zone,
-            :buyzone_flag,
-            :confidence,
-            :confidence_pct,
-            :greer_value_score,
-            :greer_yield_score,
-            :greer_star_rating,
-            :gfv_price,
-            :gfv_status,
-            :snapshot_date,
-            :market_buyzone_pct,
+            :prediction_date, :ticker, :name, :sector, :industry,
+            :current_price, :prediction_score, :score_bucket,
+            :calibration_bucket, :signal_tier, :signal_horizon,
+            :expected_win_rate_trend, :expected_return_trend,
+            :expected_win_rate_trend_pct, :expected_return_trend_pct,
+            :setup_label, :phase, :prior_phase, :goi_zone,
+            :buyzone_flag, :confidence, :confidence_pct,
+            :greer_value_score, :greer_yield_score, :greer_star_rating,
+            :gfv_price, :gfv_status, :snapshot_date, :market_buyzone_pct,
             now()
         )
         ON CONFLICT (prediction_date, ticker)
