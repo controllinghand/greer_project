@@ -329,6 +329,31 @@ def main():
         - Higher readings mean opportunity is broadening across the market.
         - Lower readings mean fewer companies are attractively positioned.
         """))
+    st.divider()
+    
+    # --- Methodology & Footer ---
+    with st.expander("📖 Methodology: How the Greer Opportunity Index Works", expanded=True):
+        st.markdown(f"""
+        ### **The Math Behind the Index**
+        The **Greer Opportunity Index (GOI)** is a market-wide breadth signal that tracks the percentage of companies currently in the **Greer BuyZone**. To ensure the index is accurately calibrated, we use a **Percentile-Based** logic instead of arbitrary fixed numbers.
+        
+        **1. Historical Calibration:**
+        The index is calibrated against daily market data dating back to **{pd.Timestamp(HISTORY_START_DATE).year}**. This includes major market regimes like the 2000 Dot-com bubble and the 2008 Financial Crisis.
+        
+        **2. The 60/20/20 Distribution:**
+        We utilize a "Normal Distribution" approach to define our opportunity zones:
+        * **Normal Range (Middle 60%):** Where the market spends the majority of its time.
+        * **Elevated/Low Opportunity (Outer 15% each):** Periods where breadth is expanding or contracting significantly.
+        * **Extreme Zones (Outer 5% each):** Rare historical exhaustion points.
+        
+        **3. Zone Thresholds (Current Calibration):**
+        * **Extreme Opportunity ($P_{{95}}$):** >{thresholds['p95']:.1f}% — Historically, only 5% of days have seen breadth this high.
+        * **Median ($P_{{50}}$):** {df_hist['buyzone_pct'].median():.1f}% — The statistical "equilibrium" point of the market.
+        * **Extreme Greed ($P_{{5}}$):** <{thresholds['p5']:.1f}% — Historically, only 5% of days have seen breadth this low.
+        
+        **4. Why This Matters:**
+        Because these zones are based on **Historical Percentiles**, the index acts as a mean-reverting signal. When the index hits an "Extreme" zone, it indicates that the market breadth has reached a statistical limit, increasing the probability of a trend reversal.
+        """)
 
 if __name__ == "__main__":
     main()
