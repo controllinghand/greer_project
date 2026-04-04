@@ -37,7 +37,7 @@ def build_pages():
 
             # ---- Growth Funds ----
             st.Page("pages/_spacer.py", title="— Growth Funds —", url_path="spacer-growth"),
-            st.Page("pages/12_YR3G-26.py", title="  YR3G-26", icon="⭐"),
+            st.Page("pages/12_YR3G-26.py", title="  YR3G-26", icon="💲"),
             st.Page("pages/12_YRDG-26.py", title="  YRDG-26", icon="↔️"),
             st.Page("pages/12_YROG-26.py", title="  YROG-26", icon="🪨"),
             st.Page("pages/12_YRPG-26.py", title="  YRPG-26", icon="🔮"),
@@ -55,7 +55,7 @@ def build_pages():
             st.Page("pages/0_Fund_Build_Guide.py", title="Fund Build Guide", icon="🗺️"),
 
             st.Page("pages/_spacer.py", title="— Fund Builders —", url_path="spacer-builders"),
-            st.Page("pages/8_all_stars.py", title="3-Stars Model", icon="⭐"),
+            st.Page("pages/8_all_stars.py", title="Value Levels Model", icon="💲"),
             st.Page("pages/14_Divergence_Dashboard.py", title="Divergence Model", icon="↔️"),
             st.Page("pages/10_Opportunities_IV.py", title="Opportunity Model", icon="🪨"),
             st.Page("pages/9_Prediction.py", title="Prediction Model", icon="🔮"),
@@ -64,7 +64,7 @@ def build_pages():
             
             st.Page("pages/_spacer.py", title="— Research —", url_path="spacer-research"),
             st.Page("pages/6_Backtesting.py", title="Backtesting", icon="🧪"),
-            st.Page("pages/9_all_star_alumni.py", title="3-Stars Alumni", icon="⭐"),
+            st.Page("pages/9_all_star_alumni.py", title="Critical Value Alumni", icon="💲"),
 
             st.Page("pages/_spacer.py", title="— Utilities —", url_path="spacer-utilities"),
             st.Page("pages/10_Prediction_Accuracy.py", title="Prediction Accuracy", icon="🔮"),

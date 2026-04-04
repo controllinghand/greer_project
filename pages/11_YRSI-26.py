@@ -1,7 +1,7 @@
 # 11_YRSI-26.py
 # ----------------------------------------------------------
 # YRSI-26 Results Page (Read-only)
-# - You Rock Star Income Fund (est. 2026)
+# - You Rock Value LevelS Income Fund (est. 2026)
 # - Uses: portfolios, portfolio_events, portfolio_nav_daily
 # ----------------------------------------------------------
 
@@ -32,8 +32,9 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("💵 YRSI Results (You Rock Star Income Fund est. 2026)")
+    st.title("💵 YRSI Results (You Rock Value LevelS Income Fund est. 2026)")
     render_model_badge("Volatility Model", "🌪️","pages/11_WK_IV_Targets.py")
+    st.caption("💲 Powered by the Value LevelS system (Level 1–3 framework)")
     st.markdown(
         """
         Read-only community page for **YRSI-26**.  
@@ -41,10 +42,20 @@ def main():
 
         **Strategy:**  
         Weekly option positions are systematically sourced from our **Weekly IV Targets** screener and 
-        must carry a **minimum 1-Star rating** within our quality framework. The screener scans the market 
-        for contracts exhibiting favorable implied volatility, liquidity, and premium characteristics, 
-        helping prioritize opportunities with strong income potential while reinforcing a disciplined, 
-        data-driven selection process.
+        must meet a **minimum Value Level threshold (Level 1+)** within our value framework.  
+
+        The screener prioritizes contracts with:
+        - Strong implied volatility  
+        - Sufficient liquidity  
+        - Attractive premium relative to risk  
+
+        **Value LevelS framework:**  
+        - 🟢 Level 1 — Normal  
+        - 🟡 Level 2 — Elevated  
+        - 🔴 Level 3 — Critical (highest conviction setups when aligned with cycle + signals)  
+
+        This approach reinforces a disciplined, data-driven income strategy focused on 
+        consistency, risk management, and opportunity quality — not just yield chasing.
         """
     )
 

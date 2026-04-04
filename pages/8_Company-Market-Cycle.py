@@ -20,6 +20,7 @@ from company_cycle_helpers import (
     compute_company_buyzone_proxy,
     transition_risk_label,
 )
+from value_utils import get_value_level, value_level_label
 
 st.set_page_config(
     page_title="Greer Company Market Cycle",
@@ -396,6 +397,8 @@ for _, row in df.iterrows():
     )
 
 company_df = pd.DataFrame(company_rows)
+company_df["value_level"] = company_df["greer_star_rating"].apply(get_value_level)
+company_df["value_label"] = company_df["value_level"].apply(value_level_label)
 
 # ----------------------------------------------------------
 # Page header
@@ -416,8 +419,8 @@ with f1:
     )
 
 with f2:
-    min_stars = st.selectbox(
-        "Minimum Stars",
+    min_level = st.selectbox(
+        "Minimum Value Level",
         options=[0, 1, 2, 3],
         index=0,
     )
@@ -442,7 +445,7 @@ with f5:
 filtered_df = company_df.copy()
 
 filtered_df = filtered_df[filtered_df["sector"].isin(selected_sectors)]
-filtered_df = filtered_df[filtered_df["greer_star_rating"].fillna(0) >= min_stars]
+filtered_df = filtered_df[filtered_df["value_level"].fillna(0) >= min_level]
 filtered_df = filtered_df[filtered_df["phase"].isin(phase_filter)]
 
 if only_buyzone:
@@ -468,7 +471,8 @@ summary_display = summary_display.rename(
         "name": "Name",
         "sector": "Sector",
         "industry": "Industry",
-        "greer_star_rating": "Stars",
+        "value_level": "Level",
+        "value_label": "Value Signal",
         "greer_company_index": "Greer Company Index",
         "greer_value_score": "GV Score",
         "greer_yield_score": "YS Score",
@@ -489,7 +493,7 @@ sort_choice = st.selectbox(
         "Direction %",
         "Opportunity %",
         "Confidence %",
-        "Stars",
+        "Value Level",
         "Ticker",
     ],
     index=0,
@@ -501,7 +505,7 @@ sort_map = {
     "Direction %": ("_direction_sort", False),
     "Opportunity %": ("_opportunity_sort", False),
     "Confidence %": ("_confidence_sort", False),
-    "Stars": ("Stars", False),
+    "Value Level": ("Level", False),
     "Ticker": ("Ticker", True),
 }
 
@@ -513,7 +517,8 @@ summary_display = summary_display[
         "Name",
         "Sector",
         "Industry",
-        "Stars",
+        "Level",
+        "Value Signal",
         "Health",
         "Direction",
         "Opportunity",
@@ -570,7 +575,7 @@ if selected_label:
     st.subheader(f"🏷️ {detail['ticker']} — {detail['name']}")
     st.caption(
         f"Sector: {detail['sector']}  •  Industry: {detail['industry']}  •  "
-        f"Stars: {detail['greer_star_rating']}  •  "
+        f"Value Level: {value_level_label(get_value_level(detail['greer_star_rating']))}  •  "
         f"Greer Company Index: {detail['greer_company_index']:.2f}"
     )
 
@@ -621,7 +626,8 @@ if selected_label:
                 "Name": detail["name"],
                 "Sector": detail["sector"],
                 "Industry": detail["industry"],
-                "Stars": detail["greer_star_rating"],
+                "Value Level": get_value_level(detail["greer_star_rating"]),
+                "Value Signal": value_level_label(get_value_level(detail["greer_star_rating"])),
                 "GV Score": detail["greer_value_score"],
                 "Above 50 Count": detail["above_50_count"],
                 "YS Score": detail["greer_yield_score"],

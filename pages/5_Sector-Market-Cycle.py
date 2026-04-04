@@ -17,6 +17,7 @@ from market_cycle_utils import (
     phase_confidence_note,
     get_ranked_phase_scores,
 )
+from value_utils import get_value_level, value_level_label
 
 st.set_page_config(page_title="Greer Sector Market Cycle", layout="wide")
 
@@ -507,7 +508,7 @@ with drill_c1:
     )
 
 with drill_c2:
-    only_3_star = st.checkbox("Only 3-Star", value=False)
+    only_level3 = st.checkbox("Only Level 3 (Critical)", value=False)
 
 with drill_c3:
     only_buyzone = st.checkbox("Only BuyZone", value=False)
@@ -540,8 +541,11 @@ else:
     companies_df["current_price"] = companies_df["current_price"].apply(lambda x: safe_round(x, 2))
     companies_df["gfv_price"] = companies_df["gfv_price"].apply(lambda x: safe_round(x, 2))
 
-    if only_3_star:
-        companies_df = companies_df[companies_df["greer_star_rating"] == 3]
+    companies_df["value_level"] = companies_df["greer_star_rating"].apply(get_value_level)
+    companies_df["value_label"] = companies_df["value_level"].apply(value_level_label)
+
+    if only_level3:
+        companies_df = companies_df[companies_df["value_level"] == 3]
 
     if only_buyzone:
         companies_df = companies_df[companies_df["buyzone_flag"] == True]
@@ -554,7 +558,7 @@ else:
     drill_sort = st.selectbox(
         "Sort companies by",
         options=[
-            "Star Rating",
+            "Value Level",
             "Greer Value Score",
             "Greer Yield Score",
             "GFV Upside %",
@@ -565,8 +569,8 @@ else:
     )
 
     drill_sort_map = {
-        "Star Rating": (["greer_star_rating", "greer_value_score", "greer_yield_score", "ticker"], [False, False, False, True]),
-        "Greer Value Score": (["greer_value_score", "greer_star_rating", "ticker"], [False, False, True]),
+        "Value Level": (["value_level", "greer_value_score", "greer_yield_score", "ticker"], [False, False, False, True]),
+        "Greer Value Score": (["greer_value_score", "value_level", "ticker"], [False, False, True]),
         "Greer Yield Score": (["greer_yield_score", "greer_value_score", "ticker"], [False, False, True]),
         "GFV Upside %": (["gfv_upside_pct", "greer_value_score", "ticker"], [False, False, True]),
         "Ticker": (["ticker"], [True]),
@@ -586,7 +590,8 @@ else:
             "ticker",
             "name",
             "industry",
-            "greer_star_rating",
+            "value_level",
+            "value_label",
             "greer_value_score",
             "gv_bucket",
             "greer_yield_score",
@@ -605,7 +610,8 @@ else:
             "ticker": "Ticker",
             "name": "Name",
             "industry": "Industry",
-            "greer_star_rating": "Stars",
+            "value_label": "Value Signal",
+            "value_level": "Level",
             "greer_value_score": "GV Score",
             "gv_bucket": "GV",
             "greer_yield_score": "YS Score",

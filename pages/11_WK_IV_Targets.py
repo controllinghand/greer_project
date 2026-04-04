@@ -5,6 +5,7 @@ import pandas as pd
 from sqlalchemy import text
 from db import get_engine
 from datetime import date, timedelta
+from value_utils import get_value_level, value_level_label
 
 # ----------------------------------------------------------
 # Admin flag (set on Render)
@@ -14,20 +15,6 @@ from datetime import date, timedelta
 IS_ADMIN = os.getenv("YRC_ADMIN", "0") == "1"
 
 st.set_page_config(page_title="Weekly IV Targets", layout="wide")
-
-# ----------------------------------------------------------
-# Convert numeric star rating into a pretty "⭐⭐⭐" string
-# ----------------------------------------------------------
-def stars_display(x) -> str:
-    try:
-        if pd.isna(x):
-            return ""
-        n = int(x)
-        if n <= 0:
-            return ""
-        return "⭐" * n
-    except Exception:
-        return ""
 
 # ----------------------------------------------------------
 # Score / highlight best weekly targets
@@ -310,7 +297,7 @@ def main():
             format="%d"
         )
     with top3:
-        min_star_rating = st.slider("Min ⭐ rating", 0, 5, 0)
+        min_level = st.slider("Min Value Level", 0, 3, 0)
     with top4:
         expiry_days = st.slider("Max expiry days from today", 1, 14, 7)
 
@@ -329,7 +316,7 @@ def main():
             format="%.3f"
         )
     with colC:
-        sort_by = st.selectbox("Sort by", ["Action premium %", "IV ATM", "Stars", "Market Cap", "Ticker"])
+        sort_by = st.selectbox("Sort by", ["Action premium %", "IV ATM", "Value Level", "Market Cap", "Ticker"])
     with colD:
         earnings_days_hide = st.slider("Hide upcoming earnings within X days (0 = off)", 0, 30, 7)
     with colE:
@@ -343,20 +330,25 @@ def main():
     # ----------------------------------------------------------
     # Load data
     # ----------------------------------------------------------
+    min_star_rating = min_level  # direct mapping
+
     df = load_weekly_targets(
         iv_min_atm=iv_min_atm,
         market_cap_min=market_cap_min,
         min_star_rating=min_star_rating
     )
-
+    df["value_level"] = df["greer_star_rating"].apply(get_value_level)
+    df["value_signal"] = df["value_level"].apply(value_level_label)
+    
+    df = df[df["value_level"] >= min_level]
+    
     if df.empty:
         st.info("No candidates found under market cap / IV / star filters.")
         return
 
     # ----------------------------------------------------------
-    # Add star display + clean types
+    # Add display + clean types
     # ----------------------------------------------------------
-    df["stars"] = df["greer_star_rating"].apply(stars_display)
 
     df["expiry"] = pd.to_datetime(df["expiry"], errors="coerce").dt.date
     df["fetch_date"] = pd.to_datetime(df["fetch_date"], errors="coerce").dt.date
@@ -541,8 +533,8 @@ def main():
         df = df.sort_values(by="action_premium_pct", ascending=False, na_position="last")
     elif sort_by == "IV ATM":
         df = df.sort_values(by="iv_atm", ascending=False, na_position="last")
-    elif sort_by == "Stars":
-        df = df.sort_values(by="greer_star_rating", ascending=False, na_position="last")
+    elif sort_by == "Value Level":
+        df = df.sort_values(by="value_level", ascending=False, na_position="last")
     elif sort_by == "Market Cap":
         df = df.sort_values(by="market_cap_raw", ascending=False, na_position="last")
     else:
@@ -565,7 +557,8 @@ def main():
     columns = [
         "ticker",
         "best_target",
-        "stars",
+        "value_level",
+        "value_signal",
         "latest_price",
         "market_cap",
         "iv_atm",
@@ -608,7 +601,8 @@ def main():
     display_df = df[columns].rename(columns={
         "ticker": "Ticker",
         "best_target": "Best Target",
-        "stars": "Stars",
+        "value_level": "Level",
+        "value_signal": "Value Signal",
         "latest_price": "Price",
         "market_cap": "Market Cap",
         "iv_atm": "IV ATM",

@@ -2,6 +2,7 @@
 import streamlit as st
 import plotly.graph_objects as go
 import streamlit.components.v1 as components
+from value_utils import get_value_level, value_level_label, value_level_short
 
 # ----------------------------------------------------------
 # HOME UI
@@ -136,9 +137,6 @@ def render_home():
     </style>
     """, unsafe_allow_html=True)
 
-    # ----------------------------------------------------------
-    # Helpers
-    # ----------------------------------------------------------
     # ----------------------------------------------------------
     # Load current prediction inputs for one ticker
     # ----------------------------------------------------------
@@ -1049,7 +1047,7 @@ This is a medium-term trend system, not a quick trade.
         )
 
     @st.cache_data(ttl=600)
-    def get_star_transition_dates(ticker: str):
+    def get_level_transition_dates(ticker: str):
         engine = get_engine()
         return pd.read_sql(
             """
@@ -1186,7 +1184,7 @@ This is a medium-term trend system, not a quick trade.
         snap = get_latest_snapshot(ticker)
         info = get_company_info(ticker)
         gfv_df = get_latest_gfv(ticker)
-        trans = get_star_transition_dates(ticker)
+        trans = get_level_transition_dates(ticker)
 
         bundle = {
             "ticker": ticker,
@@ -1329,16 +1327,18 @@ This is a medium-term trend system, not a quick trade.
             delisted_line = f"<div class='company-meta'><b>Delisted:</b> {dd}</div>"
 
         stars = int(r.get("greer_star_rating", 0) or 0)
-        star_html = ""
-        if stars > 0:
-            star_icons = "★" * stars + "☆" * (3 - stars)
-            star_html = (
-                f"<div style='font-size:1.3rem; color:#D4AF37; margin-top:6px;'>"
-                f"{star_icons} &nbsp; {stars} Gold Star{'s' if stars > 1 else ''}"
+        level = get_value_level(stars)
+        level_label = value_level_label(level)
+
+        level_html = ""
+        if level > 0:
+            level_html = (
+                f"<div style='font-size:1.05rem; font-weight:700; margin-top:6px;'>"
+                f"<b>Value Signal:</b> {level_label}"
                 f"</div>"
             )
 
-        became_line = ""
+        level_status_line = ""
         if not trans.empty:
             entered = trans.loc[0, "entered_3star_date"]
             exited = trans.loc[0, "exited_3star_date"]
@@ -1348,7 +1348,7 @@ This is a medium-term trend system, not a quick trade.
             entered_d = pd.to_datetime(entered).date() if pd.notnull(entered) else None
             exited_d = pd.to_datetime(exited).date() if pd.notnull(exited) else None
 
-            if entered_d is None and stars >= 3 and pd.notnull(tracking_start):
+            if entered_d is None and level == 3 and pd.notnull(tracking_start):
                 entered_d = pd.to_datetime(tracking_start).date()
 
             if entered_d:
@@ -1365,16 +1365,16 @@ This is a medium-term trend system, not a quick trade.
 
                 if exited_d:
                     days_in = int(days) if pd.notnull(days) else (exited_d - entered_d).days + 1
-                    became_line = (
-                        f"<div class='company-meta'><b>3⭐ Entered:</b> {entered_d} "
-                        f"&nbsp;|&nbsp; <b>Days @ 3⭐:</b> {days_in} "
+                    level_status_line = (
+                        f"<div class='company-meta'><b>{value_level_short(level)} Entered:</b> {entered_d} "
+                        f"&nbsp;|&nbsp; <b>Days @ {value_level_short(level)}:</b> {days_in} "
                         f"&nbsp;|&nbsp; <b>Status:</b> Exited {exited_d}</div>"
                     )
                 else:
                     days_so_far = (asof - entered_d).days + 1
-                    became_line = (
-                        f"<div class='company-meta'><b>3⭐ Entered:</b> {entered_d} "
-                        f"&nbsp;|&nbsp; <b>Days @ 3⭐:</b> {days_so_far} "
+                    level_status_line = (
+                        f"<div class='company-meta'><b>{value_level_short(level)} Entered:</b> {entered_d} "
+                        f"&nbsp;|&nbsp; <b>Days @ {value_level_short(level)}:</b> {days_so_far} "
                         f"&nbsp;|&nbsp; <b>Status:</b> Active</div>"
                     )
 
@@ -1386,8 +1386,8 @@ This is a medium-term trend system, not a quick trade.
           <div class="company-meta"><b>Sector:</b> {sector}</div>
           <div class="company-meta"><b>Industry:</b> {industry}</div>
           {delisted_line}
-          {star_html}
-          {became_line}
+          {level_html}
+          {level_status_line}
         </div>
         """)
         st.markdown(html, unsafe_allow_html=True)

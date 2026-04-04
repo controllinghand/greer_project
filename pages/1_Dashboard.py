@@ -3,9 +3,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from db import get_engine
-
-# Page config
-# st.set_page_config(page_title="Company Dashboard", layout="wide")
+from value_utils import get_value_level, value_level_label
 
 st.markdown("""
 <style>
@@ -22,7 +20,7 @@ st.markdown("""
     font-weight: 700;
     margin-bottom: 6px;
   }
-  .star-rating {
+  .value-level {
     color: #D4AF37;
     margin-bottom: 8px;
     font-size: 1.1rem;
@@ -68,12 +66,14 @@ if last_updated is not None:
 
 # Optional filters
 with st.sidebar:
-    min_stars = st.slider("Min star rating", min_value=0, max_value=3, value=0, step=1)
+    min_level = st.slider("Min Value Level", min_value=0, max_value=3, value=0, step=1)
     only_buyzone = st.checkbox("Only show BuyZone = True", value=False)
 
 filtered = df.copy()
-if min_stars > 0:
-    filtered = filtered[pd.to_numeric(filtered["greer_star_rating"], errors="coerce").fillna(0) >= min_stars]
+filtered["value_level"] = filtered["greer_star_rating"].apply(get_value_level)
+
+if min_level > 0:
+    filtered = filtered[filtered["value_level"] >= min_level]
 if only_buyzone:
     filtered = filtered[filtered["buyzone_flag"] == True]
 
@@ -91,10 +91,8 @@ for i in range(0, len(filtered), cards_per_row):
             # --------------------------------------------------
             # NaN-safe parsing for key metrics
             # --------------------------------------------------
-            stars_val = row.get("greer_star_rating")
-            stars = int(stars_val) if pd.notnull(stars_val) else 0
-            stars = max(0, min(3, stars))
-            star_icons = "★" * stars + "☆" * (3 - stars)
+            level = get_value_level(row.get("greer_star_rating"))
+            level_text = value_level_label(level)
 
             gv_val = row.get("greer_value_score")
             gv = float(gv_val) if pd.notnull(gv_val) else 0.0
@@ -155,7 +153,7 @@ for i in range(0, len(filtered), cards_per_row):
               <div class="card-header">
                 <a href="/?ticker={ticker}" class="link-ticker">{ticker} — {name}</a>
               </div>
-              <div class="star-rating">{star_icons} {stars} Star{'s' if stars != 1 else ''}</div>
+              <div class="value-level">{level_text}</div>
 
               <div>
                 <span class="metric-badge" style="background:{gv_color};">GV: {gv:.1f}%</span>

@@ -1,4 +1,7 @@
+# ----------------------------------------------------------
 # 12_YR3G-26.py
+# ----------------------------------------------------------
+
 import streamlit as st
 import pandas as pd
 from datetime import date
@@ -26,21 +29,18 @@ from portfolio_common import (
 # Main
 # ----------------------------------------------------------
 def main():
-    st.title("⭐ YR3G Results (You Rock 3-Star Growth Fund est. 2026)")
-    render_model_badge("3-Stars Model", "⭐", "pages/8_all_stars.py")
+    st.title("💲 YR3G Results (You Rock Value Level Growth Fund est. 2026)")
+
+    render_model_badge("Value Levels Model", "💲", "pages/8_all_stars.py")
+
     st.markdown(
         """
-        Stock-only community page for **YR3G** (buys & sells of shares).  
-        Uses **only**: portfolios, portfolio_events, portfolio_nav_daily.
+        Stock-only community page for **YR3G** (buys & sells of shares).  Uses **only**: portfolios, portfolio_events, portfolio_nav_daily.
 
         **Strategy:**  
-        Holdings are systematically sourced from our **Opportunities_IV** screener and must 
-        achieve a **3-Star rating**, representing the highest tier in our quality framework. 
-        This structured approach filters the market for companies demonstrating exceptional 
-        opportunity characteristics while reinforcing disciplined, data-driven portfolio construction.
+        This fund systematically invests in companies identified by our **Value Level system** — focusing on stocks showing measurable mispricing across the market. The primary focus is on **Critical Value ($$$)** opportunities, while using **Direction (BuyZone)** and **Health (Greer Value)** to separate high-conviction setups from potential value traps.  This is not a “best stocks” strategy — it is a **market dislocation strategy**.
         """
     )
-
 
     default_code = "YR3G-26"
 
@@ -323,7 +323,6 @@ def main():
         show["current_price"] = show["current_price"].apply(fmt_money)
         show["stop_price"] = show["stop_price"].apply(fmt_money)
 
-        # IMPORTANT: these are already percentages (not ratios)
         show["unrealized_pl_pct"] = show["unrealized_pl_pct"].apply(
             lambda x: f"{float(x):.2f}%" if pd.notna(x) else "—"
         )
@@ -395,5 +394,7 @@ def main():
             hide_index=True,
             use_container_width=True,
         )
+
+
 if __name__ == "__main__":
     main()

@@ -46,7 +46,7 @@ This page explains which **models** are used to build each YouRock fund.
 
 Use this as the system map:
 
-- **⭐ 3-Stars Model** → **⭐ YR3G-26**
+- **💲 Value Level Model** → **💲 YR3G-26**
 - **↔️ Divergence Model** → **↔️ YRDG-26**
 - **🪨 Opportunity Model** → **🪨 YROG-26**
 - **🔮 Prediction Model** → **🔮 YRPG-26**
@@ -65,10 +65,10 @@ st.markdown("## Builder Map")
 
 builder_rows = [
     {
-        "Tool": "⭐ 3-Stars Model",
-        "Primary Use": "Quality growth builder",
-        "Builds": "⭐ YR3G-26",
-        "Style": "Best-in-class company selection",
+        "Tool": "💲 Value Level Model",
+        "Primary Use": "Value level condition builder",
+        "Builds": "💲 YR3G-26",
+        "Style": "Companies at elevated or critical value levels",
     },
     {
         "Tool": "↔️ Divergence Model",
@@ -111,26 +111,26 @@ st.dataframe(builder_rows, use_container_width=True, hide_index=True)
 st.markdown("## Fund-by-Fund Guide")
 
 
-# ⭐ YR3G
+# 💲 YR3G
 render_fund_card(
-    fund_name="⭐ YR3G-26",
+    fund_name="💲 YR3G-26",
     fund_type="Quality Growth Fund",
-    build_tool="⭐ 3-Stars Model",
+    build_tool="💲 Value Level Model",
     description=(
-        "YR3G is built from the highest-quality companies in the system. "
-        "This model surfaces companies that meet the strongest fundamental thresholds."
+        "YR3G is built from companies identified by the Value Level system.  "
+        "It focuses on names reaching critical value level **(3)**, indicating a critical condition with solid fundamentals."
     ),
     process=[
-        "Open **3-Stars Model**",
-        "Review companies currently holding 3-star status",
+        "Open **Value Level Model**",
+        "Review companies currently at Level 3",
         "Evaluate names for diversification and conviction",
         "Select stock positions for the YR3G portfolio",
         "Enter trades into the portfolio system",
     ],
     key_notes=[
-        "Best-in-class quality builder",
+        "Value-driven quality builder",
+        "Focus on elevated and critical value conditions",
         "Simple and clean long-term strategy",
-        "Focus on proven company strength",
     ],
 )
 
@@ -285,12 +285,12 @@ render_fund_card(
     fund_type="Income Fund",
     build_tool="🌪️ Volatility Model",
     description=(
-        "YRSI is a more selective version of YRVI, focusing on higher-quality names."
+        "YRSI is a more selective version of YRVI, focusing on Value Level."
     ),
     process=[
         "Open **Volatility Model**",
         "Review weekly setups",
-        "Filter for higher quality trades",
+        "Filter for Value Level trades",
         "Execute trades",
         "Track results",
     ],
@@ -312,7 +312,7 @@ st.markdown(
 These pages support the system but are not primary builders:
 
 - 🧪 Backtesting → Research
-- ⭐ 3-Stars Alumni → Historical ideas
+- 💲 Value Level Alumni → Historical ideas
 - ➕ Add Company → Utility
 """
 )
@@ -333,7 +333,7 @@ st.markdown(
 5. Track performance
 
 ### Quick mapping
-- ⭐ YR3G → 3-Stars Model
+- 💲 YR3G → Value Level Model
 - ↔️ YRDG → Divergence Model
 - 🪨 YROG → Opportunity Model
 - 🔮 YRPG → Prediction Model

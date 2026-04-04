@@ -4,9 +4,7 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import text
 from db import get_engine  # ✅ Centralized DB connection
-
-# Page config — update tab title
-# st.set_page_config(page_title="⭐ Opportunities with IV", layout="wide")
+from value_utils import get_value_level, value_level_label
 
 # --------------------------------------------------
 # Insert custom CSS for styled table
@@ -36,10 +34,6 @@ st.markdown(
   }
   .op-table tr:hover {
     background-color: #f1f1f1;
-  }
-  .star-icon {
-    color: #D4AF37;
-    font-size: 1.1rem;
   }
   a.ticker-link {
     color: #1976D2;
@@ -133,7 +127,7 @@ def load_snapshot() -> pd.DataFrame:
 # Main page
 # --------------------------------------------------
 def main():
-    st.title("⭐ Opportunities with IV")
+    st.title("💲 Opportunities with IV")
     st.markdown(
         """
         **Showing companies that currently meet all of the following criteria:**  
@@ -142,6 +136,10 @@ def main():
         - **In** the Buy-Zone  
         - Latest FVG direction is **bullish**  
         - Current Price < GFV Price × **0.75** (25% margin of safety)  
+
+        **Value Level layer:**  
+        - Adds **Value Level** and **Value Signal** using the Greer Value Level framework  
+        - Uses `greer_star_rating` in the database, mapped to UI-friendly Value Levels  
 
         **New Company Cycle layer:**  
         - Adds **Greer Company Index**, **Health**, **Direction**, **Opportunity**, **Phase**, and **Confidence**  
@@ -195,6 +193,13 @@ def main():
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    if "stars" in df.columns:
+        df["value_level"] = df["stars"].apply(get_value_level)
+        df["value_signal"] = df["value_level"].apply(value_level_label)
+    else:
+        df["value_level"] = 0
+        df["value_signal"] = "—"
+
     if "buyzone_flag" in df.columns:
         df["buyzone_flag"] = df["buyzone_flag"].fillna(False)
 
@@ -212,8 +217,8 @@ def main():
         )
 
     with c2:
-        min_stars = st.selectbox(
-            "Minimum Stars",
+        min_level = st.selectbox(
+            "Minimum Value Level",
             options=[0, 1, 2, 3],
             index=0,
         )
@@ -278,7 +283,7 @@ def main():
 
     filtered_df = df.copy()
     filtered_df = filtered_df[filtered_df["sector"].isin(selected_sectors)]
-    filtered_df = filtered_df[filtered_df["stars"].fillna(0) >= min_stars]
+    filtered_df = filtered_df[filtered_df["value_level"].fillna(0) >= min_level]
     filtered_df = filtered_df[filtered_df["greer_company_index"].fillna(0) >= min_gci]
     filtered_df = filtered_df[filtered_df["health_pct"].fillna(0) >= min_health]
     filtered_df = filtered_df[filtered_df["direction_pct"].fillna(0) >= min_direction]
@@ -327,19 +332,16 @@ def main():
     # --------------------------------------------------
     # Display helpers
     # --------------------------------------------------
-    def stars_to_html(n):
-        try:
-            n = int(n)
-        except Exception:
-            return ""
-        return f"<span class='star-icon'>{'★' * n}{'☆' * (3 - n)}</span>"
+    def value_signal_html(signal: str) -> str:
+        return f"<span>{signal}</span>"
 
     def link_ticker(t: str) -> str:
         return f"<a href='/?ticker={t}' class='ticker-link'>{t}</a>"
 
     display_df = filtered_df.copy()
     display_df["Ticker"] = display_df["ticker"].apply(link_ticker)
-    display_df["Stars"] = display_df["stars"].apply(stars_to_html)
+    display_df["Level"] = display_df["value_level"].apply(lambda x: f"Level {int(x)}" if pd.notnull(x) and int(x) > 0 else "—")
+    display_df["Value Signal"] = display_df["value_signal"].apply(value_signal_html)
     display_df["Phase"] = display_df["phase"].apply(phase_chip)
     display_df["Health"] = display_df["health_pct"].apply(signal_pct)
     display_df["Direction"] = display_df["direction_pct"].apply(signal_pct)
@@ -364,7 +366,8 @@ def main():
         [
             "Ticker",
             "sector",
-            "Stars",
+            "Level",
+            "Value Signal",
             "greer_company_index",
             "Health",
             "Direction",
@@ -408,7 +411,8 @@ def main():
         "name",
         "sector",
         "industry",
-        "stars",
+        "value_level",
+        "value_signal",
         "greer_company_index",
         "health_pct",
         "direction_pct",
@@ -437,7 +441,8 @@ def main():
             "name": "Name",
             "sector": "Sector",
             "industry": "Industry",
-            "stars": "Stars",
+            "value_level": "Value Level",
+            "value_signal": "Value Signal",
             "greer_company_index": "Greer Company Index",
             "health_pct": "Health %",
             "direction_pct": "Direction %",
